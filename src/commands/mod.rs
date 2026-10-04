@@ -2,6 +2,7 @@
 //!
 
 // Messaging
+pub mod budget;
 pub mod claim;
 pub mod listen;
 pub mod send;

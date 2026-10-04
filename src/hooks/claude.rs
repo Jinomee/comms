@@ -1838,6 +1838,11 @@ fn handle_userpromptsubmit(
     let mut system_message = None;
     let mut delivery_ack = None;
 
+    // A real prompt (not an hcom wake) is human input for this agent.
+    if !is_bare_hcom_wake(payload) {
+        crate::turn_budget::reset_for(db, instance_name);
+    }
+
     // Persist updates
     if !updates.is_empty() {
         instances::update_instance_position(db, instance_name, updates);

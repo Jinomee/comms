@@ -39,6 +39,7 @@ mod tool;
 pub mod tools;
 pub mod transcript;
 mod tui;
+mod turn_budget;
 mod update;
 
 use anyhow::{Context, Result, bail};

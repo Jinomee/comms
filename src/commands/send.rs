@@ -398,6 +398,12 @@ pub fn send_message(
     let delivery = resolve_delivery(db, identity, message, envelope, explicit_targets)?;
     let scope_str = delivery.effective_scope.as_str();
 
+    if matches!(identity.kind, SenderKind::Instance)
+        && let Some(refusal) = crate::turn_budget::check(db, &identity.name, &delivery.delivered_to)
+    {
+        return Err(refusal);
+    }
+
     // Build event data
     let mut data = serde_json::json!({
         "from": identity.name,
@@ -458,6 +464,14 @@ pub fn send_message(
     let event_id = db
         .log_event("message", &routing_instance, &data)
         .map_err(|e| format!("Failed to write message to database: {e}"))?;
+
+    match identity.kind {
+        SenderKind::Instance => {
+            crate::turn_budget::record(db, &identity.name, &delivery.delivered_to)
+        }
+        SenderKind::External => crate::turn_budget::reset_all(db),
+        SenderKind::System => {}
+    }
 
     // Auto-create request-watch subscriptions for targeted requests
     if let Some(env) = envelope {

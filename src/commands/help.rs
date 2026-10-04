@@ -544,6 +544,30 @@ const CLAIM_HELP: &[HelpEntry] = &[
     ),
 ];
 
+const BUDGET_HELP: &[HelpEntry] = &[
+    (
+        "budget",
+        "Show the agent-to-agent turn budget and per-pair counts",
+    ),
+    (
+        "budget reset",
+        "Let agents that hit the budget keep talking",
+    ),
+    (
+        "budget <n>",
+        "Set messages per agent pair before a pause (0 = off)",
+    ),
+    ("", ""),
+    (
+        "",
+        "Counts reset whenever you send a message or type into an agent.",
+    ),
+    (
+        "",
+        "Default 20 (or HCOM_TURN_BUDGET). Only the human can change it.",
+    ),
+];
+
 const KILL_HELP: &[HelpEntry] = &[
     (
         "kill <name>...",
@@ -1146,6 +1170,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "claim",
     "release",
     "claims",
+    "budget",
     "send",
     "list",
     "events",
@@ -1220,6 +1245,7 @@ Commands:\n\
 \x20 ask          One-shot read-only question to claude or codex\n\
 \x20 claim        Claim files so other agents don't edit them\n\
 \x20 claims       List claims (release to give them up)\n\
+\x20 budget       Agent-to-agent turn budget (stops runaway loops)\n\
 \x20 send         Send message to your buddies\n\
 \x20 listen       Block until message or event arrives\n\
 \x20 list         Show agents, status, unread counts\n\
@@ -1363,6 +1389,7 @@ fn command_help_raw(name: &str) -> String {
         "kill" => Some(&[KILL_HELP]),
         "ask" => Some(&[ASK_HELP]),
         "claim" | "release" | "claims" => Some(&[CLAIM_HELP]),
+        "budget" => Some(&[BUDGET_HELP]),
         "listen" => Some(&[LISTEN_HELP]),
         "reset" => Some(&[RESET_HELP]),
         "relay" => Some(RELAY_PAGE),
@@ -1459,6 +1486,7 @@ mod tests {
             "claim",
             "release",
             "claims",
+            "budget",
             "send",
             "list",
             "events",

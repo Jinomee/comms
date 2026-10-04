@@ -818,6 +818,8 @@ fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload
         .unwrap_or("");
 
     if prompt.trim() != HCOM_TRIGGER {
+        // A real prompt (not an hcom wake) is human input for this agent.
+        crate::turn_budget::reset_for(db, &instance.name);
         set_prompt_active(db, &instance.name);
         return hook_noop();
     }
