@@ -31,6 +31,9 @@ Inline bundle (attach structured context):
     --extends <id>                 Parent bundle (optional)
   See 'comms bundle --help' for bundle details
 
+PowerShell: quote mentions ('@luna'). Unquoted, PowerShell drops @luna
+  before comms sees it and the message goes to everyone.
+
 Examples:
     comms send @luna -- Hello there!
     comms send @luna @nova --intent request -- Can you help?
@@ -1188,6 +1191,18 @@ pub fn cmd_send(db: &CommsDb, args: &SendArgs, ctx: Option<&CommandContext>) -> 
             .as_deref()
             .filter(|_| preview_delivery.is_thread_resolved),
     );
+
+    // PowerShell drops an unquoted `@name` (splatting) before comms sees it,
+    // so a message meant for one agent silently broadcasts. Flag broadcasts
+    // from a terminal on Windows; comms can't tell a dropped argument apart.
+    if cfg!(windows)
+        && !matches!(sender_identity.kind, SenderKind::Instance)
+        && preview_delivery.original_scope == MessageScope::Broadcast
+        && !preview_delivery.is_thread_resolved
+        && !envelope.skip_room
+    {
+        eprintln!("Note: sent to everyone (no @mention). In PowerShell, quote mentions: '@name'");
+    }
 
     // Use the same adhoc-only receive policy as other commands. With --from,
     // the invoking instance receives while the outgoing author stays external.

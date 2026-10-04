@@ -197,7 +197,23 @@ pub struct ScreenTracker {
 /// over a composer whose ready-pattern row can survive underneath, end in an
 /// `enter continue · esc quit` footer. Either line means not ready.
 fn is_codex_startup_line(line: &str) -> bool {
-    is_codex_loading_header(line) || is_codex_onboarding_footer(line)
+    is_codex_loading_header(line)
+        || is_codex_onboarding_footer(line)
+        || is_codex_update_screen(line)
+}
+
+/// Codex's "Update available" startup menu. Its highlighted option (`› 1.
+/// Update now`) looks like the composer prompt, and Enter on it runs a global
+/// npm install, so it must never read as a ready, empty prompt.
+fn is_codex_update_screen(line: &str) -> bool {
+    line.contains("Update available")
+        || (line.contains("enter continue") && line.contains("esc skip"))
+}
+
+/// `1. Update now` etc.: a highlighted numbered menu option, not composer input.
+fn is_numbered_menu_option(text: &str) -> bool {
+    let digits = text.chars().take_while(|c| c.is_ascii_digit()).count();
+    digits > 0 && text[digits..].starts_with('.')
 }
 
 fn is_codex_loading_header(line: &str) -> bool {
@@ -409,7 +425,9 @@ impl ScreenTracker {
     pub fn is_codex_startup_loading(&self) -> bool {
         let lines = self.get_screen_lines();
         lines.iter().any(|line| is_codex_loading_header(line))
-            && !lines.iter().any(|line| is_codex_onboarding_footer(line))
+            && !lines
+                .iter()
+                .any(|line| is_codex_onboarding_footer(line) || is_codex_update_screen(line))
     }
 
     /// Check if the latest complete OSC terminal title requires action.
@@ -997,6 +1015,9 @@ impl ScreenTracker {
                 continue;
             };
             let text = trim_with_nbsp(text);
+            if is_numbered_menu_option(text) {
+                continue;
+            }
 
             if text.is_empty() {
                 return Some(String::new());
@@ -1822,6 +1843,36 @@ mod tests {
             "a screen awaiting an answer is not loading"
         );
         assert_eq!(t.get_codex_input_text(), None);
+    }
+
+    #[test]
+    fn codex_update_menu_is_not_a_ready_prompt() {
+        // Codex's startup update menu highlights option 1 with the prompt
+        // glyph. Enter there runs `npm install -g`, so it must never read as
+        // an empty prompt, and it must not count as "still loading" either
+        // (it awaits an answer, so the launch can be reported blocked).
+        let mut t = make_tracker(24, 80, "? for shortcuts");
+        t.process(
+            "\u{2502} model:     loading   /model to change \u{2502}\r\n\
+             \u{2728} Update available! 0.159.2 -> 0.160.0\r\n\
+             \u{203a} 1. Update now (runs `npm install -g @openai/codex`)\r\n  \
+             2. Skip\r\n  3. Skip until next version\r\n  \
+             Press enter to continue \u{b7} esc skip\r\n"
+                .as_bytes(),
+        );
+        assert!(!t.is_ready());
+        assert!(!t.is_codex_startup_loading());
+        assert_eq!(t.get_codex_input_text(), None);
+        assert!(!t.is_prompt_empty("codex"));
+    }
+
+    #[test]
+    fn codex_numbered_option_line_is_not_composer_input() {
+        assert!(is_numbered_menu_option("1. Update now"));
+        assert!(is_numbered_menu_option("12. Twelve"));
+        assert!(!is_numbered_menu_option("1 apple"));
+        assert!(!is_numbered_menu_option("Fix bug 1. Then test"));
+        assert!(!is_numbered_menu_option(""));
     }
 
     #[test]

@@ -836,6 +836,19 @@ fn handle_userpromptsubmit(db: &CommsDb, ctx: &CommsContext, payload: &HookPaylo
     }
 }
 
+/// Stdout JSON for a blocking result, for hooks that support a JSON decision.
+fn block_stdout(hook_name: &str, reason: &str) -> Option<Value> {
+    (hook_name == "codex-pretooluse").then(|| {
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        })
+    })
+}
+
 /// Block an `apply_patch` that touches a path another agent claimed.
 fn claim_block(db: &CommsDb, payload: &HookPayload, instance_name: &str) -> Option<HookResult> {
     if payload.tool_name != "apply_patch" {
@@ -989,9 +1002,19 @@ fn dispatch_result_to_stdout(db: &CommsDb, hook_name: &str, result: HookResult) 
             0
         }
         HookResult::Block { reason, .. } => {
-            // Codex hooks on exit 2 read the reason from stderr, not stdout.
             let _ = std::io::stderr().lock().write_all(reason.as_bytes());
-            2
+            match block_stdout(hook_name, &reason) {
+                // PreToolUse denies with JSON and exit 0. On Windows Codex runs
+                // hooks via `powershell -Command`, which reports any failed
+                // native command as exit 1 (a hook error, not a block), so an
+                // exit-2 deny there lets the tool call through.
+                Some(json) => {
+                    let _ = serde_json::to_writer(std::io::stdout().lock(), &json);
+                    0
+                }
+                // Codex hooks on exit 2 read the reason from stderr, not stdout.
+                None => 2,
+            }
         }
         HookResult::UpdateInput { updated_input } => {
             let _ = serde_json::to_writer(
@@ -1158,9 +1181,7 @@ fn comms_hooks_json_state_position(key: &str, hooks_path: &Path) -> Option<(Stri
 }
 
 fn build_codex_hook_command(command: &str) -> String {
-    let mut parts = crate::runtime_env::get_comms_prefix();
-    parts.push(command.to_string());
-    parts.join(" ")
+    format!("{} {command}", crate::runtime_env::hook_comms_command())
 }
 
 fn build_expected_hook_json() -> Value {
@@ -1888,6 +1909,19 @@ mod tests {
         assert!(is_comms_codex_command("uvx comms codex-stop"));
         assert!(!is_comms_codex_command("/usr/local/bin/codex-stop"));
         assert!(!is_comms_codex_command("comms codex-stop --extra"));
+    }
+
+    #[test]
+    fn test_pretooluse_block_is_a_json_deny_not_an_exit_code() {
+        let json = block_stdout("codex-pretooluse", "claimed by luna").unwrap();
+        assert_eq!(json["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        assert_eq!(json["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            json["hookSpecificOutput"]["permissionDecisionReason"],
+            "claimed by luna"
+        );
+        // Stop keeps its exit-2 continuation semantics.
+        assert!(block_stdout("codex-stop", "msg").is_none());
     }
 
     #[test]

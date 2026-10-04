@@ -25,6 +25,30 @@ static COMMS_PREFIX: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new
     vec!["comms".into()]
 });
 
+/// Command hooks use to call back into comms: the running binary's absolute
+/// path, so hooks work even when the tool rebuilds PATH for its hook shell
+/// without the comms install dir (they'd otherwise silently no-op).
+///
+/// Falls back to [`build_comms_command`] when the binary isn't the installed
+/// `comms` (dev roots, test builds) or its path contains whitespace (hook
+/// shells word-split the command).
+pub(crate) fn hook_comms_command() -> String {
+    if std::env::var("COMMS_DEV_ROOT").is_ok() {
+        return build_comms_command();
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.canonicalize().ok())
+        .filter(|exe| exe.file_stem().is_some_and(|stem| stem == "comms"))
+        .map(|exe| {
+            crate::shared::platform::child_process_path(&exe)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .filter(|path| !path.chars().any(char::is_whitespace))
+        .unwrap_or_else(build_comms_command)
+}
+
 /// Detect comms invocation prefix based on execution context.
 pub(crate) fn get_comms_prefix() -> Vec<String> {
     COMMS_PREFIX.clone()
@@ -251,6 +275,12 @@ mod escape_tests {
 // (Windows resolves USERPROFILE and prefixes canonical paths with \\?\).
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn hook_command_falls_back_to_bare_name_for_non_installed_binaries() {
+        // The test binary is `comms-<hash>`, not the installed `comms`.
+        assert_eq!(super::hook_comms_command(), super::build_comms_command());
+    }
+
     use crate::hooks::test_helpers::EnvGuard;
     use serial_test::serial;
 

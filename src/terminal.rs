@@ -587,13 +587,25 @@ pub fn resolve_windows_tool_launcher(tool: &str, resolved: &str) -> Option<(Stri
     {
         return None;
     }
-    let prefix = Path::new(resolved).parent()?;
-    let entrypoint = prefix.join("node_modules/@openai/codex/bin/codex.js");
-    if !entrypoint.is_file() {
-        return None;
-    }
+    let entrypoint = codex_entrypoint_for_shim(Path::new(resolved))?;
     let node = which_bin("node")?;
     Some((node, vec![entrypoint.to_string_lossy().into_owned()]))
+}
+
+/// The `codex.js` entrypoint behind an npm `codex.cmd` shim, for both layouts:
+/// - global: `<prefix>\codex.cmd` → `<prefix>\node_modules\@openai\codex\bin\codex.js`
+/// - project-local: `<proj>\node_modules\.bin\codex.cmd` →
+///   `<proj>\node_modules\@openai\codex\bin\codex.js`
+#[cfg_attr(not(windows), allow(dead_code))]
+fn codex_entrypoint_for_shim(shim: &Path) -> Option<std::path::PathBuf> {
+    let shim_dir = shim.parent()?;
+    let package_bin = ["@openai", "codex", "bin", "codex.js"];
+    let global = shim_dir.join("node_modules");
+    let local = shim_dir.parent()?.to_path_buf(); // `.bin`'s parent is `node_modules`
+    [global, local]
+        .into_iter()
+        .map(|base| package_bin.iter().fold(base, |p, c| p.join(c)))
+        .find(|candidate| candidate.is_file())
 }
 
 /// Resolve the `bash` command to run on Unix, preferring a `PATH` match and
@@ -2718,6 +2730,37 @@ fn zellij_pane_id_from_terminal_id(terminal_id: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_entrypoint_found_for_global_and_local_npm_layouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = |root: &Path| root.join("node_modules/@openai/codex/bin/codex.js");
+
+        // Global: <prefix>/codex.cmd
+        let global = tmp.path().join("global");
+        std::fs::create_dir_all(entry(&global).parent().unwrap()).unwrap();
+        std::fs::write(entry(&global), "").unwrap();
+        assert_eq!(
+            codex_entrypoint_for_shim(&global.join("codex.cmd")),
+            Some(entry(&global))
+        );
+
+        // Project-local: <proj>/node_modules/.bin/codex.cmd
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(entry(&proj).parent().unwrap()).unwrap();
+        std::fs::create_dir_all(proj.join("node_modules/.bin")).unwrap();
+        std::fs::write(entry(&proj), "").unwrap();
+        assert_eq!(
+            codex_entrypoint_for_shim(&proj.join("node_modules/.bin/codex.cmd")),
+            Some(entry(&proj))
+        );
+
+        // No package next to the shim: no rewrite.
+        assert_eq!(
+            codex_entrypoint_for_shim(&tmp.path().join("elsewhere/codex.cmd")),
+            None
+        );
+    }
+
     use super::*;
     use serial_test::serial;
     #[cfg(unix)]

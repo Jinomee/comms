@@ -265,6 +265,10 @@ const SEND_HELP: &[HelpEntry] = &[
     ),
     ("", ""),
     ("", "Everything after -- is the message (no quotes needed)."),
+    (
+        "",
+        "PowerShell: quote mentions ('@name'), or PowerShell drops them and the message broadcasts.",
+    ),
     ("", "All flags must come before --."),
     ("", ""),
     ("Target matching:", ""),

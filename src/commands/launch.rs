@@ -142,6 +142,8 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
         }
     }
 
+    warn_if_comms_not_on_path();
+
     // Agents launched into a room are told so up front.
     if let Some(ref room) = room {
         let db = CommsDb::open()?;
@@ -257,6 +259,23 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
     );
 
     Ok(readiness_exit_code(readiness_state, result.failed))
+}
+
+/// Hooks call comms by absolute path, but agents run `comms send` from their
+/// own shell, which needs `comms` on PATH. Without it messaging silently
+/// breaks, so say so at launch.
+fn warn_if_comms_not_on_path() {
+    if crate::terminal::which_bin("comms").is_some() {
+        return;
+    }
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.display().to_string()))
+        .unwrap_or_else(|| "the directory containing comms".to_string());
+    eprintln!(
+        "Warning: `comms` is not on PATH. Agents send messages by running `comms send` and won't \
+         find it. Add {dir} to PATH (in your shell profile, so the agent's shell sees it too)."
+    );
 }
 
 pub(crate) fn prepare_launch_execution(

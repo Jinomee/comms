@@ -77,7 +77,7 @@ pub fn normalize_path(path: &Path, base: &Path) -> PathBuf {
     let mut rest: Vec<&std::ffi::OsStr> = Vec::new();
     loop {
         if let Ok(canon) = existing.canonicalize() {
-            let mut out = canon;
+            let mut out = strip_verbatim(canon);
             for part in rest.iter().rev() {
                 out.push(part);
             }
@@ -91,6 +91,22 @@ pub fn normalize_path(path: &Path, base: &Path) -> PathBuf {
             _ => return lexical,
         }
     }
+}
+
+/// Drop Windows' verbatim prefix from a canonicalized path: `\\?\C:\x` →
+/// `C:\x`, `\\?\UNC\srv\share` → `\\srv\share`. Besides reading badly,
+/// the `?` would make every claimed path look like a glob.
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\")
+        && rest.as_bytes().get(1) == Some(&b':')
+    {
+        return PathBuf::from(rest);
+    }
+    path
 }
 
 /// Turn a user-supplied pattern into an absolute glob. A plain directory
@@ -452,6 +468,22 @@ mod tests {
             normalize_path(Path::new("src/auth/new.rs"), &base),
             base.join("src/auth/new.rs")
         );
+    }
+
+    #[test]
+    fn verbatim_windows_prefixes_are_stripped() {
+        let p = |s: &str| strip_verbatim(PathBuf::from(s));
+        assert_eq!(
+            p(r"\\?\E:\comms-test\queue.py"),
+            PathBuf::from(r"E:\comms-test\queue.py")
+        );
+        assert_eq!(
+            p(r"\\?\UNC\srv\share\a.rs"),
+            PathBuf::from(r"\\srv\share\a.rs")
+        );
+        assert_eq!(p("/home/x/a.rs"), PathBuf::from("/home/x/a.rs"));
+        assert_eq!(p(r"\\?\Volume{abc}\a"), PathBuf::from(r"\\?\Volume{abc}\a"));
+        assert!(!is_glob(&p(r"\\?\E:\q.py").to_string_lossy()));
     }
 
     #[test]

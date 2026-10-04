@@ -2745,7 +2745,7 @@ fn merge_per_run_settings(settings: &mut Value, auto_approve: bool) -> Result<()
     }
     object_field(settings, "env")?.insert(
         "COMMS".to_string(),
-        Value::String(crate::runtime_env::build_comms_command()),
+        Value::String(crate::runtime_env::hook_comms_command()),
     );
     if auto_approve {
         let permissions = object_field(settings, "permissions")?;

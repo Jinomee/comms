@@ -311,6 +311,41 @@ fn ensure_terminal_socket_access(args: &[String]) -> Vec<String> {
     result
 }
 
+/// Turn off Codex's startup update check unless the user configured it.
+/// Its "Update available" menu blocks a comms-launched agent, and Enter on it
+/// runs `npm install -g @openai/codex` (a global change nobody asked for).
+fn disable_startup_update_check(args: &[String]) -> Vec<String> {
+    const KEY: &str = "check_for_update_on_startup";
+    let end = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let mut i = 0;
+    while i < end {
+        let raw = if matches!(args[i].as_str(), "-c" | "--config") {
+            i += 1;
+            args.get(i).filter(|_| i < end).map(String::as_str)
+        } else {
+            args[i]
+                .strip_prefix("--config=")
+                .or_else(|| args[i].strip_prefix("-c="))
+                .or_else(|| args[i].strip_prefix("-c"))
+        };
+        if let Some((key, _)) = raw.and_then(|r| r.split_once('='))
+            && key.trim() == KEY
+        {
+            return args.to_vec();
+        }
+        i += 1;
+    }
+    let mut result = args.to_vec();
+    crate::hooks::runtime::insert_before_separator(
+        &mut result,
+        ["-c".to_string(), format!("{KEY}=false")],
+    );
+    result
+}
+
 /// Add the state directory, terminal socket access and identity bootstrap.
 /// Codex's own config and CLI flags select sandbox and approval policy.
 pub fn preprocess_codex_args(
@@ -320,6 +355,7 @@ pub fn preprocess_codex_args(
 ) -> Vec<String> {
     let args = ensure_comms_writable(codex_args, codex_home);
     let args = ensure_terminal_socket_access(&args);
+    let args = disable_startup_update_check(&args);
     add_codex_developer_instructions(&args, bootstrap_text)
 }
 
@@ -350,6 +386,34 @@ mod tests {
     fn init_config() {
         // Config::init is idempotent-ish but needs to be called before paths::comms_dir()
         crate::config::Config::init();
+    }
+
+    #[test]
+    fn test_startup_update_check_disabled_unless_configured() {
+        let out = disable_startup_update_check(&s(&["--model", "m", "--", "hi"]));
+        assert_eq!(
+            out,
+            s(&[
+                "--model",
+                "m",
+                "-c",
+                "check_for_update_on_startup=false",
+                "--",
+                "hi"
+            ])
+        );
+        for user in [
+            s(&["-c", "check_for_update_on_startup=true"]),
+            s(&["--config=check_for_update_on_startup=true"]),
+        ] {
+            assert_eq!(disable_startup_update_check(&user), user);
+        }
+        // Text after `--` is the prompt, not config.
+        let prompt = s(&["--", "-c", "check_for_update_on_startup=true"]);
+        assert!(
+            disable_startup_update_check(&prompt)
+                .contains(&"check_for_update_on_startup=false".to_string())
+        );
     }
 
     #[test]
