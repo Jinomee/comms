@@ -491,6 +491,30 @@ const START_HELP: &[HelpEntry] = &[
     ),
 ];
 
+const ASK_HELP: &[HelpEntry] = &[
+    (
+        "ask <claude|codex> <question>",
+        "One-shot question to a fresh headless agent; prints its answer",
+    ),
+    (
+        "  --file, -f PATH",
+        "Point the agent at a file (repeatable; small files inlined)",
+    ),
+    ("  --write", "Let the agent edit files (default: read-only)"),
+    (
+        "  --continue SESSION",
+        "Follow up in the same session (id printed after each answer)",
+    ),
+    ("  --model M", "Model to use"),
+    ("  --timeout N", "Give up after N seconds (default: 600)"),
+    ("  --json", "Print {agent, answer, session} as JSON"),
+    ("", ""),
+    (
+        "",
+        "Question can also come from stdin. Run it as a background task to keep working.",
+    ),
+];
+
 const KILL_HELP: &[HelpEntry] = &[
     (
         "kill <name>...",
@@ -1079,6 +1103,7 @@ fn format_entries(entries: &[HelpEntry]) -> Vec<String> {
 /// tail must include every released spec name plus public aliases (e.g. `agy`).
 /// The `command_names_covers_released_tools` test guards against drift.
 pub const COMMAND_NAMES: &[&str] = &[
+    "ask",
     "send",
     "list",
     "events",
@@ -1150,6 +1175,7 @@ Launch:\n\
 \x20 hcom kill <name(s)|tag:T|all>         Kill + close terminal pane\n\
 \n\
 Commands:\n\
+\x20 ask          One-shot read-only question to claude or codex\n\
 \x20 send         Send message to your buddies\n\
 \x20 listen       Block until message or event arrives\n\
 \x20 list         Show agents, status, unread counts\n\
@@ -1291,6 +1317,7 @@ fn command_help_raw(name: &str) -> String {
         "stop" => Some(&[STOP_HELP]),
         "start" => Some(&[START_HELP]),
         "kill" => Some(&[KILL_HELP]),
+        "ask" => Some(&[ASK_HELP]),
         "listen" => Some(&[LISTEN_HELP]),
         "reset" => Some(&[RESET_HELP]),
         "relay" => Some(RELAY_PAGE),
@@ -1383,6 +1410,7 @@ mod tests {
     #[test]
     fn all_commands_have_help() {
         let commands = [
+            "ask",
             "send",
             "list",
             "events",

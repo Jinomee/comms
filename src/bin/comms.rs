@@ -36,7 +36,12 @@ fn main() -> ExitCode {
 
     #[cfg(not(unix))]
     match cmd.status() {
-        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        // Windows exit codes are 32-bit; don't let e.g. 256 wrap to 0 (success).
+        Ok(status) => match status.code() {
+            Some(0) => ExitCode::SUCCESS,
+            Some(code) => ExitCode::from(u8::try_from(code).ok().filter(|c| *c != 0).unwrap_or(1)),
+            None => ExitCode::from(1),
+        },
         Err(err) => {
             eprintln!("comms: failed to run {}: {err}", engine.display());
             ExitCode::from(127)

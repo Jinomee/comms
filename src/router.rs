@@ -21,6 +21,7 @@ fn is_hook(name: &str) -> bool {
 // ── Known CLI commands ──────────────────────────────────────────────────
 
 const COMMANDS: &[&str] = &[
+    "ask",
     "send",
     "list",
     "events",
@@ -652,7 +653,9 @@ pub fn dispatch() -> anyhow::Result<()> {
                 std::process::exit(exit_code);
             }
         }
-        Action::Command { ref cmd, ref args } if matches!(cmd.as_str(), "start" | "kill") => {
+        Action::Command { ref cmd, ref args }
+            if matches!(cmd.as_str(), "start" | "kill" | "ask") =>
+        {
             let (_, flags, help) = extract_global_flags_full(args);
             if help {
                 crate::commands::help::print_command_help(cmd);
@@ -661,6 +664,7 @@ pub fn dispatch() -> anyhow::Result<()> {
             let exit_code = match cmd.as_str() {
                 "start" => crate::commands::start::run(args, &flags)?,
                 "kill" => crate::commands::kill::run(args, &flags)?,
+                "ask" => crate::commands::ask::run(args, &flags)?,
                 _ => unreachable!(),
             };
             if exit_code != 0 {

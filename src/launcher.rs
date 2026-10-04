@@ -498,7 +498,7 @@ fn env_strip_set() -> std::collections::HashSet<String> {
     strip
 }
 
-fn run_here_env_strip_set() -> std::collections::HashSet<String> {
+pub(crate) fn run_here_env_strip_set() -> std::collections::HashSet<String> {
     let mut strip: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for v in crate::shared::constants::HCOM_IDENTITY_VARS {

@@ -6,6 +6,7 @@ pub mod listen;
 pub mod send;
 
 // Lifecycle
+pub mod ask;
 pub mod daemon;
 pub mod fork;
 pub mod kill;
