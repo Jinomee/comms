@@ -1938,13 +1938,17 @@ mod tests {
                 .unwrap();
         }
         let now = crate::shared::time::now_epoch_i64();
-        crate::claims::claim(&db, "luna", &["/r/src/**".to_string()], "", 600, now).unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        let pattern = crate::claims::normalize_pattern("src/**", &root);
+        crate::claims::claim(&db, "luna", &[pattern], "", 600, now).unwrap();
 
         let patch = |file: &str| {
             HookPayload::from_codex_native(
                 "PreToolUse",
                 serde_json::json!({
-                    "cwd": "/r",
+                    "cwd": cwd,
                     "tool_name": "apply_patch",
                     "tool_input": {"command": format!(
                         "*** Begin Patch\n*** Update File: docs/a.md\n*** Update File: {file}\n*** End Patch"
@@ -1954,7 +1958,7 @@ mod tests {
         };
         match claim_block(&db, &patch("src/lib.rs"), "nova") {
             Some(HookResult::Block { reason, .. }) => {
-                assert!(reason.contains("src/lib.rs is claimed by luna"), "{reason}")
+                assert!(reason.contains("lib.rs is claimed by luna"), "{reason}")
             }
             other => panic!("expected block, got {other:?}"),
         }

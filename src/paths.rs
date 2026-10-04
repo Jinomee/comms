@@ -392,12 +392,10 @@ mod tests {
         assert_eq!(resolve_comms_dir_from_env(&env, &nested).0, data);
 
         // Explicit COMMS_DIR still wins.
+        let elsewhere = root.join("elsewhere");
         let mut env = env;
-        env.insert("COMMS_DIR".into(), "/elsewhere".into());
-        assert_eq!(
-            resolve_comms_dir_from_env(&env, &nested).0,
-            PathBuf::from("/elsewhere")
-        );
+        env.insert("COMMS_DIR".into(), elsewhere.to_string_lossy().into_owned());
+        assert_eq!(resolve_comms_dir_from_env(&env, &nested).0, elsewhere);
     }
 
     #[test]

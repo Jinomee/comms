@@ -4517,19 +4517,24 @@ mod tests {
                 .unwrap();
         }
         let now = crate::shared::time::now_epoch_i64();
-        crate::claims::claim(&db, "luna", &["/r/src/**".to_string()], "auth", 600, now).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let cwd = root.to_string_lossy().into_owned();
+        let at = |rel: &str| root.join(rel).to_string_lossy().into_owned();
+        let pattern = crate::claims::normalize_pattern("src/**", &root);
+        crate::claims::claim(&db, "luna", &[pattern], "auth", 600, now).unwrap();
 
         let edit = |tool: &str, path: &str| {
             HookPayload::from_claude(serde_json::json!({
                 "session_id": "sess-1",
-                "cwd": "/r",
+                "cwd": cwd,
                 "tool_name": tool,
                 "tool_input": {"file_path": path, "old_string": "a", "new_string": "b"},
             }))
         };
         for tool in ["Edit", "Write", "MultiEdit"] {
             let (code, stdout) =
-                handle_pretooluse(&db, &edit(tool, "/r/src/a.rs"), "nova", "sess-1", None);
+                handle_pretooluse(&db, &edit(tool, &at("src/a.rs")), "nova", "sess-1", None);
             assert_eq!(code, 0);
             let out: serde_json::Value = serde_json::from_str(&stdout).unwrap();
             assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
@@ -4541,10 +4546,10 @@ mod tests {
             );
         }
         let (_, stdout) =
-            handle_pretooluse(&db, &edit("Edit", "/r/docs/a.md"), "nova", "sess-1", None);
+            handle_pretooluse(&db, &edit("Edit", &at("docs/a.md")), "nova", "sess-1", None);
         assert!(stdout.is_empty());
         let (_, stdout) =
-            handle_pretooluse(&db, &edit("Edit", "/r/src/a.rs"), "luna", "sess-1", None);
+            handle_pretooluse(&db, &edit("Edit", &at("src/a.rs")), "luna", "sess-1", None);
         assert!(stdout.is_empty());
     }
 

@@ -354,10 +354,10 @@ pub fn display_base(cwd: &Path) -> PathBuf {
 /// Show a claimed pattern relative to `base` when it lives under it.
 pub fn display_pattern(pattern: &str, base: &Path) -> String {
     let base = base.to_string_lossy();
-    let base = base.trim_end_matches('/');
+    let base = base.trim_end_matches(['/', '\\']);
     pattern
         .strip_prefix(base)
-        .and_then(|rest| rest.strip_prefix('/'))
+        .and_then(|rest| rest.strip_prefix(['/', '\\']))
         .map(String::from)
         .unwrap_or_else(|| pattern.to_string())
 }
@@ -442,32 +442,47 @@ mod tests {
     #[test]
     fn normalize_relative_and_dirs() {
         let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().canonicalize().unwrap();
-        std::fs::create_dir_all(base.join("src/auth")).unwrap();
-        let b = base.to_string_lossy();
+        let base = normalize_path(dir.path(), dir.path());
+        std::fs::create_dir_all(base.join("src").join("auth")).unwrap();
+        // Literal parts use the platform separator; glob segments stay as typed.
+        let at = |p: PathBuf| p.to_string_lossy().into_owned();
+        let src = base.join("src");
 
         assert_eq!(
             normalize_pattern("src/auth", &base),
-            format!("{b}/src/auth/**")
+            format!("{}/**", at(src.join("auth")))
         );
         assert_eq!(
             normalize_pattern("src/new/", &base),
-            format!("{b}/src/new/**")
+            format!("{}/**", at(src.join("new")))
         );
         assert_eq!(
             normalize_pattern("src/**/*.rs", &base),
-            format!("{b}/src/**/*.rs")
+            format!("{}/**/*.rs", at(src.clone()))
         );
         assert_eq!(
             normalize_pattern("./src/../a.rs", &base),
-            format!("{b}/a.rs")
+            at(base.join("a.rs"))
         );
-        assert_eq!(normalize_pattern("*.md", &base), format!("{b}/*.md"));
+        assert_eq!(
+            normalize_pattern("*.md", &base),
+            format!("{}/*.md", at(base.clone()))
+        );
         // Not-yet-existing file resolves through its existing ancestor.
         assert_eq!(
             normalize_path(Path::new("src/auth/new.rs"), &base),
-            base.join("src/auth/new.rs")
+            src.join("auth").join("new.rs")
         );
+        // A claimed glob matches real edits under it on this platform.
+        let claimed = normalize_pattern("src/**", &base);
+        assert!(pattern_matches(
+            &claimed,
+            &normalize_path(Path::new("src/auth/new.rs"), &base)
+        ));
+        assert!(!pattern_matches(
+            &claimed,
+            &normalize_path(Path::new("docs/a.md"), &base)
+        ));
     }
 
     #[test]
@@ -490,6 +505,10 @@ mod tests {
     fn display_is_relative_to_base() {
         assert_eq!(display_pattern("/r/src/**", Path::new("/r")), "src/**");
         assert_eq!(display_pattern("/other/x", Path::new("/r")), "/other/x");
+        assert_eq!(
+            display_pattern(r"C:\proj\src\a.rs", Path::new(r"C:\proj")),
+            r"src\a.rs"
+        );
     }
 
     fn test_db() -> CommsDb {
@@ -611,16 +630,24 @@ mod tests {
         add_instance(&db, "luna", "active", None);
         add_instance(&db, "nova", "active", None);
         let now = crate::shared::time::now_epoch_i64();
-        claim(&db, "luna", &pats(&["/r/src/**"]), "auth work", 600, now).unwrap();
+        // A real directory, so paths are absolute on every platform.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pattern = normalize_pattern("src/**", root);
+        claim(&db, "luna", &[pattern], "auth work", 600, now).unwrap();
 
-        let reason = check_edit(&db, "nova", &["src/a.rs"], Path::new("/r")).unwrap();
+        let reason = check_edit(&db, "nova", &["src/a.rs"], root).unwrap();
+        let shown = Path::new("src").join("a.rs").to_string_lossy().into_owned();
         assert!(
-            reason.contains("src/a.rs is claimed by luna (\"auth work\")"),
+            reason.contains(&format!("{shown} is claimed by luna (\"auth work\")")),
             "{reason}"
         );
         assert!(reason.contains("send @luna"));
-        assert!(check_edit(&db, "nova", &["docs/x.md"], Path::new("/r")).is_none());
-        assert!(check_edit(&db, "luna", &["src/a.rs"], Path::new("/r")).is_none());
+        // The tool may hand over an absolute path instead.
+        let absolute = root.join("src").join("b.rs").to_string_lossy().into_owned();
+        assert!(check_edit(&db, "nova", &[&absolute], root).is_some());
+        assert!(check_edit(&db, "nova", &["docs/x.md"], root).is_none());
+        assert!(check_edit(&db, "luna", &["src/a.rs"], root).is_none());
 
         let notices: i64 = db
             .conn()
@@ -631,7 +658,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(notices, 1);
+        assert_eq!(notices, 2);
     }
 
     #[test]
