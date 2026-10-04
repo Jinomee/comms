@@ -16,12 +16,30 @@ pub const LAUNCHES_DIR: &str = "launches";
 pub const ARCHIVE_DIR: &str = "archive";
 pub const SCRIPTS_DIR: &str = "scripts";
 
+/// Per-project data dir, relative to a project root: `<root>/.comms/hcom`.
+/// Created by `comms init`. (Nested one level so the dir's parent is
+/// `.comms/`, not the project root that legacy tool-config cleanup scans.)
+pub const PROJECT_DATA_DIR: &[&str] = &[".comms", "hcom"];
+
+/// Nearest `<ancestor>/.comms/hcom` directory of `start`, if any.
+pub fn find_project_hcom_dir(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .map(|dir| {
+            PROJECT_DATA_DIR
+                .iter()
+                .fold(dir.to_path_buf(), |p, c| p.join(c))
+        })
+        .find(|candidate| candidate.is_dir())
+}
+
 /// Resolve HCOM_DIR from an environment snapshot.
 ///
 /// Returns the normalized path plus whether HCOM_DIR was explicitly set.
 /// Normalization behavior:
 /// - `~` expands against HOME/USERPROFILE when available
 /// - relative paths are resolved against the provided cwd
+/// - unset: the nearest project data dir (`.comms/hcom`, see `comms init`)
 /// - otherwise falls back to `HOME/.hcom` or `.hcom`
 pub fn resolve_hcom_dir_from_env(env: &HashMap<String, String>, cwd: &Path) -> (PathBuf, bool) {
     let home = env.get("HOME").or_else(|| env.get("USERPROFILE"));
@@ -44,6 +62,8 @@ pub fn resolve_hcom_dir_from_env(env: &HashMap<String, String>, cwd: &Path) -> (
         } else {
             path
         }
+    } else if let Some(project_dir) = find_project_hcom_dir(cwd) {
+        project_dir
     } else {
         home.map(|home_dir| PathBuf::from(home_dir).join(".hcom"))
             .unwrap_or_else(|| PathBuf::from(".hcom"))
@@ -352,6 +372,33 @@ fn read_flag_file(path: &Path) -> i32 {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_project_data_dir_is_found_from_subdirectories() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let nested = root.join("src/deep");
+        fs::create_dir_all(&nested).unwrap();
+        let env = HashMap::from([("HOME".to_string(), "/home/someone".to_string())]);
+
+        // No project dir yet: default home dir.
+        let (dir, explicit) = resolve_hcom_dir_from_env(&env, &nested);
+        assert_eq!(dir, PathBuf::from("/home/someone/.hcom"));
+        assert!(!explicit);
+
+        let data = root.join(".comms/hcom");
+        fs::create_dir_all(&data).unwrap();
+        assert_eq!(find_project_hcom_dir(&nested), Some(data.clone()));
+        assert_eq!(resolve_hcom_dir_from_env(&env, &nested).0, data);
+
+        // Explicit HCOM_DIR still wins.
+        let mut env = env;
+        env.insert("HCOM_DIR".into(), "/elsewhere".into());
+        assert_eq!(
+            resolve_hcom_dir_from_env(&env, &nested).0,
+            PathBuf::from("/elsewhere")
+        );
+    }
 
     #[test]
     fn test_is_test_temp_path_accepts_temp_child() {

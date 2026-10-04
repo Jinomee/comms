@@ -121,6 +121,7 @@ pub fn cmd_claim(db: &HcomDb, args: &ClaimArgs, ctx: Option<&CommandContext>) ->
         }
     };
     let base = cwd();
+    let shown_base = claims::display_base(&base);
     let now = crate::shared::time::now_epoch_i64();
     let patterns: Vec<String> = args
         .patterns
@@ -159,13 +160,13 @@ pub fn cmd_claim(db: &HcomDb, args: &ClaimArgs, ctx: Option<&CommandContext>) ->
         let hcom = crate::runtime_env::build_hcom_command();
         for o in &outcomes {
             match o {
-                ClaimOutcome::Claimed(c) => println!("Claimed {}", describe(c, &base, now)),
-                ClaimOutcome::Renewed(c) => println!("Renewed {}", describe(c, &base, now)),
+                ClaimOutcome::Claimed(c) => println!("Claimed {}", describe(c, &shown_base, now)),
+                ClaimOutcome::Renewed(c) => println!("Renewed {}", describe(c, &shown_base, now)),
                 ClaimOutcome::Conflict { pattern, existing } => {
                     println!(
                         "Not claimed: {} overlaps {}. Ask them: {hcom} send @{} -- ...",
-                        claims::display_pattern(pattern, &base),
-                        describe(existing, &base, now),
+                        claims::display_pattern(pattern, &shown_base),
+                        describe(existing, &shown_base, now),
                         existing.holder
                     );
                 }
@@ -211,7 +212,10 @@ pub fn cmd_release(db: &HcomDb, args: &ReleaseArgs, ctx: Option<&CommandContext>
         println!("Nothing to release");
     } else {
         for c in &released {
-            println!("Released {}", claims::display_pattern(&c.pattern, &base));
+            println!(
+                "Released {}",
+                claims::display_pattern(&c.pattern, &claims::display_base(&base))
+            );
         }
     }
     0
@@ -219,6 +223,7 @@ pub fn cmd_release(db: &HcomDb, args: &ReleaseArgs, ctx: Option<&CommandContext>
 
 pub fn cmd_claims(db: &HcomDb, args: &ClaimsArgs, ctx: Option<&CommandContext>) -> i32 {
     let base = cwd();
+    let shown_base = claims::display_base(&base);
     let now = crate::shared::time::now_epoch_i64();
 
     if !args.check.is_empty() {
@@ -251,8 +256,8 @@ pub fn cmd_claims(db: &HcomDb, args: &ClaimsArgs, ctx: Option<&CommandContext>) 
             for (p, c) in &blocked {
                 println!(
                     "{}: {}",
-                    claims::display_pattern(&p.to_string_lossy(), &base),
-                    describe(c, &base, now)
+                    claims::display_pattern(&p.to_string_lossy(), &shown_base),
+                    describe(c, &shown_base, now)
                 );
             }
         }
@@ -273,7 +278,7 @@ pub fn cmd_claims(db: &HcomDb, args: &ClaimsArgs, ctx: Option<&CommandContext>) 
         println!("No claims");
     } else {
         for c in &live {
-            println!("{}", describe(c, &base, now));
+            println!("{}", describe(c, &shown_base, now));
         }
     }
     0

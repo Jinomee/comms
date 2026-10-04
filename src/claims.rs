@@ -326,6 +326,15 @@ pub fn format_remaining(expires_at: i64, now: i64) -> String {
     }
 }
 
+/// Directory paths are shown relative to: the project root (parent of
+/// `.comms/`) when inside a `comms init` project, else `cwd`.
+pub fn display_base(cwd: &Path) -> PathBuf {
+    crate::paths::find_project_hcom_dir(cwd)
+        .and_then(|data| data.parent()?.parent().map(Path::to_path_buf))
+        .map(|root| normalize_path(&root, cwd))
+        .unwrap_or_else(|| normalize_path(cwd, cwd))
+}
+
 /// Show a claimed pattern relative to `base` when it lives under it.
 pub fn display_pattern(pattern: &str, base: &Path) -> String {
     let base = base.to_string_lossy();
@@ -352,7 +361,7 @@ pub fn check_edit(db: &HcomDb, editor: &str, raw_paths: &[&str], cwd: &Path) -> 
         .collect();
     match blocking_claim(db, editor, &paths, now) {
         Ok(Some((claim, path))) => {
-            let shown = display_pattern(&path.to_string_lossy(), cwd);
+            let shown = display_pattern(&path.to_string_lossy(), &display_base(cwd));
             let note = if claim.note.is_empty() {
                 String::new()
             } else {
