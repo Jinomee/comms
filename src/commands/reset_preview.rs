@@ -1,5 +1,5 @@
-use crate::db::HcomDb;
-use crate::paths::{ARCHIVE_DIR, hcom_path};
+use crate::db::CommsDb;
+use crate::paths::{ARCHIVE_DIR, comms_path};
 use crate::shared::platform::shorten_path;
 
 use super::reset::ResetTarget;
@@ -11,7 +11,7 @@ struct ResetPreviewState {
     plural: &'static str,
 }
 
-fn load_preview_state(db: &HcomDb) -> ResetPreviewState {
+fn load_preview_state(db: &CommsDb) -> ResetPreviewState {
     let event_count: i64 = db
         .conn()
         .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
@@ -80,21 +80,21 @@ fn hook_tool_labels(separator: &str) -> String {
 }
 
 fn render_hooks_preview() -> String {
-    let hcom_cmd = "hcom";
+    let comms_cmd = "comms";
     let actions = hook_preview_lines();
     format!(
         "\n== RESET HOOKS PREVIEW ==\n\
-         This will remove persistent hcom hooks and legacy installs left by older hcom.\n\n\
+         This will remove persistent comms hooks and legacy installs left by older comms.\n\n\
          Actions:\n{actions}\n\n\
-         Persistent hooks can be reinstalled with: hcom hooks add\n\
-         Per-run tools load hooks automatically on their next hcom launch.\n\n\
+         Persistent hooks can be reinstalled with: comms hooks add\n\
+         Per-run tools load hooks automatically on their next comms launch.\n\n\
          Add --go flag and run again to proceed:\n  \
-         {hcom_cmd} --go reset hooks\n"
+         {comms_cmd} --go reset hooks\n"
     )
 }
 
 fn render_reset_all_preview(state: &ResetPreviewState) -> String {
-    let hcom_cmd = "hcom";
+    let comms_cmd = "comms";
     format!(
         "\n== RESET ALL PREVIEW ==\n\
          This will stop all instances, archive the database, remove hooks and legacy installs, and reset config.\n\n\
@@ -104,13 +104,13 @@ fn render_reset_all_preview(state: &ResetPreviewState) -> String {
          Actions:\n  \
          1. Stop all {instance_count} local instances (kills processes, logs snapshots)\n  \
          2. Archive database to {archive}/session-<timestamp>/\n  \
-         3. Delete database (hcom.db)\n  \
+         3. Delete database (comms.db)\n  \
          4. Remove hooks and legacy installs ({hook_labels})\n  \
          5. Archive and delete config.toml + env\n  \
          6. Clear device identity (new UUID on next relay)\n  \
          7. Delete per-run hook files ({integrations}/)\n\n\
          Add --go flag and run again to proceed:\n  \
-         {hcom_cmd} --go reset all\n",
+         {comms_cmd} --go reset all\n",
         instance_count = state.instance_count,
         plural = state.plural,
         names_display = state.names_display,
@@ -122,22 +122,22 @@ fn render_reset_all_preview(state: &ResetPreviewState) -> String {
 }
 
 fn render_reset_preview(state: &ResetPreviewState) -> String {
-    let hcom_cmd = "hcom";
+    let comms_cmd = "comms";
     format!(
         "\n== RESET PREVIEW ==\n\
-         This will archive and clear the current hcom session.\n\n\
+         This will archive and clear the current comms session.\n\n\
          Current state:\n  \
          \u{2022} {instance_count} instance{plural}: {names_display}\n  \
          \u{2022} {event_count} events in database\n\n\
          Actions:\n  \
          1. Archive database to {archive}/session-<timestamp>/\n  \
-         2. Delete database (hcom.db, hcom.db-wal, hcom.db-shm)\n  \
+         2. Delete database (comms.db, comms.db-wal, comms.db-shm)\n  \
          3. Log reset event to fresh database\n  \
          4. Sync with relay (push reset, pull fresh state)\n\n\
          Note: Instance rows are deleted but snapshots preserved in archive.\n      \
-         Query archived sessions with: {hcom_cmd} archive\n\n\
+         Query archived sessions with: {comms_cmd} archive\n\n\
          Add --go flag and run again to proceed:\n  \
-         {hcom_cmd} --go reset\n",
+         {comms_cmd} --go reset\n",
         instance_count = state.instance_count,
         plural = state.plural,
         names_display = state.names_display,
@@ -147,11 +147,11 @@ fn render_reset_preview(state: &ResetPreviewState) -> String {
 }
 
 fn archive_display() -> String {
-    shorten_path(&hcom_path(&[ARCHIVE_DIR]).to_string_lossy())
+    shorten_path(&comms_path(&[ARCHIVE_DIR]).to_string_lossy())
 }
 
 /// Print reset preview for AI tools (shows what will be destroyed).
-pub(crate) fn print_reset_preview(target: Option<ResetTarget>, db: &HcomDb) {
+pub(crate) fn print_reset_preview(target: Option<ResetTarget>, db: &CommsDb) {
     let state = load_preview_state(db);
     let preview = match target {
         Some(ResetTarget::Hooks) => render_hooks_preview(),

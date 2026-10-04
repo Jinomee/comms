@@ -47,10 +47,10 @@ fn first_non_empty_line(text: &str) -> Option<&str> {
 // ── Helpers ──────────────────────────────────────────────────────
 
 /// Build argv for a TUI-initiated launch:
-/// `hcom [count] <tool> --no-run-here [--tag T] [--terminal T] [--headless] [--hcom-prompt P]`.
+/// `comms [count] <tool> --no-run-here [--tag T] [--terminal T] [--headless] [--comms-prompt P]`.
 ///
 /// Per-tool prompt shaping is NOT duplicated here: the prompt is passed through
-/// the launcher's generic `--hcom-prompt`, which applies the tool's
+/// the launcher's generic `--comms-prompt`, which applies the tool's
 /// `InitialPromptShape` from `integration_spec` (positional, `--prompt`,
 /// `--prompt-interactive`, `-i`, claude's `-- <positional>`, …). This keeps the
 /// tool argv contract in one place (the launcher) instead of drifting between
@@ -94,7 +94,7 @@ pub fn build_launch_argv(
         }
     }
     if !prompt.is_empty() {
-        argv.extend(["--hcom-prompt".into(), prompt.into()]);
+        argv.extend(["--comms-prompt".into(), prompt.into()]);
     }
     argv
 }
@@ -161,9 +161,9 @@ mod tests {
         assert!(argv.contains(&"review".into()));
         assert!(argv.contains(&"--terminal".into()));
         assert!(argv.contains(&"kitty".into()));
-        // Headless → --headless; prompt → generic --hcom-prompt.
+        // Headless → --headless; prompt → generic --comms-prompt.
         assert!(argv.contains(&"--headless".into()));
-        assert!(argv.contains(&"--hcom-prompt".into()));
+        assert!(argv.contains(&"--comms-prompt".into()));
         assert!(argv.contains(&"hello".into()));
     }
 
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn launch_argv_prompt_is_tool_agnostic() {
         // Per-tool prompt shaping now lives in the launcher (InitialPromptShape);
-        // the TUI always forwards the prompt via the generic --hcom-prompt flag,
+        // the TUI always forwards the prompt via the generic --comms-prompt flag,
         // regardless of tool.
         for tool in [
             Tool::Gemini,
@@ -200,10 +200,10 @@ mod tests {
                     "--no-run-here".to_string(),
                     "--terminal".to_string(),
                     "kitty".to_string(),
-                    "--hcom-prompt".to_string(),
+                    "--comms-prompt".to_string(),
                     "fix the bug".to_string(),
                 ],
-                "{tool:?} should forward prompt via --hcom-prompt"
+                "{tool:?} should forward prompt via --comms-prompt"
             );
         }
     }
@@ -222,7 +222,7 @@ mod tests {
                 "--terminal",
                 "kitty",
                 "--headless",
-                "--hcom-prompt",
+                "--comms-prompt",
                 "do task"
             ]
         );
@@ -242,7 +242,7 @@ mod tests {
                 "--terminal",
                 "kitty",
                 "--headless",
-                "--hcom-prompt",
+                "--comms-prompt",
                 "do task"
             ]
         );
@@ -262,7 +262,7 @@ mod tests {
                 "kitty",
                 "--headless",
                 "-p",
-                "--hcom-prompt",
+                "--comms-prompt",
                 "do task"
             ]
         );

@@ -168,10 +168,10 @@ fn run_app(app: &mut App, viewport_height: u16, in_alt_screen: &mut bool) -> Res
 fn run_inner(viewport_height: u16) -> Result<()> {
     execute!(stdout(), EnableBracketedPaste)?;
 
-    // Save current title (push stack) and set hcom title
+    // Save current title (push stack) and set comms title
     {
         let mut out = stdout();
-        let _ = write!(out, "\x1b[22;0t\x1b]0;hcom\x07");
+        let _ = write!(out, "\x1b[22;0t\x1b]0;comms\x07");
         let _ = out.flush();
     }
 
@@ -180,9 +180,9 @@ fn run_inner(viewport_height: u16) -> Result<()> {
     // Auto-spawn relay-worker if relay is configured
     crate::relay::worker::ensure_worker(true);
 
-    // HCOM_TUI_FULLSCREEN=1 starts directly in alternate screen (fullscreen) mode,
+    // COMMS_TUI_FULLSCREEN=1 starts directly in alternate screen (fullscreen) mode,
     // bypassing inline viewport which requires cursor position queries.
-    if std::env::var("HCOM_TUI_FULLSCREEN").as_deref() == Ok("1") {
+    if std::env::var("COMMS_TUI_FULLSCREEN").as_deref() == Ok("1") {
         app.ui.view_mode = self::model::ViewMode::Vertical;
         app.source.set_timeline_limit(5000);
     }
@@ -353,7 +353,7 @@ pub fn run() -> Result<()> {
         original_hook(info);
     }));
 
-    let viewport_height = std::env::var("HCOM_INLINE_HEIGHT")
+    let viewport_height = std::env::var("COMMS_INLINE_HEIGHT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(13u16);

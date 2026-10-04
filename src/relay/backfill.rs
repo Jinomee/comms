@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::log;
 
 use super::{safe_kv_get, safe_kv_set};
@@ -75,13 +75,13 @@ fn gap_key(device_id: &str) -> String {
     format!("{GAP_KEY_PREFIX}{device_id}")
 }
 
-pub(crate) fn load_gaps(db: &HcomDb, device_id: &str) -> Vec<Gap> {
+pub(crate) fn load_gaps(db: &CommsDb, device_id: &str) -> Vec<Gap> {
     safe_kv_get(db, &gap_key(device_id))
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default()
 }
 
-fn save_gaps(db: &HcomDb, device_id: &str, gaps: &[Gap]) {
+fn save_gaps(db: &CommsDb, device_id: &str, gaps: &[Gap]) {
     if gaps.is_empty() {
         safe_kv_set(db, &gap_key(device_id), None);
     } else if let Ok(raw) = serde_json::to_string(gaps) {
@@ -90,12 +90,12 @@ fn save_gaps(db: &HcomDb, device_id: &str, gaps: &[Gap]) {
 }
 
 /// Forget every gap for a peer (its event ids restarted).
-pub(crate) fn clear_gaps(db: &HcomDb, device_id: &str) {
+pub(crate) fn clear_gaps(db: &CommsDb, device_id: &str) {
     safe_kv_set(db, &gap_key(device_id), None);
 }
 
 /// Record that the peer's events in (`after`, `before`) were skipped.
-pub(crate) fn record_gap(db: &HcomDb, device_id: &str, short_id: &str, after: i64, before: i64) {
+pub(crate) fn record_gap(db: &CommsDb, device_id: &str, short_id: &str, after: i64, before: i64) {
     if before <= after + 1 {
         return;
     }
@@ -170,7 +170,7 @@ pub(crate) fn request_params(gap: &Gap) -> Value {
     })
 }
 
-fn already_imported(db: &HcomDb, device_id: &str, remote_id: i64, ts: &str) -> bool {
+fn already_imported(db: &CommsDb, device_id: &str, remote_id: i64, ts: &str) -> bool {
     db.conn()
         .query_row(
             "SELECT 1 FROM events WHERE timestamp = ?1
@@ -183,7 +183,7 @@ fn already_imported(db: &HcomDb, device_id: &str, remote_id: i64, ts: &str) -> b
         .is_ok()
 }
 
-fn local_reset_ts(db: &HcomDb) -> f64 {
+fn local_reset_ts(db: &CommsDb) -> f64 {
     safe_kv_get(db, "relay_local_reset_ts")
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.0)
@@ -199,7 +199,7 @@ pub(crate) enum AnswerOutcome {
 
 /// Import one `events` RPC answer into the gap it was asked for.
 pub(crate) fn apply_answer(
-    db: &HcomDb,
+    db: &CommsDb,
     device_id: &str,
     own_short_id: &str,
     gap: &mut Gap,
@@ -303,7 +303,7 @@ pub(crate) struct TickSummary {
 }
 
 /// Peers with at least one open gap.
-pub(crate) fn devices_with_gaps(db: &HcomDb) -> Vec<String> {
+pub(crate) fn devices_with_gaps(db: &CommsDb) -> Vec<String> {
     let pattern = format!("{GAP_KEY_PREFIX}%");
     db.conn()
         .prepare("SELECT key FROM kv WHERE key LIKE ?1 AND value IS NOT NULL")
@@ -327,7 +327,7 @@ pub(crate) fn devices_with_gaps(db: &HcomDb) -> Vec<String> {
 /// `send(short_id, request_id, params)` publishes an `events` RPC request and
 /// reports whether MQTT accepted it. Runs on the relay worker loop.
 pub(crate) fn tick(
-    db: &HcomDb,
+    db: &CommsDb,
     own_short_id: &str,
     now: f64,
     send: &mut dyn FnMut(&str, &str, &Value) -> bool,
@@ -443,7 +443,7 @@ mod tests {
 
     const PEER: &str = "peer-device-uuid";
 
-    fn synced_peer(db: &HcomDb, short: &str, caps: &str) {
+    fn synced_peer(db: &CommsDb, short: &str, caps: &str) {
         safe_kv_set(db, &format!("relay_short_{short}"), Some(PEER));
         let now = crate::shared::time::now_epoch_f64();
         safe_kv_set(
@@ -473,7 +473,7 @@ mod tests {
                "_relay": {"device": PEER, "short": "ABCD", "id": 999}})
     }
 
-    fn imported_texts(db: &HcomDb) -> Vec<String> {
+    fn imported_texts(db: &CommsDb) -> Vec<String> {
         let mut stmt = db
             .conn()
             .prepare(
@@ -491,8 +491,8 @@ mod tests {
     #[test]
     #[serial]
     fn record_gap_ignores_adjacent_and_repeated_ranges() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
 
         record_gap(&db, PEER, "ABCD", 10, 11);
         assert!(
@@ -511,8 +511,8 @@ mod tests {
     #[test]
     #[serial]
     fn tick_requests_the_range_then_imports_the_answer_and_closes_the_gap() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         synced_peer(&db, "ABCD", r#"["events"]"#);
         record_gap(&db, PEER, "ABCD", 10, 20);
 
@@ -577,8 +577,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_full_batch_narrows_the_gap_and_asks_for_the_rest() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         synced_peer(&db, "ABCD", r#"["events"]"#);
         record_gap(&db, PEER, "ABCD", 1, 500);
 
@@ -614,8 +614,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_repeated_answer_does_not_duplicate_events() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         let mut gap = Gap {
             after: 10,
             before: 20,
@@ -643,8 +643,8 @@ mod tests {
     #[test]
     #[serial]
     fn an_answer_cut_in_transit_is_refused_not_imported() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         let mut gap = Gap {
             after: 10,
             before: 20,
@@ -670,8 +670,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_cut_answer_halves_the_next_budget_down_to_a_floor() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         let mut gap = Gap {
             after: 10,
             before: 20,
@@ -713,8 +713,8 @@ mod tests {
     fn an_empty_answer_closes_the_gap_without_importing() {
         // Ids between two own-origin events are often the peer's imported
         // events, which it never relays; the answer is then empty.
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         synced_peer(&db, "ABCD", r#"["events"]"#);
         record_gap(&db, PEER, "ABCD", 10, 20);
         let mut request_id = String::new();
@@ -735,8 +735,8 @@ mod tests {
     #[test]
     #[serial]
     fn an_oversized_newest_event_is_fetched_alone_with_the_wide_budget() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         synced_peer(&db, "ABCD", r#"["events"]"#);
         record_gap(&db, PEER, "ABCD", 10, 20);
         let mut request_id = String::new();
@@ -759,8 +759,8 @@ mod tests {
     #[test]
     #[serial]
     fn an_unanswered_request_is_resent_then_abandoned_and_logged() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         synced_peer(&db, "ABCD", r#"["events"]"#);
         record_gap(&db, PEER, "ABCD", 10, 20);
 
@@ -790,8 +790,8 @@ mod tests {
     #[test]
     #[serial]
     fn an_offline_peer_keeps_its_gap_without_spending_attempts() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         synced_peer(&db, "ABCD", r#"["events"]"#);
         safe_kv_set(&db, &format!("relay_sync_time_{PEER}"), Some("1.0"));
         record_gap(&db, PEER, "ABCD", 10, 20);
@@ -808,8 +808,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_peer_without_the_events_action_is_abandoned_at_once() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         synced_peer(&db, "ABCD", r#"["launch"]"#);
         record_gap(&db, PEER, "ABCD", 10, 20);
 

@@ -3,8 +3,8 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::db::{HcomDb, InstanceRow};
-use crate::shared::{HcomError, SenderIdentity, SenderKind};
+use crate::db::{CommsDb, InstanceRow};
+use crate::shared::{CommsError, SenderIdentity, SenderKind};
 
 /// UUID pattern for agent_id detection.
 static UUID_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
@@ -55,23 +55,23 @@ pub fn instance_not_found_error(name: &str) -> String {
             "Instance '{name}' not found. Your session may have ended. Stop working and end your turn."
         );
     }
-    format!("Instance '{name}' not found. Run 'hcom start --as {name}' to reclaim your identity.")
+    format!("Instance '{name}' not found. Run 'comms start --as {name}' to reclaim your identity.")
 }
 
 /// Like `instance_not_found_error`, but suppresses the `--as` prescription when
 /// the missing name corresponds to a subagent slot. Subagents share their
-/// parent's session_id, so `hcom start --as <subagent_name>` from inside a
+/// parent's session_id, so `comms start --as <subagent_name>` from inside a
 /// subagent bash context rebinds the parent's identity — the prescription
 /// itself is the bug trigger. This variant consults live+historical state via
-/// `HcomDb::was_subagent_name` and returns the same "session may have ended"
+/// `CommsDb::was_subagent_name` and returns the same "session may have ended"
 /// text used for raw agent_ids instead.
-pub fn instance_not_found_error_for(db: &HcomDb, name: &str) -> String {
+pub fn instance_not_found_error_for(db: &CommsDb, name: &str) -> String {
     if looks_like_agent_id(name) || looks_like_uuid(name) || db.was_subagent_name(name) {
         return format!(
             "Instance '{name}' not found. Your session may have ended. Stop working and end your turn."
         );
     }
-    format!("Instance '{name}' not found. Run 'hcom start --as {name}' to reclaim your identity.")
+    format!("Instance '{name}' not found. Run 'comms start --as {name}' to reclaim your identity.")
 }
 
 /// Validate user-provided name input for length and dangerous characters.
@@ -113,7 +113,7 @@ pub fn get_full_name(data: &InstanceRow) -> String {
 }
 
 /// Get display name for a base name by loading instance data.
-pub fn get_display_name(db: &HcomDb, base_name: &str) -> String {
+pub fn get_display_name(db: &CommsDb, base_name: &str) -> String {
     match db.get_instance_full(base_name) {
         Ok(Some(data)) => get_full_name(&data),
         _ => base_name.to_string(),
@@ -122,7 +122,7 @@ pub fn get_display_name(db: &HcomDb, base_name: &str) -> String {
 
 /// Resolve base name or tag-name (e.g., "team-luna") to base name.
 /// Handles multi-hyphen tags like "vc-p0-p1-parallel-vani" -> tag="vc-p0-p1-parallel", name="vani".
-pub fn resolve_display_name(db: &HcomDb, input_name: &str) -> Option<String> {
+pub fn resolve_display_name(db: &CommsDb, input_name: &str) -> Option<String> {
     if let Ok(Some(_)) = db.get_instance_full(input_name) {
         return Some(input_name.to_string());
     }
@@ -143,7 +143,7 @@ pub fn resolve_display_name(db: &HcomDb, input_name: &str) -> Option<String> {
 }
 
 /// Resolve base name or tag-name using live instances first, then stopped snapshots.
-pub fn resolve_display_name_or_stopped(db: &HcomDb, input_name: &str) -> Option<String> {
+pub fn resolve_display_name_or_stopped(db: &CommsDb, input_name: &str) -> Option<String> {
     if let Some(name) = resolve_display_name(db, input_name) {
         return Some(name);
     }
@@ -250,8 +250,8 @@ impl StoppedAgent {
 }
 
 /// Load the latest stop for `input_name` (base or tag-name) when it has no
-/// live row. `None` means it is live or hcom has never seen it.
-pub fn last_stopped(db: &HcomDb, input_name: &str) -> Option<StoppedAgent> {
+/// live row. `None` means it is live or comms has never seen it.
+pub fn last_stopped(db: &CommsDb, input_name: &str) -> Option<StoppedAgent> {
     if resolve_display_name(db, input_name).is_some() {
         return None;
     }
@@ -302,7 +302,7 @@ fn parse_event_timestamp(ts: &str) -> Option<i64> {
 ///
 /// Includes `tag-name` aliases so a mistyped tagged name (`api-tnua`) is
 /// corrected to that incarnation rather than a bare base name.
-pub fn known_agent_names(db: &HcomDb) -> Vec<String> {
+pub fn known_agent_names(db: &CommsDb) -> Vec<String> {
     let mut names = Vec::new();
     for inst in db.iter_instances_full().unwrap_or_default() {
         let full = get_full_name(&inst);
@@ -333,10 +333,10 @@ pub fn known_agent_names(db: &HcomDb) -> Vec<String> {
 ///
 /// Stopped: `'tuna' stopped 23m ago (killed by muse) · claude …`
 /// plus resume/transcript hints. Never seen: close-name suggestions.
-pub fn describe_missing_agent(db: &HcomDb, input_name: &str) -> String {
+pub fn describe_missing_agent(db: &CommsDb, input_name: &str) -> String {
     if let Some(stopped) = last_stopped(db, input_name) {
         return format!(
-            "'{input_name}' {}\n  Resume: hcom r {name}  |  History: hcom transcript {name}",
+            "'{input_name}' {}\n  Resume: comms r {name}  |  History: comms transcript {name}",
             stopped.summary(),
             name = stopped.display_name()
         );
@@ -347,7 +347,7 @@ pub fn describe_missing_agent(db: &HcomDb, input_name: &str) -> String {
         input_name,
         known.iter().map(String::as_str),
     ));
-    msg.push_str("\n  Active: hcom list  |  Stopped: hcom list --stopped");
+    msg.push_str("\n  Active: comms list  |  Stopped: comms list --stopped");
     msg
 }
 
@@ -357,7 +357,7 @@ pub fn describe_missing_agent(db: &HcomDb, input_name: &str) -> String {
 /// 1. Instance name lookup (exact) -> kind=Instance if found
 /// 2. Agent ID (UUID) lookup -> kind=Instance if found
 /// 3. Error if not found
-pub fn resolve_from_name(db: &HcomDb, name: &str) -> Result<SenderIdentity, HcomError> {
+pub fn resolve_from_name(db: &CommsDb, name: &str) -> Result<SenderIdentity, CommsError> {
     let mut resolved_name = name.to_string();
 
     // Reject invalid base names, but allow tag-name format (e.g. "team-luna")
@@ -365,7 +365,7 @@ pub fn resolve_from_name(db: &HcomDb, name: &str) -> Result<SenderIdentity, Hcom
         // Try tag-name resolution before rejecting
         match resolve_display_name(db, name) {
             Some(base) => resolved_name = base,
-            None => return Err(HcomError::InvalidInput(base_name_error(name))),
+            None => return Err(CommsError::InvalidInput(base_name_error(name))),
         }
     }
 
@@ -418,7 +418,7 @@ pub fn resolve_from_name(db: &HcomDb, name: &str) -> Result<SenderIdentity, Hcom
         "resolve_from_name.not_found",
         &format!("name={}", resolved_name),
     );
-    Err(HcomError::NotFound(instance_not_found_error_for(
+    Err(CommsError::NotFound(instance_not_found_error_for(
         db,
         &resolved_name,
     )))
@@ -430,9 +430,9 @@ pub fn resolve_from_name(db: &HcomDb, name: &str) -> Result<SenderIdentity, Hcom
 ///
 /// * `db` - Database handle
 /// * `name` - Instance name from `--name` flag (strict lookup)
-/// * `system_sender` - System notification sender name (e.g., 'hcom-launcher')
+/// * `system_sender` - System notification sender name (e.g., 'comms-launcher')
 /// * `session_id` - Explicit session_id (for hook context, bypasses env detection)
-/// * `process_id` - HCOM_PROCESS_ID (for launched instances)
+/// * `process_id` - COMMS_PROCESS_ID (for launched instances)
 /// * `codex_thread_id` - Codex thread ID for opportunistic session binding
 ///
 /// # Priority
@@ -440,18 +440,18 @@ pub fn resolve_from_name(db: &HcomDb, name: &str) -> Result<SenderIdentity, Hcom
 /// 1. `system_sender` - system notifications
 /// 2. `session_id` - explicit session (internal use)
 /// 3. `name` (--name) - strict instance lookup
-/// 4. Auto-detect from `process_id` (HCOM_PROCESS_ID)
+/// 4. Auto-detect from `process_id` (COMMS_PROCESS_ID)
 /// 5. Error if no identity
 #[allow(clippy::too_many_arguments)]
 fn resolve_identity_with_expectation(
-    db: &HcomDb,
+    db: &CommsDb,
     name: Option<&str>,
     system_sender: Option<&str>,
     session_id: Option<&str>,
     process_id: Option<&str>,
     codex_thread_id: Option<&str>,
     identity_expected: bool,
-) -> Result<SenderIdentity, HcomError> {
+) -> Result<SenderIdentity, CommsError> {
     // 1. System sender (internal use)
     if let Some(sender) = system_sender {
         return Ok(SenderIdentity {
@@ -468,13 +468,13 @@ fn resolve_identity_with_expectation(
     {
         let resolved_name = db
             .get_session_binding(sid)
-            .map_err(|e| HcomError::DatabaseError(e.to_string()))?;
+            .map_err(|e| CommsError::DatabaseError(e.to_string()))?;
 
         match resolved_name {
             Some(inst_name) => {
                 let data = db
                     .get_instance(&inst_name)
-                    .map_err(|e| HcomError::DatabaseError(e.to_string()))?;
+                    .map_err(|e| CommsError::DatabaseError(e.to_string()))?;
 
                 match data {
                     Some(d) => {
@@ -491,7 +491,7 @@ fn resolve_identity_with_expectation(
                         });
                     }
                     None => {
-                        return Err(HcomError::NotFound(
+                        return Err(CommsError::NotFound(
                             "Instance not found for session_id".to_string(),
                         ));
                     }
@@ -503,7 +503,7 @@ fn resolve_identity_with_expectation(
                     "resolve.session_id_not_found",
                     &format!("session_id={}", &sid[..sid.len().min(8)]),
                 );
-                return Err(HcomError::NotFound(
+                return Err(CommsError::NotFound(
                     "Instance not found for session_id".to_string(),
                 ));
             }
@@ -517,19 +517,19 @@ fn resolve_identity_with_expectation(
         return resolve_from_name(db, n);
     }
 
-    // 4. Auto-detect from process binding (hcom-launched instances)
+    // 4. Auto-detect from process binding (comms-launched instances)
     if let Some(pid) = process_id
         && !pid.is_empty()
     {
         let bound_name = db
             .get_process_binding(pid)
-            .map_err(|e| HcomError::DatabaseError(e.to_string()))?;
+            .map_err(|e| CommsError::DatabaseError(e.to_string()))?;
 
         match bound_name {
             Some(inst_name) => {
                 let data = db
                     .get_instance(&inst_name)
-                    .map_err(|e| HcomError::DatabaseError(e.to_string()))?;
+                    .map_err(|e| CommsError::DatabaseError(e.to_string()))?;
 
                 match data {
                     Some(d) => {
@@ -556,7 +556,7 @@ fn resolve_identity_with_expectation(
                         // Re-read instance data — session_id may have been set during binding
                         let final_data = db
                             .get_instance(&final_name)
-                            .map_err(|e| HcomError::DatabaseError(e.to_string()))?
+                            .map_err(|e| CommsError::DatabaseError(e.to_string()))?
                             .unwrap_or(d);
 
                         let sid = final_data
@@ -586,7 +586,7 @@ fn resolve_identity_with_expectation(
                             "resolve.process_instance_missing",
                             &format!("process_id={}, bound_name={}", pid, inst_name),
                         );
-                        return Err(HcomError::NotFound(instance_not_found_error_for(
+                        return Err(CommsError::NotFound(instance_not_found_error_for(
                             db, &inst_name,
                         )));
                     }
@@ -600,8 +600,8 @@ fn resolve_identity_with_expectation(
                         &format!("process_id={}", pid),
                     );
                 }
-                return Err(HcomError::IdentityRequired(
-                    "Session expired. Run 'hcom start' to reconnect.".to_string(),
+                return Err(CommsError::IdentityRequired(
+                    "Session expired. Run 'comms start' to reconnect.".to_string(),
                 ));
             }
         }
@@ -619,20 +619,20 @@ fn resolve_identity_with_expectation(
             ),
         );
     }
-    Err(HcomError::IdentityRequired(
-        "No hcom identity. Run 'hcom start' first, then use --name <yourname> on commands."
+    Err(CommsError::IdentityRequired(
+        "No comms identity. Run 'comms start' first, then use --name <yourname> on commands."
             .to_string(),
     ))
 }
 
 pub fn resolve_identity(
-    db: &HcomDb,
+    db: &CommsDb,
     name: Option<&str>,
     system_sender: Option<&str>,
     session_id: Option<&str>,
     process_id: Option<&str>,
     codex_thread_id: Option<&str>,
-) -> Result<SenderIdentity, HcomError> {
+) -> Result<SenderIdentity, CommsError> {
     resolve_identity_with_expectation(
         db,
         name,
@@ -658,7 +658,7 @@ pub fn require_identity_gate(
     cmd: &str,
     explicit_name: Option<&str>,
     has_from_flag: bool,
-) -> Result<(), HcomError> {
+) -> Result<(), CommsError> {
     if !requires_identity(cmd) {
         return Ok(());
     }
@@ -673,8 +673,8 @@ pub fn require_identity_gate(
         return Ok(());
     }
 
-    Err(HcomError::IdentityRequired(format!(
-        "'{cmd}' requires identity. Use --name <yourname> or run inside an hcom-launched session."
+    Err(CommsError::IdentityRequired(format!(
+        "'{cmd}' requires identity. Use --name <yourname> or run inside an comms-launched session."
     )))
 }
 
@@ -682,15 +682,15 @@ pub fn require_identity_gate(
 mod tests {
     use super::*;
 
-    fn make_test_db() -> (HcomDb, tempfile::TempDir) {
+    fn make_test_db() -> (CommsDb, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         (db, dir)
     }
 
-    fn insert_instance(db: &HcomDb, name: &str, session_id: Option<&str>, tag: Option<&str>) {
+    fn insert_instance(db: &CommsDb, name: &str, session_id: Option<&str>, tag: Option<&str>) {
         let now = chrono::Utc::now().timestamp() as f64;
         db.conn()
             .execute(
@@ -701,7 +701,7 @@ mod tests {
             .unwrap();
     }
 
-    fn insert_process_binding(db: &HcomDb, process_id: &str, instance_name: &str) {
+    fn insert_process_binding(db: &CommsDb, process_id: &str, instance_name: &str) {
         let now = chrono::Utc::now().timestamp() as f64;
         db.conn()
             .execute(
@@ -712,7 +712,7 @@ mod tests {
             .unwrap();
     }
 
-    fn insert_session_binding(db: &HcomDb, session_id: &str, instance_name: &str) {
+    fn insert_session_binding(db: &CommsDb, session_id: &str, instance_name: &str) {
         let now = chrono::Utc::now().timestamp() as f64;
         db.conn()
             .execute(
@@ -845,9 +845,9 @@ mod tests {
         let (db, _dir) = make_test_db();
 
         let identity =
-            resolve_identity(&db, None, Some("hcom-launcher"), None, None, None).unwrap();
+            resolve_identity(&db, None, Some("comms-launcher"), None, None, None).unwrap();
         assert!(matches!(identity.kind, SenderKind::System));
-        assert_eq!(identity.name, "hcom-launcher");
+        assert_eq!(identity.name, "comms-launcher");
     }
 
     #[test]
@@ -914,7 +914,7 @@ mod tests {
         let (db, _dir) = make_test_db();
 
         let err = resolve_identity(&db, None, None, None, None, None).unwrap_err();
-        assert!(err.to_string().contains("No hcom identity"));
+        assert!(err.to_string().contains("No comms identity"));
     }
 
     #[test]
@@ -924,9 +924,9 @@ mod tests {
 
         // system_sender takes priority over name
         let identity =
-            resolve_identity(&db, Some("luna"), Some("hcom-launcher"), None, None, None).unwrap();
+            resolve_identity(&db, Some("luna"), Some("comms-launcher"), None, None, None).unwrap();
         assert!(matches!(identity.kind, SenderKind::System));
-        assert_eq!(identity.name, "hcom-launcher");
+        assert_eq!(identity.name, "comms-launcher");
     }
 
     #[test]
@@ -1124,7 +1124,7 @@ mod tests {
 
     // ── Missing-agent descriptions ─────────────────────────────────────
 
-    fn log_stop(db: &HcomDb, name: &str, by: &str, reason: &str) {
+    fn log_stop(db: &CommsDb, name: &str, by: &str, reason: &str) {
         let snapshot = serde_json::json!({"tool": "codex", "directory": "/tmp/work"});
         db.log_life_event(name, "stopped", by, reason, Some(snapshot))
             .unwrap();
@@ -1178,7 +1178,7 @@ mod tests {
 
         let stopped = describe_missing_agent(&db, "tuna");
         assert!(stopped.starts_with("'tuna' stopped "), "{stopped}");
-        assert!(stopped.contains("hcom r tuna"), "{stopped}");
+        assert!(stopped.contains("comms r tuna"), "{stopped}");
 
         let typo = describe_missing_agent(&db, "tnua");
         assert!(typo.starts_with("No agent named 'tnua'"), "{typo}");
@@ -1190,6 +1190,6 @@ mod tests {
 
         let unknown = describe_missing_agent(&db, "zzzz");
         assert!(!unknown.contains("Did you mean"), "{unknown}");
-        assert!(unknown.contains("hcom list --stopped"), "{unknown}");
+        assert!(unknown.contains("comms list --stopped"), "{unknown}");
     }
 }

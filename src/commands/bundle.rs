@@ -1,4 +1,4 @@
-//! `hcom bundle` command — structured context sharing.
+//! `comms bundle` command — structured context sharing.
 //!
 //!
 //! Subcommands: list, show, cat, chain, prepare/preview, create.
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::core::bundles;
 use crate::core::filters::FILE_WRITE_CONTEXTS;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::shared::{CommandContext, SenderKind};
 
 // Re-use transcript parsing for bundle prepare/cat (C5 fix)
@@ -27,7 +27,7 @@ fn file_operations_query() -> String {
 type BundleTranscriptSource = (Option<String>, String, Option<String>);
 
 fn lookup_bundle_transcript_source(
-    db: &HcomDb,
+    db: &CommsDb,
     agent: &str,
 ) -> Result<Option<BundleTranscriptSource>, String> {
     match db.conn().query_row(
@@ -79,13 +79,13 @@ fn lookup_bundle_transcript_source(
     }
 }
 
-/// Parsed arguments for `hcom bundle`.
+/// Parsed arguments for `comms bundle`.
 ///
 /// Uses manual subcommand routing to support:
-/// - `hcom bundle` → list (default)
-/// - `hcom bundle --json --last 5` → list with flags
-/// - `hcom bundle <id>` → implicit show
-/// - `hcom bundle <subcmd> ...` → explicit subcommand
+/// - `comms bundle` → list (default)
+/// - `comms bundle --json --last 5` → list with flags
+/// - `comms bundle <id>` → implicit show
+/// - `comms bundle <subcmd> ...` → explicit subcommand
 #[derive(clap::Parser, Debug)]
 #[command(name = "bundle", about = "Manage context bundles")]
 pub struct BundleArgs {
@@ -177,7 +177,7 @@ pub struct BundleCreateArgs {
 
 /// Find a bundle by ID (event ID or bundle_id prefix).
 /// Returns bundle data with `event_id` and `timestamp` injected.
-fn get_bundle_by_id(db: &HcomDb, id_or_prefix: &str) -> Option<Value> {
+fn get_bundle_by_id(db: &CommsDb, id_or_prefix: &str) -> Option<Value> {
     // Try numeric event ID first
     if let Ok(event_id) = id_or_prefix.parse::<i64>()
         && let Ok(row) = db.conn().query_row(
@@ -232,8 +232,8 @@ fn get_bundle_by_id(db: &HcomDb, id_or_prefix: &str) -> Option<Value> {
 
 // ── Subcommands ──────────────────────────────────────────────────────────
 
-/// List bundles: `hcom bundle [list] [--last N] [--json]`
-fn cmd_bundle_list(db: &HcomDb, args: &BundleListArgs) -> i32 {
+/// List bundles: `comms bundle [list] [--last N] [--json]`
+fn cmd_bundle_list(db: &CommsDb, args: &BundleListArgs) -> i32 {
     let json_mode = args.json;
     let last_n = args.last.unwrap_or(20);
 
@@ -287,7 +287,7 @@ fn cmd_bundle_list(db: &HcomDb, args: &BundleListArgs) -> i32 {
     }
 
     if rows.is_empty() {
-        println!("No bundles found. Create one with: hcom bundle prepare");
+        println!("No bundles found. Create one with: comms bundle prepare");
         return 0;
     }
 
@@ -339,8 +339,8 @@ fn cmd_bundle_list(db: &HcomDb, args: &BundleListArgs) -> i32 {
     0
 }
 
-/// Show bundle: `hcom bundle show <id> [--json]`
-fn cmd_bundle_show(db: &HcomDb, args: &BundleShowArgs) -> i32 {
+/// Show bundle: `comms bundle show <id> [--json]`
+fn cmd_bundle_show(db: &CommsDb, args: &BundleShowArgs) -> i32 {
     let json_mode = args.json;
 
     let bundle = match get_bundle_by_id(db, &args.id) {
@@ -393,8 +393,8 @@ fn cmd_bundle_show(db: &HcomDb, args: &BundleShowArgs) -> i32 {
     0
 }
 
-/// Cat bundle (expand full content): `hcom bundle cat <id>`
-fn cmd_bundle_cat(db: &HcomDb, args: &BundleCatArgs) -> i32 {
+/// Cat bundle (expand full content): `comms bundle cat <id>`
+fn cmd_bundle_cat(db: &CommsDb, args: &BundleCatArgs) -> i32 {
     let bundle = match get_bundle_by_id(db, &args.id) {
         Some(b) => b,
         None => {
@@ -676,8 +676,8 @@ fn cmd_bundle_cat(db: &HcomDb, args: &BundleCatArgs) -> i32 {
     0
 }
 
-/// Chain: `hcom bundle chain <id> [--json]`
-fn cmd_bundle_chain(db: &HcomDb, args: &BundleChainArgs) -> i32 {
+/// Chain: `comms bundle chain <id> [--json]`
+fn cmd_bundle_chain(db: &CommsDb, args: &BundleChainArgs) -> i32 {
     let json_mode = args.json;
 
     let mut chain = Vec::new();
@@ -755,9 +755,9 @@ fn cmd_bundle_chain(db: &HcomDb, args: &BundleChainArgs) -> i32 {
     0
 }
 
-/// Prepare: `hcom bundle prepare [--for AGENT] [--last-transcript N] [--last-events N] [--compact] [--json]`
+/// Prepare: `comms bundle prepare [--for AGENT] [--last-transcript N] [--last-events N] [--compact] [--json]`
 #[allow(clippy::type_complexity)]
-fn cmd_bundle_prepare(db: &HcomDb, args: &BundlePrepareArgs, ctx: Option<&CommandContext>) -> i32 {
+fn cmd_bundle_prepare(db: &CommsDb, args: &BundlePrepareArgs, ctx: Option<&CommandContext>) -> i32 {
     let json_mode = args.json;
     let compact = args.compact;
     let for_agent = args.for_agent.as_deref().map(|name| {
@@ -913,7 +913,7 @@ fn cmd_bundle_prepare(db: &HcomDb, args: &BundlePrepareArgs, ctx: Option<&Comman
 
         // Build template command (cap events at 20)
         let mut template_parts = vec![
-            format!("hcom bundle create \"Bundle Title Here\" --name {agent}"),
+            format!("comms bundle create \"Bundle Title Here\" --name {agent}"),
             "--description \"detailed description text here\"".to_string(),
         ];
         if let Some(ref range) = transcript_range {
@@ -958,14 +958,14 @@ fn cmd_bundle_prepare(db: &HcomDb, args: &BundlePrepareArgs, ctx: Option<&Comman
         let sep = "─".repeat(40);
         println!("{sep}");
         println!("HOW TO USE THIS CONTEXT:\n");
-        println!("Use 'hcom send' with these bundle flags to create and send directly");
+        println!("Use 'comms send' with these bundle flags to create and send directly");
         println!(
             "Transcript detail: normal (truncated) | full (complete text) | detailed (tool I/O, edits, errors)\n"
         );
         println!("Use this bundle context as a template for your specific bundle");
         println!("- Pick relevant events/files/transcript ranges from the bundle context");
         println!(
-            "- Use the hcom events and hcom transcript commands to find all everything relevant to include"
+            "- Use the comms events and comms transcript commands to find all everything relevant to include"
         );
         println!(
             "- Specify the correct transcript detail for each transcript range \
@@ -977,9 +977,9 @@ summerise specific transcript ranges and events. give deep insight so another ag
 everything you know about this. what happened, decisions, current state, issues, plans, etc.\n"
         );
         println!("A good bundle includes everything relevant and nothing irrelevant.\n");
-        println!("View: hcom transcript {agent} [--range N-N] [--full|--detailed]");
-        println!("View: hcom events {agent} [--last N]\n");
-        println!("Use hcom bundle prepare --compact to hide this how to section\n");
+        println!("View: comms transcript {agent} [--range N-N] [--full|--detailed]");
+        println!("View: comms events {agent} [--last N]\n");
+        println!("Use comms bundle prepare --compact to hide this how to section\n");
     }
 
     // Transcript
@@ -1058,7 +1058,7 @@ everything you know about this. what happened, decisions, current state, issues,
         println!("{sep}");
         println!("CREATE:");
         let mut template_parts = vec![
-            format!("hcom bundle create \"Bundle Title Here\" --name {agent}"),
+            format!("comms bundle create \"Bundle Title Here\" --name {agent}"),
             "--description \"detailed description text here\"".to_string(),
         ];
         if let Some(ref range) = transcript_range {
@@ -1085,8 +1085,8 @@ everything you know about this. what happened, decisions, current state, issues,
     0
 }
 
-/// Create: `hcom bundle create [TITLE] --description DESC [--events LIST] [--files LIST] [--transcript RANGES] [--extends ID] [--json]`
-fn cmd_bundle_create(db: &HcomDb, args: &BundleCreateArgs, ctx: Option<&CommandContext>) -> i32 {
+/// Create: `comms bundle create [TITLE] --description DESC [--events LIST] [--files LIST] [--transcript RANGES] [--extends ID] [--json]`
+fn cmd_bundle_create(db: &CommsDb, args: &BundleCreateArgs, ctx: Option<&CommandContext>) -> i32 {
     let json_mode = args.json;
 
     // Mutual exclusion: --bundle and --bundle-file
@@ -1116,7 +1116,7 @@ fn cmd_bundle_create(db: &HcomDb, args: &BundleCreateArgs, ctx: Option<&CommandC
         Some(t) => t.clone(),
         None => {
             eprintln!(
-                "Usage: hcom bundle create TITLE --description DESC [--events LIST] [--files LIST] [--transcript RANGES]"
+                "Usage: comms bundle create TITLE --description DESC [--events LIST] [--files LIST] [--transcript RANGES]"
             );
             return 1;
         }
@@ -1167,7 +1167,7 @@ fn cmd_bundle_create(db: &HcomDb, args: &BundleCreateArgs, ctx: Option<&CommandC
 
 /// Validate, create, and log a bundle event.
 fn create_and_log_bundle(
-    db: &HcomDb,
+    db: &CommsDb,
     bundle: &mut Value,
     ctx: Option<&CommandContext>,
     json_mode: bool,
@@ -1206,7 +1206,7 @@ fn create_and_log_bundle(
 
 /// Query bundle events by category for JSON output (C5 fix).
 #[allow(clippy::type_complexity)]
-fn query_bundle_event_categories(db: &HcomDb, agent: &str, last_events: usize) -> Value {
+fn query_bundle_event_categories(db: &CommsDb, agent: &str, last_events: usize) -> Value {
     let categories: Vec<(&str, String, Vec<Box<dyn rusqlite::ToSql>>)> = vec![
         (
             "messages_to",
@@ -1303,9 +1303,9 @@ use crate::shared::time::format_age;
 
 // ── Main Entry Point ─────────────────────────────────────────────────────
 
-/// Main entry point for `hcom bundle` command.
+/// Main entry point for `comms bundle` command.
 /// Manual subcommand routing to support implicit list/show patterns.
-pub fn cmd_bundle(db: &HcomDb, args: &BundleArgs, ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_bundle(db: &CommsDb, args: &BundleArgs, ctx: Option<&CommandContext>) -> i32 {
     let argv = &args.args;
     let subcmd = argv.first().map(|s| s.as_str()).unwrap_or("list");
     let sub_argv: Vec<String> = if argv.is_empty() {
@@ -1353,7 +1353,7 @@ pub fn cmd_bundle(db: &HcomDb, args: &BundleArgs, ctx: Option<&CommandContext>) 
         },
         _ => {
             if subcmd.starts_with('-') {
-                // Flags without subcommand → list mode: `hcom bundle --json --last 5`
+                // Flags without subcommand → list mode: `comms bundle --json --last 5`
                 match try_parse::<BundleListArgs>("bundle list", argv) {
                     Ok(a) => cmd_bundle_list(db, &a),
                     Err(code) => code,
@@ -1490,10 +1490,10 @@ mod tests {
         assert!(BundleListArgs::try_parse_from(["list", "--bogus"]).is_err());
     }
 
-    fn test_db() -> HcomDb {
+    fn test_db() -> CommsDb {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         std::mem::forget(dir);
         db

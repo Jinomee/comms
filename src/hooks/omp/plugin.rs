@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 
 use crate::hooks::runtime::{self, LaunchCtx, PerRunAdapter, RuntimeInjection};
 
-pub const PLUGIN_SOURCE: &str = include_str!("../../omp_plugin/hcom.ts");
-const PLUGIN_FILENAME: &str = "hcom.ts";
+pub const PLUGIN_SOURCE: &str = include_str!("../../omp_plugin/comms.ts");
+const PLUGIN_FILENAME: &str = "comms.ts";
 
 pub static PER_RUN: PerRunAdapter = PerRunAdapter {
     prepare: prepare_per_run,
@@ -68,48 +68,48 @@ fn prepare_per_run(ctx: &LaunchCtx) -> Result<RuntimeInjection> {
     })
 }
 
-/// Under a project-local HCOM_DIR the old installer wrote to
-/// `<HCOM_DIR parent>/.omp/extensions/` instead of the agent dir.
+/// Under a project-local COMMS_DIR the old installer wrote to
+/// `<COMMS_DIR parent>/.omp/extensions/` instead of the agent dir.
 fn project_local_legacy_path() -> Option<std::path::PathBuf> {
     crate::runtime_env::legacy_tool_config_root()
         .map(|root| root.join(".omp").join("extensions").join(PLUGIN_FILENAME))
 }
 
 fn remove_owned(paths: impl IntoIterator<Item = std::path::PathBuf>) -> Result<()> {
-    runtime::remove_owned_files(paths, is_hcom_owned)
+    runtime::remove_owned_files(paths, is_comms_owned)
 }
 
 fn cleanup_legacy_per_run(ctx: &LaunchCtx) -> Result<()> {
     remove_owned(std::iter::once(effective_plugin_path(ctx)).chain(project_local_legacy_path()))
 }
 
-/// Remove hcom's managed OMP extension injection (`-e <hcom.ts>` /
+/// Remove comms's managed OMP extension injection (`-e <comms.ts>` /
 /// `--extension …`, incl. the `=` forms) from a stored or replayed launch-arg
 /// vector, preserving every user-supplied extension and its ordering. An entry
 /// is treated as managed when its path is the current plugin path, an existing
-/// hcom-owned file, or — for a moved/missing managed file — a narrow lexical
-/// match (basename `hcom.ts` directly under an `extensions` directory).
+/// comms-owned file, or — for a moved/missing managed file — a narrow lexical
+/// match (basename `comms.ts` directly under an `extensions` directory).
 ///
 /// Idempotent. Callers strip stored args before snapshotting and reinjecting so
-/// a stale plugin path from an older hcom/config layout is not replayed
+/// a stale plugin path from an older comms/config layout is not replayed
 /// alongside the freshly injected current path (which could fail startup or load
-/// hcom twice). A genuine `-e other.ts` user extension always survives.
+/// comms twice). A genuine `-e other.ts` user extension always survives.
 pub fn strip_managed_extension_args(args: &mut Vec<String>) {
     let current = get_omp_plugin_path();
     let is_managed = |value: &str| -> bool {
         let path = std::path::Path::new(value);
-        if runtime::is_hcom_runtime_path(value) || path == current.as_path() {
+        if runtime::is_comms_runtime_path(value) || path == current.as_path() {
             return true;
         }
-        if is_hcom_owned(path).unwrap_or(false)
-            || crate::hooks::pi::is_hcom_owned(path).unwrap_or(false)
+        if is_comms_owned(path).unwrap_or(false)
+            || crate::hooks::pi::is_comms_owned(path).unwrap_or(false)
         {
             return true;
         }
-        // Moved/missing managed file only: basename hcom.ts under an `extensions`
-        // dir. Gated on !exists so an EXISTING user `-e …/extensions/hcom.ts`
-        // with unrelated contents (which is_hcom_owned already rejected) is kept
-        // — only exact-current and hcom-owned files are removed when present.
+        // Moved/missing managed file only: basename comms.ts under an `extensions`
+        // dir. Gated on !exists so an EXISTING user `-e …/extensions/comms.ts`
+        // with unrelated contents (which is_comms_owned already rejected) is kept
+        // — only exact-current and comms-owned files are removed when present.
         !path.exists()
             && path.file_name().and_then(|n| n.to_str()) == Some(PLUGIN_FILENAME)
             && path
@@ -153,9 +153,9 @@ pub fn strip_managed_extension_args(args: &mut Vec<String>) {
     *args = out;
 }
 
-pub fn is_hcom_owned(path: &std::path::Path) -> std::io::Result<bool> {
-    runtime::file_is_hcom_owned(path, |content| {
-        content == PLUGIN_SOURCE || content.contains("customType: \"hcom-bootstrap\"")
+pub fn is_comms_owned(path: &std::path::Path) -> std::io::Result<bool> {
+    runtime::file_is_comms_owned(path, |content| {
+        content == PLUGIN_SOURCE || content.contains("customType: \"comms-bootstrap\"")
     })
 }
 

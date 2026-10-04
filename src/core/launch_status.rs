@@ -1,12 +1,12 @@
 //! Batch launch tracking and notification-driven launch confirmation.
 //!
-//! batch is ready, times out, or errors. Used by `hcom events --wait` and
-//! the launcher to wait for readiness after `hcom N claude`.
+//! batch is ready, times out, or errors. Used by `comms events --wait` and
+//! the launcher to wait for readiness after `comms N claude`.
 
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::instance_lifecycle;
 use rusqlite::params;
 use std::collections::HashSet;
@@ -67,7 +67,7 @@ struct LaunchData {
 }
 
 /// Count ready instances for a batch via 'ready' life events.
-fn get_ready_for_batch(db: &HcomDb, batch_id: &str) -> (i64, Vec<String>) {
+fn get_ready_for_batch(db: &CommsDb, batch_id: &str) -> (i64, Vec<String>) {
     let conn = db.conn();
     let mut stmt = match conn.prepare(
         "SELECT instance FROM events \
@@ -88,7 +88,7 @@ fn get_ready_for_batch(db: &HcomDb, batch_id: &str) -> (i64, Vec<String>) {
 }
 
 fn get_failed_for_batch(
-    db: &HcomDb,
+    db: &CommsDb,
     batch_id: &str,
     launcher: &str,
     batch_event_id: i64,
@@ -133,10 +133,16 @@ fn get_failed_for_batch(
 
 /// Emit a batch-scoped `launch_failed` life event from a non-child process
 /// (e.g. `wait_for_launch` running in a user CLI). Matches the shape used by
-/// `HcomDb::emit_launch_failed_event` (which can't be used here because it
-/// reads `HCOM_LAUNCHED_BY`/`HCOM_LAUNCH_BATCH_ID` from env vars that are not
+/// `CommsDb::emit_launch_failed_event` (which can't be used here because it
+/// reads `COMMS_LAUNCHED_BY`/`COMMS_LAUNCH_BATCH_ID` from env vars that are not
 /// set in this context).
-fn emit_row_finalized_event(db: &HcomDb, name: &str, launcher: &str, batch_id: &str, detail: &str) {
+fn emit_row_finalized_event(
+    db: &CommsDb,
+    name: &str,
+    launcher: &str,
+    batch_id: &str,
+    detail: &str,
+) {
     let event_data = serde_json::json!({
         "action": "launch_failed",
         "by": launcher,
@@ -149,7 +155,7 @@ fn emit_row_finalized_event(db: &HcomDb, name: &str, launcher: &str, batch_id: &
     let _ = db.log_event("life", name, &event_data);
 }
 
-fn get_blocked_for_batch(db: &HcomDb, batch_id: &str) -> (i64, Vec<String>) {
+fn get_blocked_for_batch(db: &CommsDb, batch_id: &str) -> (i64, Vec<String>) {
     let conn = db.conn();
     let mut stmt = match conn.prepare(
         "SELECT instance, json_extract(data, '$.detail') FROM events \
@@ -177,7 +183,7 @@ fn get_blocked_for_batch(db: &HcomDb, batch_id: &str) -> (i64, Vec<String>) {
 }
 
 fn launch_failed_events_for_batch(
-    db: &HcomDb,
+    db: &CommsDb,
     batch_id: &str,
     seen: &mut HashSet<String>,
 ) -> Vec<String> {
@@ -214,7 +220,7 @@ fn launch_failed_events_for_batch(
     }
 }
 
-fn stopped_detail_for_instance(db: &HcomDb, name: &str, batch_event_id: i64) -> Option<String> {
+fn stopped_detail_for_instance(db: &CommsDb, name: &str, batch_event_id: i64) -> Option<String> {
     // Filter by monotonic event id instead of a string timestamp — format-
     // agnostic and not coupled to RFC3339 remaining lexicographically
     // sortable.
@@ -247,7 +253,7 @@ fn stopped_detail_for_instance(db: &HcomDb, name: &str, batch_event_id: i64) -> 
     .ok()
 }
 
-fn get_batch_instance_names(db: &HcomDb, batch_id: &str) -> Vec<String> {
+fn get_batch_instance_names(db: &CommsDb, batch_id: &str) -> Vec<String> {
     let conn = db.conn();
     let data_str: String = match conn.query_row(
         "SELECT data FROM events
@@ -278,7 +284,7 @@ fn get_batch_instance_names(db: &HcomDb, batch_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn get_batch_failure_details_for_ids(db: &HcomDb, batch_ids: &[String]) -> Vec<String> {
+fn get_batch_failure_details_for_ids(db: &CommsDb, batch_ids: &[String]) -> Vec<String> {
     let mut details = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -356,7 +362,7 @@ const LAUNCH_TIMEOUT_SECONDS: i64 = 60;
 ///
 /// Queries batch_launched events, gets ready counts from 'ready' life events,
 /// and aggregates.
-fn get_launch_status(db: &HcomDb, launcher: Option<&str>) -> Option<LaunchData> {
+fn get_launch_status(db: &CommsDb, launcher: Option<&str>) -> Option<LaunchData> {
     let conn = db.conn();
 
     let (sql, params): (String, Vec<String>) = if let Some(name) = launcher {
@@ -525,7 +531,7 @@ fn get_launch_status(db: &HcomDb, launcher: Option<&str>) -> Option<LaunchData> 
 ///
 /// Sums expected across matching
 /// batch_launched events, counts ready from 'ready' life events.
-fn get_launch_batch(db: &HcomDb, batch_id: &str) -> Option<LaunchData> {
+fn get_launch_batch(db: &CommsDb, batch_id: &str) -> Option<LaunchData> {
     let conn = db.conn();
 
     // Get aggregated launch info for this batch_id prefix
@@ -587,13 +593,13 @@ fn get_launch_batch(db: &HcomDb, batch_id: &str) -> Option<LaunchData> {
 /// Each waiter gets its own endpoint, including anonymous and concurrent waits.
 /// Drop removes it on every return path; missed notifications still use polling.
 struct LaunchWaiter<'a> {
-    db: &'a HcomDb,
+    db: &'a CommsDb,
     name: String,
     server: crate::notify::NotifyServer,
 }
 
 impl<'a> LaunchWaiter<'a> {
-    fn new(db: &'a HcomDb, batch_id: Option<&str>) -> Option<Self> {
+    fn new(db: &'a CommsDb, batch_id: Option<&str>) -> Option<Self> {
         let server = crate::notify::NotifyServer::new().ok()?;
         // LIKE wildcards are accepted by the existing batch query; keep those
         // waits aggregate rather than treating a wildcard as a literal prefix.
@@ -628,7 +634,7 @@ impl Drop for LaunchWaiter<'_> {
 ///
 /// Returns LaunchResult with status and batch details.
 pub fn wait_for_launch(
-    db: &HcomDb,
+    db: &CommsDb,
     launcher: Option<&str>,
     batch_id: Option<&str>,
     timeout_secs: u64,
@@ -637,7 +643,7 @@ pub fn wait_for_launch(
     // Stale placeholders can block launch detection.
     instance_lifecycle::cleanup_stale_placeholders(db);
 
-    let fetch = |db: &HcomDb| -> Option<LaunchData> {
+    let fetch = |db: &CommsDb| -> Option<LaunchData> {
         if let Some(bid) = batch_id {
             get_launch_batch(db, bid)
         } else {
@@ -757,7 +763,7 @@ pub fn wait_for_launch(
         let batch_display = batch_ids.first().map(|s| s.as_str()).unwrap_or("?");
         let mut hint = format!(
             "Launch failed: {}/{} ready after {}s (batch: {}). \
-             Check ~/.hcom/.tmp/logs/background_*.log or hcom list -v",
+             Check ~/.comms/.tmp/logs/background_*.log or comms list -v",
             status_data.ready, status_data.expected, timeout_secs, batch_display
         );
         let failures = get_batch_failure_details_for_ids(db, &batch_ids);
@@ -857,9 +863,9 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn make_test_db() -> (HcomDb, tempfile::TempDir) {
+    fn make_test_db() -> (CommsDb, tempfile::TempDir) {
         let dir = tempdir().unwrap();
-        let db = HcomDb::open_raw(&dir.path().join("test.db")).unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("test.db")).unwrap();
         db.init_db().unwrap();
         (db, dir)
     }
@@ -943,7 +949,7 @@ mod tests {
         })).unwrap();
         let path = db.path().to_owned();
         let writer = std::thread::spawn(move || {
-            let db = HcomDb::open_at(&path).unwrap();
+            let db = CommsDb::open_at(&path).unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 let count: i64 = db
@@ -989,7 +995,7 @@ mod tests {
         db.log_event("life", "leku", &serde_json::json!({"action": "batch_launched", "batch_id": "fallback-test", "launched": 1})).unwrap();
         let path = db.path().to_owned();
         let writer = std::thread::spawn(move || {
-            let db = HcomDb::open_at(&path).unwrap();
+            let db = CommsDb::open_at(&path).unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 let count: i64 = db
@@ -1111,7 +1117,7 @@ mod tests {
             timestamp: Some("2024-01-01T00:00:00Z".into()),
             batch_id: Some("batch-123".into()),
             batches: None,
-            hint: Some("Launch failed: 1/3 ready after 30s (batch: batch-123). Check ~/.hcom/.tmp/logs/background_*.log or hcom list -v".into()),
+            hint: Some("Launch failed: 1/3 ready after 30s (batch: batch-123). Check ~/.comms/.tmp/logs/background_*.log or comms list -v".into()),
             message: None,
         };
         let json = result.to_json();
@@ -1220,7 +1226,7 @@ mod tests {
             &serde_json::json!({
                 "action": "launch_blocked",
                 "batch_id": "batch-blocked",
-                "detail": "launch blocked: run hcom term mari"
+                "detail": "launch blocked: run comms term mari"
             }),
         )
         .unwrap();
@@ -1232,7 +1238,7 @@ mod tests {
         assert_eq!(result.blocked, Some(1));
         assert_eq!(
             result.blockers,
-            vec!["mari: launch blocked: run hcom term mari".to_string()]
+            vec!["mari: launch blocked: run comms term mari".to_string()]
         );
         let json = result.to_json();
         assert_eq!(json["status"], "blocked");
@@ -1371,7 +1377,7 @@ mod tests {
         );
         data.insert(
             "status_detail".into(),
-            serde_json::json!("Error: Operation not permitted (os error 1) Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s hcom-external`), then retry."),
+            serde_json::json!("Error: Operation not permitted (os error 1) Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s comms-external`), then retry."),
         );
         db.save_instance_named("mari", &data).unwrap();
 
@@ -1390,7 +1396,7 @@ mod tests {
         let details = get_batch_failure_details_for_ids(&db, &["batch-123".to_string()]);
         assert_eq!(
             details,
-            vec!["mari: Error: Operation not permitted (os error 1) Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s hcom-external`), then retry.".to_string()]
+            vec!["mari: Error: Operation not permitted (os error 1) Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s comms-external`), then retry.".to_string()]
         );
     }
 

@@ -13,8 +13,8 @@ use serde_json::Value;
 use std::sync::LazyLock;
 
 use crate::bootstrap;
-use crate::config::HcomConfig;
-use crate::db::{HcomDb, InstanceRow};
+use crate::config::CommsConfig;
+use crate::db::{CommsDb, InstanceRow};
 use crate::hooks::common;
 use crate::hooks::family;
 use crate::hooks::runtime::{self, LaunchCtx, PerRunAdapter, RuntimeInjection};
@@ -26,7 +26,7 @@ use crate::instances;
 use crate::log;
 use crate::messages;
 use crate::paths;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 use crate::shared::{ST_ACTIVE, ST_BLOCKED, ST_INACTIVE, ST_LISTENING};
 
 const HOOK_SESSIONSTART: &str = "sessionstart";
@@ -52,22 +52,22 @@ fn is_shell_tool(tool_name: &str) -> bool {
 }
 
 // This is deliberately a protocol detector, not a security boundary. A
-// standalone hcom command token anywhere in a child shell command is enough to
+// standalone comms command token anywhere in a child shell command is enough to
 // instrument it. Bias toward false positives: adding actor identity to a
-// command that merely mentions hcom is harmless, while missing a wrapped hcom
+// command that merely mentions comms is harmless, while missing a wrapped comms
 // invocation can silently attribute it to the shared root Claude session.
-static RE_HCOM_COMMAND_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
+static RE_COMMS_COMMAND_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r#"(?m)(?:^|[\s;&|('"`])(?:\$\{?HCOM\}?|(?:[^\s;&|()'"`]+/)*hcom)(?:$|[\s;&|)('"`])"#,
+        r#"(?m)(?:^|[\s;&|('"`])(?:\$\{?COMMS\}?|(?:[^\s;&|()'"`]+/)*comms)(?:$|[\s;&|)('"`])"#,
     )
     .unwrap()
 });
 
-fn visibly_invokes_hcom(command: &str) -> bool {
-    RE_HCOM_COMMAND_TOKEN.is_match(command)
+fn visibly_invokes_comms(command: &str) -> bool {
+    RE_COMMS_COMMAND_TOKEN.is_match(command)
 }
 
-fn child_visibly_invokes_hcom(payload: &HookPayload) -> bool {
+fn child_visibly_invokes_comms(payload: &HookPayload) -> bool {
     payload
         .raw
         .get("agent_id")
@@ -78,7 +78,7 @@ fn child_visibly_invokes_hcom(payload: &HookPayload) -> bool {
             .tool_input
             .get("command")
             .and_then(Value::as_str)
-            .is_some_and(visibly_invokes_hcom)
+            .is_some_and(visibly_invokes_comms)
 }
 
 fn powershell_single_quote(value: &str) -> String {
@@ -117,7 +117,7 @@ pub fn dispatch_claude_hook(hook_type: &str) -> i32 {
     };
 
     // Open DB (includes schema migration/compat check)
-    let db = match HcomDb::open() {
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(e) => {
             log::log_warn(
@@ -129,12 +129,12 @@ pub fn dispatch_claude_hook(hook_type: &str) -> i32 {
         }
     };
 
-    let ctx = HcomContext::from_os();
+    let ctx = CommsContext::from_os();
     let mut payload = HookPayload::from_claude(raw);
 
-    // Per-run hooks only load in hcom launches, which always set
-    // HCOM_PROCESS_ID. Anything else (a leftover global hook, a manual run) is
-    // not an hcom participant: stay silent.
+    // Per-run hooks only load in comms launches, which always set
+    // COMMS_PROCESS_ID. Anything else (a leftover global hook, a manual run) is
+    // not an comms participant: stay silent.
     if ctx.process_id.is_none() {
         return 0;
     }
@@ -170,7 +170,7 @@ pub fn dispatch_claude_hook(hook_type: &str) -> i32 {
 }
 
 fn write_hook_output(
-    db: &HcomDb,
+    db: &CommsDb,
     writer: &mut impl std::io::Write,
     stdout: &str,
     delivery_ack: Option<&DeliveryAck>,
@@ -183,19 +183,19 @@ fn write_hook_output(
     Ok(())
 }
 
-/// A wake is only ever the exact `<hcom>` marker.  In particular, do not
+/// A wake is only ever the exact `<comms>` marker.  In particular, do not
 /// consume a user's draft when terminal injection and typing overlap.
-fn is_bare_hcom_wake(payload: &HookPayload) -> bool {
+fn is_bare_comms_wake(payload: &HookPayload) -> bool {
     payload
         .raw
         .get("prompt")
         .and_then(Value::as_str)
-        .is_some_and(|prompt| prompt.trim() == "<hcom>")
+        .is_some_and(|prompt| prompt.trim() == "<comms>")
 }
 
 /// Prevent an injected wake with no accompanying context from reaching Claude.
 /// Claude displays `reason` to the user without adding it to model context.
-fn block_bare_hcom_wake(reason: &str) -> (i32, String, Option<DeliveryAck>) {
+fn block_bare_comms_wake(reason: &str) -> (i32, String, Option<DeliveryAck>) {
     let output = serde_json::json!({
         "decision": "block",
         "reason": reason,
@@ -204,13 +204,13 @@ fn block_bare_hcom_wake(reason: &str) -> (i32, String, Option<DeliveryAck>) {
     (0, output.to_string(), None)
 }
 
-fn block_unroutable_bare_hcom_wake() -> (i32, String, Option<DeliveryAck>) {
+fn block_unroutable_bare_comms_wake() -> (i32, String, Option<DeliveryAck>) {
     // A delivery race, session switch, stale/missing binding, conflicting
     // identity evidence, or a wake landing in a subagent view can all arrive
     // here. None of the available signals can tell those apart reliably
     // (launch environment is replayed by Claude), so say so explicitly.
-    block_bare_hcom_wake(
-        "hcom received a wake but could not prepare delivery context for this Claude session. Another hook may already have delivered the message, or session attribution may have failed (for example, a switched or unbound session). No action is needed unless you were expecting a message; then return to the agent's main session or retry with `hcom kill <name> && hcom r <name>`. To join this session to hcom, run `hcom start`.",
+    block_bare_comms_wake(
+        "comms received a wake but could not prepare delivery context for this Claude session. Another hook may already have delivered the message, or session attribution may have failed (for example, a switched or unbound session). No action is needed unless you were expecting a message; then return to the agent's main session or retry with `comms kill <name> && comms r <name>`. To join this session to comms, run `comms start`.",
     )
 }
 
@@ -277,8 +277,8 @@ impl DispatchTiming {
 ///
 /// Returns (exit_code, stdout_string, deferred delivery ack, timing).
 fn route_claude_hook(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     hook_type: &str,
     payload: &mut HookPayload,
 ) -> (i32, String, Option<DeliveryAck>, DispatchTiming) {
@@ -286,7 +286,7 @@ fn route_claude_hook(
     let mut timing = DispatchTiming::default();
 
     // Ensure directories and init DB
-    if !paths::ensure_hcom_directories() {
+    if !paths::ensure_comms_directories() {
         return (0, String::new(), None, timing);
     }
 
@@ -333,35 +333,35 @@ fn route_claude_hook(
 
     if let Some(agent_id) = raw_agent_id {
         // Every Claude subagent carries agent_id on its hooks regardless of
-        // whether its root ever ran `hcom start` — that's a property of
-        // Claude's hook schema, not of hcom participation. Act only if the
-        // shared session_id actually has an hcom root binding; otherwise this
-        // whole branch (including the `hcom start --name ...` hint at
+        // whether its root ever ran `comms start` — that's a property of
+        // Claude's hook schema, not of comms participation. Act only if the
+        // shared session_id actually has an comms root binding; otherwise this
+        // whole branch (including the `comms start --name ...` hint at
         // SubagentStart) must be a silent no-op, same as any other
         // nonparticipant hook.
         let root_name = match db.get_session_binding(&session_id) {
             Ok(Some(root_name)) => root_name,
             Ok(None) => {
-                if hook_type == HOOK_PRE && child_visibly_invokes_hcom(payload) {
+                if hook_type == HOOK_PRE && child_visibly_invokes_comms(payload) {
                     let output = serde_json::json!({
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
                             "permissionDecision": "deny",
                             "permissionDecisionReason":
-                                "This Claude subagent cannot join hcom before its parent. Run `hcom start` in the parent Claude session first, then spawn a new subagent.",
+                                "This Claude subagent cannot join comms before its parent. Run `comms start` in the parent Claude session first, then spawn a new subagent.",
                         }
                     });
                     return (0, output.to_string(), None, timing);
                 }
-                if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_hcom_wake(payload) {
-                    let (code, stdout, ack) = block_unroutable_bare_hcom_wake();
+                if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_comms_wake(payload) {
+                    let (code, stdout, ack) = block_unroutable_bare_comms_wake();
                     return (code, stdout, ack, timing);
                 }
                 return (0, String::new(), None, timing);
             }
             Err(_) => {
-                if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_hcom_wake(payload) {
-                    let (code, stdout, ack) = block_unroutable_bare_hcom_wake();
+                if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_comms_wake(payload) {
+                    let (code, stdout, ack) = block_unroutable_bare_comms_wake();
                     return (code, stdout, ack, timing);
                 }
                 return (0, String::new(), None, timing);
@@ -389,8 +389,8 @@ fn route_claude_hook(
                     hook_type, session_id, root_name
                 ),
             );
-            if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_hcom_wake(payload) {
-                let (code, stdout, ack) = block_unroutable_bare_hcom_wake();
+            if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_comms_wake(payload) {
+                let (code, stdout, ack) = block_unroutable_bare_comms_wake();
                 return (code, stdout, ack, timing);
             }
             return (0, String::new(), None, timing);
@@ -413,7 +413,7 @@ fn route_claude_hook(
 
     // Capability revocation is keyed by (session_id, tool_use_id) alone, so it
     // must not depend on identity resolution: a hook we cannot attribute would
-    // otherwise leave the shell actor's `hcom send` capability granted forever.
+    // otherwise leave the shell actor's `comms send` capability granted forever.
     if matches!(
         hook_type,
         HOOK_POST | HOOK_POST_FAILURE | HOOK_PERMISSION_DENIED
@@ -436,8 +436,8 @@ fn route_claude_hook(
     // can quote another participant's marker and is not identity evidence.
     let Some(ref instance_name) = instance_name else {
         timing.result = Some("no_instance");
-        if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_hcom_wake(payload) {
-            let (code, stdout, ack) = block_unroutable_bare_hcom_wake();
+        if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_comms_wake(payload) {
+            let (code, stdout, ack) = block_unroutable_bare_comms_wake();
             return (code, stdout, ack, timing);
         }
         return (0, String::new(), None, timing);
@@ -447,8 +447,8 @@ fn route_claude_hook(
         Ok(Some(data)) => data,
         _ => {
             timing.result = Some("no_instance_data");
-            if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_hcom_wake(payload) {
-                let (code, stdout, ack) = block_unroutable_bare_hcom_wake();
+            if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_comms_wake(payload) {
+                let (code, stdout, ack) = block_unroutable_bare_comms_wake();
                 return (code, stdout, ack, timing);
             }
             return (0, String::new(), None, timing);
@@ -474,8 +474,8 @@ fn route_claude_hook(
             timing.handler_ms = Some(handler_start.elapsed().as_secs_f64() * 1000.0);
             return (code, stdout, None, timing);
         }
-        if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_hcom_wake(payload) {
-            let (code, stdout, ack) = block_unroutable_bare_hcom_wake();
+        if hook_type == HOOK_USERPROMPTSUBMIT && is_bare_comms_wake(payload) {
+            let (code, stdout, ack) = block_unroutable_bare_comms_wake();
             return (code, stdout, ack, timing);
         }
         return (0, String::new(), None, timing);
@@ -553,7 +553,7 @@ fn route_claude_hook(
 ///
 /// Returns (exit_code, stdout, delivery_ack).
 fn route_subagent_actor_hook(
-    db: &HcomDb,
+    db: &CommsDb,
     hook_type: &str,
     payload: &HookPayload,
     agent_id: &str,
@@ -645,13 +645,13 @@ fn route_subagent_actor_hook(
                 handle_permission_request(db, payload, &subagent_instance, &Default::default());
             (code, stdout, None)
         }
-        HOOK_USERPROMPTSUBMIT if is_bare_hcom_wake(payload) => block_unroutable_bare_hcom_wake(),
+        HOOK_USERPROMPTSUBMIT if is_bare_comms_wake(payload) => block_unroutable_bare_comms_wake(),
         _ => (0, String::new(), None),
     }
 }
 
 fn handle_subagent_start(
-    db: &HcomDb,
+    db: &CommsDb,
     payload: &HookPayload,
     agent_id: &str,
     session_id: &str,
@@ -665,7 +665,7 @@ fn handle_subagent_start(
         .unwrap_or("");
 
     // Every subagent — however deeply Claude nests it in its own hierarchy —
-    // attaches directly to the root hcom instance. Claude's hook schema gives
+    // attaches directly to the root comms instance. Claude's hook schema gives
     // no reliable way to correlate a nested Agent/Task call with the specific
     // child that issued it (the same prompt_id can be reused by an
     // interleaved sibling, see history of this function), so root attribution
@@ -726,7 +726,7 @@ fn session_id_from_claude_env_file(env_file: Option<&str>) -> Option<String> {
 }
 
 fn is_fresh_claude_process_placeholder(
-    db: &HcomDb,
+    db: &CommsDb,
     process_session_id: Option<&str>,
     process_owner: Option<&str>,
     expected_session_id: Option<&str>,
@@ -754,12 +754,12 @@ fn is_fresh_claude_process_placeholder(
         })
 }
 
-/// `HCOM_IS_FORK` is persistent session environment, so it cannot by itself
+/// `COMMS_IS_FORK` is persistent session environment, so it cannot by itself
 /// authorize replacing the hook payload's session id. The env-file workaround
-/// is allowed for the original fresh hcom-fork placeholder, or on later
+/// is allowed for the original fresh comms-fork placeholder, or on later
 /// non-SessionStart hooks only when this exact worker is already bound to the
 /// env-file generation.
-fn should_use_fork_env_session_id(db: &HcomDb, ctx: &HcomContext, raw: &Value) -> bool {
+fn should_use_fork_env_session_id(db: &CommsDb, ctx: &CommsContext, raw: &Value) -> bool {
     if !ctx.is_fork {
         return false;
     }
@@ -812,14 +812,14 @@ fn get_real_session_id(
 
 /// Handle SessionStart: bind session, inject bootstrap.
 fn handle_sessionstart(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     session_id: &str,
     transcript_path: Option<&str>,
     raw: &Value,
 ) -> (i32, String) {
     let source = raw.get("source").and_then(Value::as_str).unwrap_or("");
-    // Per-run hooks only load in hcom launches, so both are always present;
+    // Per-run hooks only load in comms launches, so both are always present;
     // stay silent rather than guess if a payload arrives without them.
     let Some(process_id) = ctx.process_id.as_deref() else {
         return (0, String::new());
@@ -882,14 +882,14 @@ fn handle_sessionstart(
         evidence.process_owner.as_deref(),
         Some(session_id),
     );
-    let fresh_hcom_fork_launch = ctx.is_fork && fresh_process_placeholder;
+    let fresh_comms_fork_launch = ctx.is_fork && fresh_process_placeholder;
     let native_lineage_source = matches!(source, "fork" | "startup" | "resume");
 
     log::log_info(
         "hooks",
         "sessionstart.entry",
         &format!(
-            "source={} session_id={} transcript_path={} process_id={:?} process_binding={:?} process_owner={:?} process_session_id={:?} session_owner={:?} validated_session_owner={:?} transcript_owners={:?} hcom_is_fork={} fresh_process_placeholder={} fresh_hcom_fork_launch={}",
+            "source={} session_id={} transcript_path={} process_id={:?} process_binding={:?} process_owner={:?} process_session_id={:?} session_owner={:?} validated_session_owner={:?} transcript_owners={:?} comms_is_fork={} fresh_process_placeholder={} fresh_comms_fork_launch={}",
             source,
             session_id,
             transcript_path,
@@ -902,7 +902,7 @@ fn handle_sessionstart(
             evidence.lineage,
             ctx.is_fork,
             fresh_process_placeholder,
-            fresh_hcom_fork_launch,
+            fresh_comms_fork_launch,
         ),
     );
 
@@ -1014,7 +1014,7 @@ fn handle_sessionstart(
 }
 
 fn bind_lineage_owner(
-    db: &HcomDb,
+    db: &CommsDb,
     owner: &str,
     session_id: &str,
     transcript_path: &str,
@@ -1053,7 +1053,7 @@ fn bind_lineage_owner(
     Ok(())
 }
 
-fn bootstrap_for_existing_owner(db: &HcomDb, ctx: &HcomContext, owner: &str) -> (i32, String) {
+fn bootstrap_for_existing_owner(db: &CommsDb, ctx: &CommsContext, owner: &str) -> (i32, String) {
     if db.get_instance_full(owner).ok().flatten().is_none() {
         return (0, String::new());
     }
@@ -1068,13 +1068,13 @@ fn bootstrap_for_existing_owner(db: &HcomDb, ctx: &HcomContext, owner: &str) -> 
 }
 
 fn should_scan_sessionstart_lineage(
-    fresh_hcom_fork_launch: bool,
+    fresh_comms_fork_launch: bool,
     source: &str,
     has_session_owner: bool,
     has_validated_session_owner: bool,
     owners_disagree: bool,
 ) -> bool {
-    !fresh_hcom_fork_launch
+    !fresh_comms_fork_launch
         && !has_validated_session_owner
         && (matches!(source, "fork" | "startup" | "resume")
             || !has_session_owner
@@ -1083,8 +1083,8 @@ fn should_scan_sessionstart_lineage(
 
 /// Handle compaction recovery (source=compact).
 fn handle_compact_recovery(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     session_id: &str,
     process_id: &str,
 ) -> Option<Value> {
@@ -1105,10 +1105,10 @@ fn handle_compact_recovery(
     }))
 }
 
-/// Bind session to process and inject bootstrap for hcom-launched instances.
+/// Bind session to process and inject bootstrap for comms-launched instances.
 fn bind_and_bootstrap(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     session_id: &str,
     transcript_path: &str,
     process_id: &str,
@@ -1184,7 +1184,7 @@ fn bind_and_bootstrap(
 ///
 /// Returns Option<String> — JSON stdout if messages were delivered.
 /// Dispatcher writes this to stdout before returning exit code.
-fn end_task(db: &HcomDb, instance_name: &str, raw: &Value) -> Option<String> {
+fn end_task(db: &CommsDb, instance_name: &str, raw: &Value) -> Option<String> {
     // Since Claude Code 2.1.198, Agent/Task calls background by default: this
     // PostToolUse fires immediately with tool_response.status="async_launched"
     // when the call is merely dispatched to the background, not when the
@@ -1222,7 +1222,7 @@ fn end_task(db: &HcomDb, instance_name: &str, raw: &Value) -> Option<String> {
 ///
 /// Returns (last_event_id, Option<stdout_json>). Caller writes stdout.
 fn deliver_freeze_messages(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     freeze_event_id: i64,
 ) -> (i64, Option<String>) {
@@ -1393,7 +1393,7 @@ fn tool_use_id(payload: &HookPayload) -> Option<&str> {
 }
 
 /// Deny reason when a file-edit tool targets a path another agent claimed.
-fn claim_denial(db: &HcomDb, payload: &HookPayload, instance_name: &str) -> Option<String> {
+fn claim_denial(db: &CommsDb, payload: &HookPayload, instance_name: &str) -> Option<String> {
     if !matches!(
         payload.tool_name.as_str(),
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit"
@@ -1411,7 +1411,7 @@ fn claim_denial(db: &HcomDb, payload: &HookPayload, instance_name: &str) -> Opti
 
 /// PreToolUse: status tracking plus a verified actor capability for shell tools.
 fn handle_pretooluse(
-    db: &HcomDb,
+    db: &CommsDb,
     payload: &HookPayload,
     instance_name: &str,
     session_id: &str,
@@ -1452,7 +1452,7 @@ fn handle_pretooluse(
         return (0, String::new());
     };
 
-    // Only hcom invocations need actor identity. Every other shell command is
+    // Only comms invocations need actor identity. Every other shell command is
     // left byte-for-byte untouched; its hook event is already attributed by
     // Claude's agent_id.
     let (Some(tool_use_id), Some(command)) = (
@@ -1461,11 +1461,11 @@ fn handle_pretooluse(
     ) else {
         return (0, String::new());
     };
-    if !visibly_invokes_hcom(command) {
+    if !visibly_invokes_comms(command) {
         return (0, String::new());
     }
 
-    // Thread a verified actor capability into this visible hcom command so the
+    // Thread a verified actor capability into this visible comms command so the
     // CLI resolves the exact child. If issuance fails, run uninstrumented and
     // let the CLI's normal explicit-name rules produce the actionable error.
 
@@ -1526,7 +1526,7 @@ fn handle_pretooluse(
 }
 
 fn revoke_shell_actor_for_hook(
-    db: &HcomDb,
+    db: &CommsDb,
     session_id: &str,
     payload: &HookPayload,
     agent_id: Option<&str>,
@@ -1550,7 +1550,7 @@ fn revoke_shell_actor_for_hook(
 }
 
 fn handle_tool_failure(
-    db: &HcomDb,
+    db: &CommsDb,
     payload: &HookPayload,
     instance_name: &str,
     session_id: &str,
@@ -1578,7 +1578,7 @@ fn handle_tool_failure(
 }
 
 fn handle_permission_denied(
-    db: &HcomDb,
+    db: &CommsDb,
     payload: &HookPayload,
     instance_name: &str,
     session_id: &str,
@@ -1605,7 +1605,7 @@ fn handle_permission_denied(
     (0, String::new())
 }
 
-fn handle_stop_failure(db: &HcomDb, payload: &HookPayload, instance_name: &str) -> (i32, String) {
+fn handle_stop_failure(db: &CommsDb, payload: &HookPayload, instance_name: &str) -> (i32, String) {
     let error = payload
         .raw
         .get("error")
@@ -1631,8 +1631,8 @@ fn handle_stop_failure(db: &HcomDb, payload: &HookPayload, instance_name: &str) 
 
 /// Parent PostToolUse: bootstrap, messages.
 fn handle_posttooluse(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
     instance_name: &str,
     instance_data: &InstanceRow,
@@ -1687,8 +1687,8 @@ fn handle_posttooluse(
 
 /// Defensive fallback bootstrap injection at PostToolUse.
 fn inject_bootstrap_if_needed(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     instance_name: &str,
     instance_data: &InstanceRow,
 ) -> Option<Value> {
@@ -1697,7 +1697,7 @@ fn inject_bootstrap_if_needed(
     paths::increment_flag_counter("instance_count");
 
     Some(serde_json::json!({
-        "systemMessage": "[HCOM info shown to instance]",
+        "systemMessage": "[COMMS info shown to instance]",
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
             "additionalContext": bootstrap,
@@ -1706,7 +1706,7 @@ fn inject_bootstrap_if_needed(
 }
 
 /// Check for unread messages to deliver at PostToolUse.
-fn get_posttooluse_messages(db: &HcomDb, instance_name: &str) -> Option<(Value, DeliveryAck)> {
+fn get_posttooluse_messages(db: &CommsDb, instance_name: &str) -> Option<(Value, DeliveryAck)> {
     let prepared = common::prepare_pending_messages(db, instance_name)?;
     let model_context =
         common::format_messages_json_for_instance(db, &prepared.messages, instance_name);
@@ -1772,8 +1772,8 @@ fn combine_posttooluse_outputs(outputs: &[Value]) -> Value {
 
 /// Poll hook: message delivery when Claude goes idle.
 fn handle_poll(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     instance_name: &str,
     instance_data: &InstanceRow,
 ) -> (i32, String, Option<DeliveryAck>) {
@@ -1795,7 +1795,7 @@ fn handle_poll(
 
     // Non-PTY: poll for messages
     let wait_timeout = instance_data.wait_timeout;
-    let timeout = wait_timeout.unwrap_or_else(HcomConfig::effective_timeout);
+    let timeout = wait_timeout.unwrap_or_else(CommsConfig::effective_timeout);
 
     // Persist effective timeout
     let mut updates = serde_json::Map::new();
@@ -1826,8 +1826,8 @@ fn handle_poll(
 
 /// Parent UserPromptSubmit: fallback bootstrap, PTY mode message delivery.
 fn handle_userpromptsubmit(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
     instance_name: &str,
     updates: &serde_json::Map<String, Value>,
@@ -1838,8 +1838,8 @@ fn handle_userpromptsubmit(
     let mut system_message = None;
     let mut delivery_ack = None;
 
-    // A real prompt (not an hcom wake) is human input for this agent.
-    if !is_bare_hcom_wake(payload) {
+    // A real prompt (not an comms wake) is human input for this agent.
+    if !is_bare_comms_wake(payload) {
         crate::turn_budget::reset_for(db, instance_name);
     }
 
@@ -1897,9 +1897,9 @@ fn handle_userpromptsubmit(
     }
 
     lifecycle::set_status(db, instance_name, ST_ACTIVE, "prompt", Default::default());
-    if is_bare_hcom_wake(payload) {
-        return block_bare_hcom_wake(
-            "This hcom wake arrived after another hook handled the queued delivery. Nothing is pending; no action is needed.",
+    if is_bare_comms_wake(payload) {
+        return block_bare_comms_wake(
+            "This comms wake arrived after another hook handled the queued delivery. Nothing is pending; no action is needed.",
         );
     }
     (0, String::new(), None)
@@ -1907,7 +1907,7 @@ fn handle_userpromptsubmit(
 
 /// Parent PermissionRequest: mark instance blocked immediately on approval UI.
 fn handle_permission_request(
-    db: &HcomDb,
+    db: &CommsDb,
     payload: &HookPayload,
     instance_name: &str,
     updates: &serde_json::Map<String, Value>,
@@ -1932,9 +1932,9 @@ fn handle_permission_request(
     (0, String::new())
 }
 
-/// Parent Notification: map Claude notification types to hcom lifecycle state.
+/// Parent Notification: map Claude notification types to comms lifecycle state.
 fn handle_notify(
-    db: &HcomDb,
+    db: &CommsDb,
     payload: &HookPayload,
     instance_name: &str,
     updates: &serde_json::Map<String, Value>,
@@ -2001,7 +2001,7 @@ fn handle_notify(
 
 /// Parent SessionEnd: finalize session and stop instance.
 fn handle_sessionend(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     session_id: &str,
     raw: &Value,
@@ -2033,13 +2033,13 @@ fn handle_sessionend(
     }
 
     // Claude fires SessionEnd even when it dies at startup (e.g. a rejected
-    // `--resume`). For an hcom PTY launch that never became ready, leave the
+    // `--resume`). For an comms PTY launch that never became ready, leave the
     // row to the PTY exit path: it records launch_failed with Claude's own
     // output, then stops the row. Stopping it here first would hand launch
     // waiters a bare `exit:other` instead.
-    if std::env::var("HCOM_PTY_MODE").as_deref() == Ok("1")
-        && std::env::var("HCOM_LAUNCHED").as_deref() == Ok("1")
-        && let Ok(batch_id) = std::env::var("HCOM_LAUNCH_BATCH_ID")
+    if std::env::var("COMMS_PTY_MODE").as_deref() == Ok("1")
+        && std::env::var("COMMS_LAUNCHED").as_deref() == Ok("1")
+        && let Ok(batch_id) = std::env::var("COMMS_LAUNCH_BATCH_ID")
         && !common::launch_reached_ready(db, instance_name, &batch_id)
     {
         log::log_info(
@@ -2068,7 +2068,7 @@ fn handle_sessionend(
     (0, String::new())
 }
 
-fn cleanup_sessionend_scoped_state(db: &HcomDb, session_id: &str) {
+fn cleanup_sessionend_scoped_state(db: &CommsDb, session_id: &str) {
     // The lineage validation cache is per session generation and nothing else
     // ever deletes it, so an ended generation would leak a kv row forever. A
     // generation that comes back is re-validated by its next SessionStart.
@@ -2108,7 +2108,7 @@ fn cleanup_sessionend_scoped_state(db: &HcomDb, session_id: &str) {
 
 /// Refresh a child row's last-seen lease without changing its identity or
 /// lifecycle ownership. Every hook emitted inside a child calls this.
-fn refresh_subagent_last_seen(db: &HcomDb, instance_name: &str) {
+fn refresh_subagent_last_seen(db: &CommsDb, instance_name: &str) {
     let _ = db.conn().execute(
         "UPDATE instances SET last_seen = ?
          WHERE name = ? AND parent_name IS NOT NULL",
@@ -2118,7 +2118,7 @@ fn refresh_subagent_last_seen(db: &HcomDb, instance_name: &str) {
 
 /// Mark quiet child rows stale for display only. Staleness never authorizes
 /// routing and never blocks start, stop, send, or listen.
-fn mark_stale_subagents(db: &HcomDb, session_id: &str) {
+fn mark_stale_subagents(db: &CommsDb, session_id: &str) {
     let timeout = db
         .get_session_binding(session_id)
         .ok()
@@ -2126,7 +2126,7 @@ fn mark_stale_subagents(db: &HcomDb, session_id: &str) {
         .and_then(|name| db.get_instance_full(&name).ok().flatten())
         .and_then(|row| row.subagent_timeout)
         .unwrap_or_else(|| {
-            HcomConfig::load(None)
+            CommsConfig::load(None)
                 .ok()
                 .map(|config| config.subagent_timeout)
                 .unwrap_or(120)
@@ -2151,11 +2151,11 @@ fn build_subagent_start_output(raw: &Value, root_name: &str) -> Option<Value> {
         return None;
     }
 
-    let hcom_cmd = crate::runtime_env::build_hcom_command();
+    let comms_cmd = crate::runtime_env::build_comms_command();
     let additional_context = format!(
         "Your agent ID: {agent_id}\n\
-         Your hcom parent: {root_name}\n\
-         To use hcom, first run: {hcom_cmd} start --name {agent_id}"
+         Your comms parent: {root_name}\n\
+         To use comms, first run: {comms_cmd} start --name {agent_id}"
     );
 
     Some(serde_json::json!({
@@ -2167,15 +2167,15 @@ fn build_subagent_start_output(raw: &Value, root_name: &str) -> Option<Value> {
 }
 
 /// Allocate (or adopt) an `instances` row for this subagent at SubagentStart,
-/// so it's visible in the TUI and addressable by `hcom send` without any
+/// so it's visible in the TUI and addressable by `comms send` without any
 /// change to the subagent's own context. The row stays dormant
 /// (status_context=`subagent:dormant`, name_announced=0) until SubagentStop
-/// activates it or the subagent runs `hcom start --name <agent_id>`.
+/// activates it or the subagent runs `comms start --name <agent_id>`.
 ///
 /// Idempotent: calls into `allocate_subagent_instance`, which returns the
 /// existing row's name if one already exists for this agent_id.
 ///
-/// `parent_instance` (the row's `parent_name`) is always the root hcom
+/// `parent_instance` (the row's `parent_name`) is always the root comms
 /// instance — every subagent, at any depth Claude nests it, attaches
 /// directly to root; see `handle_subagent_start`. `root_session_id` is
 /// always the real Claude session_id (the root's own), never a subagent's,
@@ -2185,7 +2185,7 @@ fn build_subagent_start_output(raw: &Value, root_name: &str) -> Option<Value> {
 /// ever validly point at.
 /// Allocate this subagent's `instances` row and return its stable name.
 fn ensure_subagent_row(
-    db: &HcomDb,
+    db: &CommsDb,
     parent_instance: &str,
     root_session_id: &str,
     agent_id: &str,
@@ -2253,7 +2253,7 @@ fn hash_raw_payload(raw: &Value) -> String {
 /// message-poll loop and on resume, so a claim keyed on either alone risks
 /// wrongly suppressing a later, genuinely different stop. The full raw
 /// payload is hashed instead: two hook registrations firing the *identical*
-/// event (e.g. hcom installed in both global and repo Claude settings, seen
+/// event (e.g. comms installed in both global and repo Claude settings, seen
 /// live) produce byte-identical stdin and collapse onto the same key, while
 /// any real difference between invocations (delivered message content,
 /// background/transcript state) changes the hash and gets its own key.
@@ -2284,7 +2284,7 @@ struct SubagentStopOwner {
 }
 
 struct SubagentStopClaim<'a> {
-    db: &'a HcomDb,
+    db: &'a CommsDb,
     key: String,
     value: String,
 }
@@ -2297,7 +2297,7 @@ enum SubagentStopClaimResult<'a> {
 
 impl<'a> SubagentStopClaim<'a> {
     fn acquire(
-        db: &'a HcomDb,
+        db: &'a CommsDb,
         root_session_id: &str,
         agent_id: &str,
         raw: &Value,
@@ -2421,13 +2421,13 @@ impl Drop for SubagentStopClaim<'_> {
 fn block_subagent_stop(error: impl std::fmt::Display) -> (i32, String, Option<DeliveryAck>) {
     let output = serde_json::json!({
         "decision": "block",
-        "reason": format!("hcom could not finish SubagentStop: {error}. Please stop again."),
+        "reason": format!("comms could not finish SubagentStop: {error}. Please stop again."),
     });
     (0, output.to_string(), None)
 }
 
 fn subagent_stop(
-    db: &HcomDb,
+    db: &CommsDb,
     root_session_id: &str,
     raw: &Value,
 ) -> (i32, String, Option<DeliveryAck>) {
@@ -2479,7 +2479,7 @@ fn subagent_stop(
         instances::update_instance_position(db, &subagent_name, &updates);
     }
 
-    // Idle gate: a dormant subagent (never opted in via `hcom start`, never
+    // Idle gate: a dormant subagent (never opted in via `comms start`, never
     // had a message delivered) only wakes for *direct* mentions. Broadcasts
     // are visible to its row but are not enough to keep it alive — that
     // would break the "no message in → no keep-alive" contract, since
@@ -2530,7 +2530,7 @@ fn subagent_stop(
         .and_then(|pn| db.get_instance_full(pn).ok().flatten())
         .and_then(|pd| pd.subagent_timeout)
         .unwrap_or_else(|| {
-            HcomConfig::load(None)
+            CommsConfig::load(None)
                 .ok()
                 .map(|c| c.subagent_timeout)
                 .unwrap_or(120)
@@ -2591,10 +2591,10 @@ fn subagent_stop(
     (0, stdout, result.ack)
 }
 
-/// Subagent PostToolUse: message delivery for subagents running hcom commands.
+/// Subagent PostToolUse: message delivery for subagents running comms commands.
 ///
 /// Returns (exit_code, stdout).
-fn subagent_posttooluse(db: &HcomDb, subagent_name: &str) -> (i32, String, Option<DeliveryAck>) {
+fn subagent_posttooluse(db: &CommsDb, subagent_name: &str) -> (i32, String, Option<DeliveryAck>) {
     if db.get_instance_full(subagent_name).ok().flatten().is_none() {
         return (0, String::new(), None);
     }
@@ -2622,7 +2622,7 @@ fn subagent_posttooluse(db: &HcomDb, subagent_name: &str) -> (i32, String, Optio
 //
 // Manages hook installation in ~/.claude/settings.json.
 
-use super::common::SAFE_HCOM_COMMANDS;
+use super::common::SAFE_COMMS_COMMANDS;
 
 /// Hook configuration: (hook_type, matcher, command_suffix, timeout_secs).
 /// Single source of truth — all hook properties derived from this.
@@ -2744,8 +2744,8 @@ fn merge_per_run_settings(settings: &mut Value, auto_approve: bool) -> Result<()
         entries.push(group);
     }
     object_field(settings, "env")?.insert(
-        "HCOM".to_string(),
-        Value::String(crate::runtime_env::build_hcom_command()),
+        "COMMS".to_string(),
+        Value::String(crate::runtime_env::build_comms_command()),
     );
     if auto_approve {
         let permissions = object_field(settings, "permissions")?;
@@ -2765,7 +2765,7 @@ fn merge_per_run_settings(settings: &mut Value, auto_approve: bool) -> Result<()
 }
 
 /// Claude uses the last `--settings` and replaces earlier ones wholesale, so the
-/// caller's last value is merged with hcom's and passed as the only one.
+/// caller's last value is merged with comms's and passed as the only one.
 /// `--settings` hooks follow the same workspace-trust gate as settings-file
 /// hooks: in an untrusted folder none run until the user accepts the prompt.
 fn prepare_per_run(ctx: &LaunchCtx) -> Result<RuntimeInjection> {
@@ -2792,8 +2792,8 @@ fn prepare_per_run(ctx: &LaunchCtx) -> Result<RuntimeInjection> {
     })
 }
 
-/// Older hcom wrote hooks into the effective settings.json, or into
-/// `<HCOM_DIR parent>/.claude/settings.json` under a project-local HCOM_DIR.
+/// Older comms wrote hooks into the effective settings.json, or into
+/// `<COMMS_DIR parent>/.claude/settings.json` under a project-local COMMS_DIR.
 fn cleanup_legacy_per_run(ctx: &LaunchCtx) -> Result<()> {
     let effective = effective_settings_path(ctx);
     let legacy = crate::runtime_env::legacy_tool_config_root()
@@ -2808,36 +2808,37 @@ fn cleanup_legacy_per_run(ctx: &LaunchCtx) -> Result<()> {
 }
 
 // Static regexes for hot-path hook command detection
-static RE_HCOM_COMMANDS: LazyLock<Regex> = LazyLock::new(|| {
+static RE_COMMS_COMMANDS: LazyLock<Regex> = LazyLock::new(|| {
     let pattern = CLAUDE_HOOK_COMMANDS.join("|");
-    Regex::new(&format!(r"\bhcom\s+({})\b", pattern)).unwrap()
+    Regex::new(&format!(r"\bcomms\s+({})\b", pattern)).unwrap()
 });
-static RE_HCOM_CLAUDE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bhcom\s+claude-").unwrap());
-static RE_UVX_HCOM: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\buvx\s+hcom\s+claude-").unwrap());
-static RE_HCOM_ACTIVE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bHCOM_ACTIVE.*hcom\.py").unwrap());
-static RE_HCOM_PY_COMMANDS: LazyLock<Regex> = LazyLock::new(|| {
+static RE_COMMS_CLAUDE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bcomms\s+claude-").unwrap());
+static RE_UVX_COMMS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\buvx\s+comms\s+claude-").unwrap());
+static RE_COMMS_ACTIVE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bCOMMS_ACTIVE.*comms\.py").unwrap());
+static RE_COMMS_PY_COMMANDS: LazyLock<Regex> = LazyLock::new(|| {
     let pattern = CLAUDE_HOOK_COMMANDS.join("|");
-    Regex::new(&format!(r#"hcom\.py["']?\s+({})\b"#, pattern)).unwrap()
+    Regex::new(&format!(r#"comms\.py["']?\s+({})\b"#, pattern)).unwrap()
 });
-static RE_SH_HCOM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"sh\s+-c.*hcom").unwrap());
+static RE_SH_COMMS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"sh\s+-c.*comms").unwrap());
 
-/// Build a hook command that silently exits 0 when hcom is not installed.
+/// Build a hook command that silently exits 0 when comms is not installed.
 ///
 /// Claude already executes hook commands through a shell, so this command keeps
 /// all shell logic inline instead of spawning another `sh -c`. It uses the
-/// ${HCOM:-hcom} env var (set in settings.json env block) so it works for both
-/// direct `hcom` and `uvx hcom` invocations. When the binary is absent (e.g.
-/// after `brew uninstall hcom`), the hook exits 0 instead of emitting a "command
+/// ${COMMS:-comms} env var (set in settings.json env block) so it works for both
+/// direct `comms` and `uvx comms` invocations. When the binary is absent (e.g.
+/// after `brew uninstall comms`), the hook exits 0 instead of emitting a "command
 /// not found" error inside the tool.
 fn build_hook_entry_command(cmd_suffix: &str) -> String {
     // Claude runs hook commands through a POSIX shell on every platform
     // (Git Bash on Windows), so the same command works everywhere. The
-    // `${HCOM:-hcom}` default plus the `command -v` guard make it silently
-    // exit 0 when hcom isn't on PATH.
+    // `${COMMS:-comms}` default plus the `command -v` guard make it silently
+    // exit 0 when comms isn't on PATH.
     format!(
-        "cmd=${{HCOM:-hcom}}; command -v \"${{cmd%% *}}\" >/dev/null 2>&1 && exec $cmd {} || exit 0",
+        "cmd=${{COMMS:-comms}}; command -v \"${{cmd%% *}}\" >/dev/null 2>&1 && exec $cmd {} || exit 0",
         cmd_suffix
     )
 }
@@ -2861,12 +2862,12 @@ fn format_claude_powershell_permission(prefix: &str, cmd: &str) -> String {
 
 /// Build permission patterns for installation using detected prefix.
 fn build_claude_permissions() -> Vec<String> {
-    let prefix = crate::runtime_env::build_hcom_command();
-    let mut patterns: Vec<String> = SAFE_HCOM_COMMANDS
+    let prefix = crate::runtime_env::build_comms_command();
+    let mut patterns: Vec<String> = SAFE_COMMS_COMMANDS
         .iter()
         .map(|cmd| format_claude_permission(&prefix, cmd))
         .chain(
-            SAFE_HCOM_COMMANDS
+            SAFE_COMMS_COMMANDS
                 .iter()
                 .map(|cmd| format_claude_powershell_permission(&prefix, cmd)),
         )
@@ -2894,76 +2895,79 @@ fn claude_actor_permission_patterns() -> Vec<String> {
     ]
 }
 
-/// Legacy commands that were once in SAFE_HCOM_COMMANDS or auto-approved.
+/// Legacy commands that were once in SAFE_COMMS_COMMANDS or auto-approved.
 /// Kept here so removal cleans up permissions from older installs.
-const LEGACY_HCOM_COMMANDS: &[&str] = &["daemon"];
+const LEGACY_COMMS_COMMANDS: &[&str] = &["daemon"];
 
-/// Build ALL permission patterns (both "hcom" and "uvx hcom" prefixes) for removal.
+/// Build ALL permission patterns (both "comms" and "uvx comms" prefixes) for removal.
 fn build_all_claude_permission_patterns() -> Vec<String> {
     let mut patterns = Vec::new();
-    for prefix in &["hcom", "uvx hcom"] {
-        for cmd in SAFE_HCOM_COMMANDS.iter().chain(LEGACY_HCOM_COMMANDS.iter()) {
+    for prefix in &["comms", "uvx comms"] {
+        for cmd in SAFE_COMMS_COMMANDS
+            .iter()
+            .chain(LEGACY_COMMS_COMMANDS.iter())
+        {
             patterns.push(format_claude_permission(prefix, cmd));
             patterns.push(format_claude_powershell_permission(prefix, cmd));
         }
     }
     patterns.extend(claude_actor_permission_patterns());
-    // Older hcom wrote the flag form with a `:*` suffix.
-    for prefix in &["hcom", "uvx hcom"] {
+    // Older comms wrote the flag form with a `:*` suffix.
+    for prefix in &["comms", "uvx comms"] {
         patterns.push(format!("Bash({prefix} --new-terminal:*)"));
     }
     patterns
 }
 
-/// Check if a hook command string matches any hcom hook pattern.
-fn is_hcom_hook_command(command: &str) -> bool {
-    // Env var patterns: ${HCOM} or %HCOM%
-    if command.contains("${HCOM}")
-        || command.contains("$HCOM")
-        || command.contains("%HCOM%")
-        || command.contains("${HCOM:-")
+/// Check if a hook command string matches any comms hook pattern.
+fn is_comms_hook_command(command: &str) -> bool {
+    // Env var patterns: ${COMMS} or %COMMS%
+    if command.contains("${COMMS}")
+        || command.contains("$COMMS")
+        || command.contains("%COMMS%")
+        || command.contains("${COMMS:-")
     {
         return true;
     }
 
-    // Standard patterns: hcom <hook_command>
-    if RE_HCOM_COMMANDS.is_match(command) {
+    // Standard patterns: comms <hook_command>
+    if RE_COMMS_COMMANDS.is_match(command) {
         return true;
     }
 
-    // Tool prefix pattern: hcom claude-
-    if RE_HCOM_CLAUDE.is_match(command) {
+    // Tool prefix pattern: comms claude-
+    if RE_COMMS_CLAUDE.is_match(command) {
         return true;
     }
 
-    // uvx pattern: uvx hcom claude-
-    if RE_UVX_HCOM.is_match(command) {
+    // uvx pattern: uvx comms claude-
+    if RE_UVX_COMMS.is_match(command) {
         return true;
     }
 
     // Legacy patterns
-    if RE_HCOM_ACTIVE.is_match(command) {
+    if RE_COMMS_ACTIVE.is_match(command) {
         return true;
     }
-    if command.contains(r#"IF "%HCOM_ACTIVE%""#) {
+    if command.contains(r#"IF "%COMMS_ACTIVE%""#) {
         return true;
     }
-    if RE_HCOM_PY_COMMANDS.is_match(command) {
+    if RE_COMMS_PY_COMMANDS.is_match(command) {
         return true;
     }
-    if RE_SH_HCOM.is_match(command) {
+    if RE_SH_COMMS.is_match(command) {
         return true;
     }
 
     false
 }
 
-/// Remove all hcom hooks from a Claude settings dictionary (in-place).
+/// Remove all comms hooks from a Claude settings dictionary (in-place).
 ///
-/// Scans all hook types and removes hooks whose command matches hcom patterns.
-/// Also removes HCOM from env and hcom permission patterns from permissions.allow.
+/// Scans all hook types and removes hooks whose command matches comms patterns.
+/// Also removes COMMS from env and comms permission patterns from permissions.allow.
 /// Returns true if any hooks/env/permissions were removed.
-fn remove_hcom_hooks_from_settings(settings: &mut Value) -> bool {
+fn remove_comms_hooks_from_settings(settings: &mut Value) -> bool {
     let mut removed_any = false;
 
     let obj = match settings.as_object_mut() {
@@ -3014,27 +3018,27 @@ fn remove_hcom_hooks_from_settings(settings: &mut Value) -> bool {
                     }
                 };
 
-                // Filter out hcom hooks
-                let non_hcom_hooks: Vec<&Value> = hooks_field
+                // Filter out comms hooks
+                let non_comms_hooks: Vec<&Value> = hooks_field
                     .iter()
                     .filter(|hook| {
                         let command = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                        !is_hcom_hook_command(command)
+                        !is_comms_hook_command(command)
                     })
                     .collect();
 
-                if non_hcom_hooks.len() < hooks_field.len() {
+                if non_comms_hooks.len() < hooks_field.len() {
                     removed_any = true;
                 }
 
-                // Only keep matcher if it has non-hcom hooks remaining
-                if !non_hcom_hooks.is_empty() {
+                // Only keep matcher if it has non-comms hooks remaining
+                if !non_comms_hooks.is_empty() {
                     let mut matcher_copy = matcher.clone();
                     matcher_copy["hooks"] =
-                        Value::Array(non_hcom_hooks.into_iter().cloned().collect());
+                        Value::Array(non_comms_hooks.into_iter().cloned().collect());
                     updated_matchers.push(matcher_copy);
                 }
-                // If all hooks were hcom, drop the entire matcher
+                // If all hooks were comms, drop the entire matcher
             }
 
             if updated_matchers.is_empty() {
@@ -3048,9 +3052,9 @@ fn remove_hcom_hooks_from_settings(settings: &mut Value) -> bool {
         }
     }
 
-    // Remove HCOM from env section
+    // Remove COMMS from env section
     if let Some(env) = obj.get_mut("env").and_then(|v| v.as_object_mut()) {
-        if env.remove("HCOM").is_some() {
+        if env.remove("COMMS").is_some() {
             removed_any = true;
         }
         if env.is_empty() {
@@ -3058,7 +3062,7 @@ fn remove_hcom_hooks_from_settings(settings: &mut Value) -> bool {
         }
     }
 
-    // Remove hcom permission patterns
+    // Remove comms permission patterns
     if let Some(perms) = obj.get_mut("permissions").and_then(|v| v.as_object_mut()) {
         if let Some(allow) = perms.get_mut("allow").and_then(|v| v.as_array_mut()) {
             let all_patterns = build_all_claude_permission_patterns();
@@ -3082,11 +3086,11 @@ fn remove_hcom_hooks_from_settings(settings: &mut Value) -> bool {
     removed_any
 }
 
-/// Remove hcom's hooks, `env.HCOM` and allow patterns from one settings file.
+/// Remove comms's hooks, `env.COMMS` and allow patterns from one settings file.
 /// A missing file is fine; an unreadable or malformed one is an error (left
 /// untouched), and the file is only rewritten when something was removed.
 fn remove_hooks_at(path: &Path) -> Result<()> {
-    let unreadable = || runtime::LegacyFile::read(path, runtime::FIX_REMOVE_HCOM_HOOKS);
+    let unreadable = || runtime::LegacyFile::read(path, runtime::FIX_REMOVE_COMMS_HOOKS);
     let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -3096,10 +3100,10 @@ fn remove_hooks_at(path: &Path) -> Result<()> {
     if !settings.is_object() {
         return Err(anyhow::anyhow!("must contain a JSON object")).with_context(unreadable);
     }
-    if remove_hcom_hooks_from_settings(&mut settings) {
+    if remove_comms_hooks_from_settings(&mut settings) {
         let json = serde_json::to_string_pretty(&settings)?;
         paths::atomic_write_io(path, &json)
-            .with_context(|| runtime::LegacyFile::write(path, runtime::FIX_REMOVE_HCOM_HOOKS))?;
+            .with_context(|| runtime::LegacyFile::write(path, runtime::FIX_REMOVE_COMMS_HOOKS))?;
     }
     Ok(())
 }
@@ -3118,10 +3122,10 @@ fn remove_hooks_from_settings_path(path: &Path) -> bool {
     }
 }
 
-/// Remove hcom hooks from Claude settings.
+/// Remove comms hooks from Claude settings.
 ///
-/// Cleans ~/.claude, $CLAUDE_CONFIG_DIR and legacy `<HCOM_DIR parent>/.claude`.
-/// Only removes hcom-specific hooks, not the whole file.
+/// Cleans ~/.claude, $CLAUDE_CONFIG_DIR and legacy `<COMMS_DIR parent>/.claude`.
+/// Only removes comms-specific hooks, not the whole file.
 pub fn remove_claude_hooks() -> bool {
     crate::runtime_env::tool_config_cleanup_dirs(".claude", "CLAUDE_CONFIG_DIR")
         .iter()
@@ -3150,7 +3154,7 @@ mod tests {
             2
         );
         assert_eq!(settings["env"]["CALLER"], "yes");
-        assert!(settings["env"]["HCOM"].is_string());
+        assert!(settings["env"]["COMMS"].is_string());
         assert_eq!(settings["permissions"]["allow"][0], "Bash(caller:*)");
         assert_eq!(settings["custom"], 42);
     }
@@ -3192,7 +3196,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            serde_json::json!({"env": {"HCOM": "hcom"}}).to_string(),
+            serde_json::json!({"env": {"COMMS": "comms"}}).to_string(),
         )
         .unwrap();
         let ctx = super::LaunchCtx {
@@ -3205,7 +3209,7 @@ mod tests {
         super::cleanup_legacy_per_run(&ctx).unwrap();
         let settings: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert!(settings["env"].get("HCOM").is_none());
+        assert!(settings["env"].get("COMMS").is_none());
     }
 
     #[test]
@@ -3215,8 +3219,8 @@ mod tests {
         std::fs::create_dir(&config).unwrap();
         let path = config.join("settings.json");
         std::fs::write(&path, serde_json::json!({
-            "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "hcom sessionstart"}]}]},
-            "env": {"HCOM": "hcom", "CALLER": "yes"}
+            "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "comms sessionstart"}]}]},
+            "env": {"COMMS": "comms", "CALLER": "yes"}
         }).to_string()).unwrap();
         let ctx = super::LaunchCtx {
             tool: crate::tool::Tool::Claude,
@@ -3237,19 +3241,19 @@ mod tests {
             "emptied hooks object is dropped"
         );
         assert_eq!(settings["env"]["CALLER"], "yes");
-        assert!(settings["env"].get("HCOM").is_none());
+        assert!(settings["env"].get("COMMS").is_none());
     }
     use super::*;
 
-    fn make_test_db() -> (tempfile::TempDir, HcomDb) {
+    fn make_test_db() -> (tempfile::TempDir, CommsDb) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         (dir, db)
     }
 
-    fn make_delivery_test_db() -> (tempfile::TempDir, HcomDb) {
+    fn make_delivery_test_db() -> (tempfile::TempDir, CommsDb) {
         let (dir, db) = make_test_db();
         db.conn()
             .execute(
@@ -3268,7 +3272,7 @@ mod tests {
         (dir, db)
     }
 
-    fn delivery_cursor(db: &HcomDb) -> i64 {
+    fn delivery_cursor(db: &CommsDb) -> i64 {
         db.conn()
             .query_row(
                 "SELECT last_event_id FROM instances WHERE name = 'nova'",
@@ -3294,14 +3298,14 @@ mod tests {
     }
 
     #[test]
-    fn hcom_fork_skips_copied_transcript_lineage() {
+    fn comms_fork_skips_copied_transcript_lineage() {
         assert!(!should_scan_sessionstart_lineage(
             true, "fork", false, false, true,
         ));
     }
 
     #[test]
-    fn inherited_hcom_fork_flag_does_not_skip_native_switch_lineage() {
+    fn inherited_comms_fork_flag_does_not_skip_native_switch_lineage() {
         assert!(should_scan_sessionstart_lineage(
             false, "startup", true, false, false,
         ));
@@ -3311,8 +3315,8 @@ mod tests {
     #[serial]
     fn compact_reinjects_bootstrap_and_unlaunched_sessionstart_is_silent() {
         crate::config::Config::init();
-        let (_dir, hcom_dir, _test_home, _guard) = isolated_test_env();
-        let db = HcomDb::open_raw(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _test_home, _guard) = isolated_test_env();
+        let db = CommsDb::open_raw(&comms_dir.join("test.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -3329,18 +3333,18 @@ mod tests {
 
         let mut env = std::collections::HashMap::new();
         env.insert(
-            "HCOM_DIR".to_string(),
-            hcom_dir.to_string_lossy().to_string(),
+            "COMMS_DIR".to_string(),
+            comms_dir.to_string_lossy().to_string(),
         );
-        let unlaunched = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let unlaunched = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         assert_eq!(
             handle_sessionstart(&db, &unlaunched, "sess-nora", None, &raw),
             (0, String::new())
         );
 
-        env.insert("HCOM_PROCESS_ID".to_string(), "process-nora".to_string());
-        env.insert("HCOM_LAUNCHED".to_string(), "1".to_string());
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        env.insert("COMMS_PROCESS_ID".to_string(), "process-nora".to_string());
+        env.insert("COMMS_LAUNCHED".to_string(), "1".to_string());
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let (code, out) = handle_sessionstart(&db, &ctx, "sess-nora", None, &raw);
         assert_eq!(code, 0);
         let out: Value = serde_json::from_str(&out).unwrap();
@@ -3352,10 +3356,10 @@ mod tests {
 
     #[test]
     #[serial]
-    fn inherited_hcom_fork_env_native_switch_uses_validated_ancestry() {
+    fn inherited_comms_fork_env_native_switch_uses_validated_ancestry() {
         crate::config::Config::init();
-        let (_dir, hcom_dir, _test_home, _guard) = isolated_test_env();
-        let db = HcomDb::open_raw(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _test_home, _guard) = isolated_test_env();
+        let db = CommsDb::open_raw(&comms_dir.join("test.db")).unwrap();
         db.init_db().unwrap();
         for (name, session_id) in [("kolo", "sess-fork"), ("lava", "sess-lava")] {
             db.conn()
@@ -3371,23 +3375,23 @@ mod tests {
         db.set_process_binding("process-restored", "sess-lava", "lava")
             .unwrap();
 
-        let transcript = hcom_dir.join("fork-origin-switch.jsonl");
+        let transcript = comms_dir.join("fork-origin-switch.jsonl");
         std::fs::write(
             &transcript,
             "{\"sessionId\":\"sess-new\",\"message\":{\"session_id\":\"sess-fork\"}}\n",
         )
         .unwrap();
         let mut env = std::collections::HashMap::new();
-        env.insert("HCOM_IS_FORK".to_string(), "1".to_string());
+        env.insert("COMMS_IS_FORK".to_string(), "1".to_string());
         env.insert(
-            "HCOM_PROCESS_ID".to_string(),
+            "COMMS_PROCESS_ID".to_string(),
             "process-restored".to_string(),
         );
         env.insert(
-            "HCOM_DIR".to_string(),
-            hcom_dir.to_string_lossy().to_string(),
+            "COMMS_DIR".to_string(),
+            comms_dir.to_string_lossy().to_string(),
         );
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let raw = serde_json::json!({
             "source": "startup",
             "session_id": "sess-new",
@@ -3425,7 +3429,7 @@ mod tests {
             "start"
         );
 
-        let second_transcript = hcom_dir.join("fork-origin-switch-2.jsonl");
+        let second_transcript = comms_dir.join("fork-origin-switch-2.jsonl");
         std::fs::write(
             &second_transcript,
             "{\"sessionId\":\"sess-new-2\",\"message\":{\"session_id\":\"sess-fork\"}}\n",
@@ -3460,10 +3464,10 @@ mod tests {
 
     #[test]
     #[serial]
-    fn fresh_hcom_fork_placeholder_does_not_adopt_parent_ancestry() {
+    fn fresh_comms_fork_placeholder_does_not_adopt_parent_ancestry() {
         crate::config::Config::init();
-        let (_dir, hcom_dir, _test_home, _guard) = isolated_test_env();
-        let db = HcomDb::open_raw(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _test_home, _guard) = isolated_test_env();
+        let db = CommsDb::open_raw(&comms_dir.join("test.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -3484,21 +3488,21 @@ mod tests {
             .unwrap();
         db.set_process_binding("process-fork", "", "kolo").unwrap();
 
-        let transcript = hcom_dir.join("hcom-fork-launch.jsonl");
+        let transcript = comms_dir.join("comms-fork-launch.jsonl");
         std::fs::write(
             &transcript,
             "{\"sessionId\":\"sess-child\",\"message\":{\"session_id\":\"sess-parent\"}}\n",
         )
         .unwrap();
         let mut env = std::collections::HashMap::new();
-        env.insert("HCOM_IS_FORK".to_string(), "1".to_string());
-        env.insert("HCOM_PROCESS_ID".to_string(), "process-fork".to_string());
-        env.insert("HCOM_LAUNCHED".to_string(), "1".to_string());
+        env.insert("COMMS_IS_FORK".to_string(), "1".to_string());
+        env.insert("COMMS_PROCESS_ID".to_string(), "process-fork".to_string());
+        env.insert("COMMS_LAUNCHED".to_string(), "1".to_string());
         env.insert(
-            "HCOM_DIR".to_string(),
-            hcom_dir.to_string_lossy().to_string(),
+            "COMMS_DIR".to_string(),
+            comms_dir.to_string_lossy().to_string(),
         );
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let raw = serde_json::json!({
             "source": "startup",
             "session_id": "sess-child",
@@ -3527,8 +3531,8 @@ mod tests {
     #[serial]
     fn fresh_standard_launch_bootstraps_and_validates_placeholder() {
         crate::config::Config::init();
-        let (_dir, hcom_dir, _test_home, _guard) = isolated_test_env();
-        let db = HcomDb::open_raw(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _test_home, _guard) = isolated_test_env();
+        let db = CommsDb::open_raw(&comms_dir.join("test.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -3540,16 +3544,16 @@ mod tests {
             .unwrap();
         db.set_process_binding("process-fresh", "", "nova").unwrap();
 
-        let transcript = hcom_dir.join("fresh-start.jsonl");
+        let transcript = comms_dir.join("fresh-start.jsonl");
         std::fs::write(&transcript, "").unwrap();
         let mut env = std::collections::HashMap::new();
-        env.insert("HCOM_PROCESS_ID".to_string(), "process-fresh".to_string());
-        env.insert("HCOM_LAUNCHED".to_string(), "1".to_string());
+        env.insert("COMMS_PROCESS_ID".to_string(), "process-fresh".to_string());
+        env.insert("COMMS_LAUNCHED".to_string(), "1".to_string());
         env.insert(
-            "HCOM_DIR".to_string(),
-            hcom_dir.to_string_lossy().to_string(),
+            "COMMS_DIR".to_string(),
+            comms_dir.to_string_lossy().to_string(),
         );
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let raw = serde_json::json!({
             "source": "startup",
             "session_id": "sess-fresh",
@@ -3578,8 +3582,8 @@ mod tests {
     #[serial]
     fn launch_blocked_placeholder_binds_on_sessionstart() {
         crate::config::Config::init();
-        let (_dir, hcom_dir, _test_home, _guard) = isolated_test_env();
-        let db = HcomDb::open_raw(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _test_home, _guard) = isolated_test_env();
+        let db = CommsDb::open_raw(&comms_dir.join("test.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -3592,16 +3596,19 @@ mod tests {
         db.set_process_binding("process-blocked", "", "nova")
             .unwrap();
 
-        let transcript = hcom_dir.join("launch-blocked-start.jsonl");
+        let transcript = comms_dir.join("launch-blocked-start.jsonl");
         std::fs::write(&transcript, "").unwrap();
         let mut env = std::collections::HashMap::new();
-        env.insert("HCOM_PROCESS_ID".to_string(), "process-blocked".to_string());
-        env.insert("HCOM_LAUNCHED".to_string(), "1".to_string());
         env.insert(
-            "HCOM_DIR".to_string(),
-            hcom_dir.to_string_lossy().to_string(),
+            "COMMS_PROCESS_ID".to_string(),
+            "process-blocked".to_string(),
         );
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        env.insert("COMMS_LAUNCHED".to_string(), "1".to_string());
+        env.insert(
+            "COMMS_DIR".to_string(),
+            comms_dir.to_string_lossy().to_string(),
+        );
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let raw = serde_json::json!({
             "source": "startup",
             "session_id": "sess-blocked",
@@ -3660,8 +3667,8 @@ mod tests {
     #[serial]
     fn unknown_native_startup_without_process_row_is_rejected() {
         crate::config::Config::init();
-        let (_dir, hcom_dir, _test_home, _guard) = isolated_test_env();
-        let db = HcomDb::open_raw(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _test_home, _guard) = isolated_test_env();
+        let db = CommsDb::open_raw(&comms_dir.join("test.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -3674,16 +3681,16 @@ mod tests {
         bind_validated_session(&db, "sess-old", "niza");
 
         let mut env = std::collections::HashMap::new();
-        env.insert("HCOM_PROCESS_ID".to_string(), "process-gone".to_string());
+        env.insert("COMMS_PROCESS_ID".to_string(), "process-gone".to_string());
         env.insert(
-            "HCOM_DIR".to_string(),
-            hcom_dir.to_string_lossy().to_string(),
+            "COMMS_DIR".to_string(),
+            comms_dir.to_string_lossy().to_string(),
         );
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let raw = serde_json::json!({
             "source": "startup",
             "session_id": "sess-ephemeral",
-            "transcript_path": hcom_dir.join("missing.jsonl").to_string_lossy(),
+            "transcript_path": comms_dir.join("missing.jsonl").to_string_lossy(),
         });
 
         let _ = handle_sessionstart(
@@ -3710,8 +3717,8 @@ mod tests {
     #[serial]
     fn switched_lineage_removes_process_only_stale_binding_without_blocking_unrelated_status() {
         crate::config::Config::init();
-        let (_dir, hcom_dir, _test_home, _guard) = isolated_test_env();
-        let db = HcomDb::open_raw(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _test_home, _guard) = isolated_test_env();
+        let db = CommsDb::open_raw(&comms_dir.join("test.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -3733,19 +3740,19 @@ mod tests {
         db.set_process_binding("process-stale", "", "stale")
             .unwrap();
 
-        let transcript = hcom_dir.join("stale-process-switch.jsonl");
+        let transcript = comms_dir.join("stale-process-switch.jsonl");
         std::fs::write(
             &transcript,
             "{\"sessionId\":\"sess-new\",\"message\":{\"session_id\":\"sess-old\"}}\n",
         )
         .unwrap();
         let mut env = std::collections::HashMap::new();
-        env.insert("HCOM_PROCESS_ID".to_string(), "process-stale".to_string());
+        env.insert("COMMS_PROCESS_ID".to_string(), "process-stale".to_string());
         env.insert(
-            "HCOM_DIR".to_string(),
-            hcom_dir.to_string_lossy().to_string(),
+            "COMMS_DIR".to_string(),
+            comms_dir.to_string_lossy().to_string(),
         );
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let raw = serde_json::json!({
             "source": "startup",
             "session_id": "sess-new",
@@ -3803,16 +3810,16 @@ mod tests {
             .path()
             .join(".claude/session-env/12345678-1234-1234-1234-123456789012/hook-1.sh");
         let mut env = std::collections::HashMap::new();
-        env.insert("HCOM_IS_FORK".to_string(), "1".to_string());
+        env.insert("COMMS_IS_FORK".to_string(), "1".to_string());
         env.insert(
-            "HCOM_PROCESS_ID".to_string(),
+            "COMMS_PROCESS_ID".to_string(),
             "process-restored".to_string(),
         );
         env.insert(
             "CLAUDE_ENV_FILE".to_string(),
             env_file.to_string_lossy().to_string(),
         );
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let raw = serde_json::json!({
             "source": "startup",
             "session_id": "87654321-4321-4321-4321-210987654321"
@@ -3841,13 +3848,13 @@ mod tests {
             .path()
             .join(".claude/session-env/12345678-1234-1234-1234-123456789012/hook-1.sh");
         let mut env = std::collections::HashMap::new();
-        env.insert("HCOM_IS_FORK".to_string(), "1".to_string());
-        env.insert("HCOM_PROCESS_ID".to_string(), "process-fork".to_string());
+        env.insert("COMMS_IS_FORK".to_string(), "1".to_string());
+        env.insert("COMMS_PROCESS_ID".to_string(), "process-fork".to_string());
         env.insert(
             "CLAUDE_ENV_FILE".to_string(),
             env_file.to_string_lossy().to_string(),
         );
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let raw = serde_json::json!({
             "source": "startup",
             "session_id": "parent-session"
@@ -4000,15 +4007,15 @@ mod tests {
                     [tool],
                 )
                 .unwrap();
-            for command in ["ps -eo pid,command", "hcom transcript nova", "hcom start"] {
+            for command in ["ps -eo pid,command", "comms transcript nova", "comms start"] {
                 let transcript = _dir.path().join("passive.jsonl");
-                std::fs::write(&transcript, "[hcom:nova]").unwrap();
+                std::fs::write(&transcript, "[comms:nova]").unwrap();
                 let mut payload = HookPayload::from_claude(serde_json::json!({
                     "session_id": "unjoined-session",
                     "transcript_path": transcript,
                     "tool_name": "Bash",
                     "tool_input": {"command": command},
-                    "tool_response": {"stdout": "[hcom:nova]"}
+                    "tool_response": {"stdout": "[comms:nova]"}
                 }));
                 let (code, stdout, ack, _) = route_claude_hook(&db, &ctx, HOOK_POST, &mut payload);
                 assert_eq!(code, 0);
@@ -4029,20 +4036,22 @@ mod tests {
     }
 
     #[test]
-    fn test_is_hcom_hook_command() {
-        assert!(is_hcom_hook_command("${HCOM} sessionstart"));
-        assert!(is_hcom_hook_command("${HCOM} post"));
-        assert!(is_hcom_hook_command("hcom sessionstart"));
-        assert!(is_hcom_hook_command("hcom post"));
-        assert!(is_hcom_hook_command("uvx hcom claude-notify"));
-        assert!(!is_hcom_hook_command("echo hello"));
-        assert!(!is_hcom_hook_command(""));
+    fn test_is_comms_hook_command() {
+        assert!(is_comms_hook_command("${COMMS} sessionstart"));
+        assert!(is_comms_hook_command("${COMMS} post"));
+        assert!(is_comms_hook_command("comms sessionstart"));
+        assert!(is_comms_hook_command("comms post"));
+        assert!(is_comms_hook_command("uvx comms claude-notify"));
+        assert!(!is_comms_hook_command("echo hello"));
+        assert!(!is_comms_hook_command(""));
     }
 
     #[test]
-    fn test_is_hcom_hook_command_legacy() {
-        assert!(is_hcom_hook_command("HCOM_ACTIVE=1 hcom.py sessionstart"));
-        assert!(is_hcom_hook_command("sh -c 'hcom something'"));
+    fn test_is_comms_hook_command_legacy() {
+        assert!(is_comms_hook_command(
+            "COMMS_ACTIVE=1 comms.py sessionstart"
+        ));
+        assert!(is_comms_hook_command("sh -c 'comms something'"));
     }
 
     #[test]
@@ -4050,56 +4059,56 @@ mod tests {
         let command = build_hook_entry_command("poll");
         assert_eq!(
             command,
-            "cmd=${HCOM:-hcom}; command -v \"${cmd%% *}\" >/dev/null 2>&1 && exec $cmd poll || exit 0"
+            "cmd=${COMMS:-comms}; command -v \"${cmd%% *}\" >/dev/null 2>&1 && exec $cmd poll || exit 0"
         );
         assert!(!command.starts_with("sh -c"));
     }
 
     #[test]
-    fn test_remove_hcom_hooks_empty() {
+    fn test_remove_comms_hooks_empty() {
         let mut settings = serde_json::json!({});
-        assert!(!remove_hcom_hooks_from_settings(&mut settings));
+        assert!(!remove_comms_hooks_from_settings(&mut settings));
     }
 
     #[test]
-    fn test_remove_hcom_hooks_no_hooks_section() {
+    fn test_remove_comms_hooks_no_hooks_section() {
         let mut settings = serde_json::json!({"env": {"FOO": "bar"}});
-        assert!(!remove_hcom_hooks_from_settings(&mut settings));
+        assert!(!remove_comms_hooks_from_settings(&mut settings));
     }
 
     #[test]
-    fn test_remove_hcom_hooks_with_hcom() {
+    fn test_remove_comms_hooks_with_comms() {
         let mut settings = serde_json::json!({
             "hooks": {
                 "SessionStart": [{
                     "hooks": [{
                         "type": "command",
-                        "command": "${HCOM} sessionstart"
+                        "command": "${COMMS} sessionstart"
                     }]
                 }]
             },
-            "env": {"HCOM": "hcom"},
+            "env": {"COMMS": "comms"},
         });
-        assert!(remove_hcom_hooks_from_settings(&mut settings));
+        assert!(remove_comms_hooks_from_settings(&mut settings));
         // SessionStart should be removed entirely
         assert!(settings["hooks"].get("SessionStart").is_none());
-        // HCOM env should be removed
+        // COMMS env should be removed
         assert!(settings.get("env").is_none());
     }
 
     #[test]
-    fn test_remove_hcom_hooks_preserves_non_hcom() {
+    fn test_remove_comms_hooks_preserves_non_comms() {
         let mut settings = serde_json::json!({
             "hooks": {
                 "PostToolUse": [{
                     "hooks": [
-                        {"type": "command", "command": "${HCOM} post"},
+                        {"type": "command", "command": "${COMMS} post"},
                         {"type": "command", "command": "echo custom hook"},
                     ]
                 }]
             }
         });
-        assert!(remove_hcom_hooks_from_settings(&mut settings));
+        assert!(remove_comms_hooks_from_settings(&mut settings));
         // Matcher should be preserved with only the custom hook
         let matchers = settings["hooks"]["PostToolUse"].as_array().unwrap();
         assert_eq!(matchers.len(), 1);
@@ -4109,17 +4118,17 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_hcom_permissions() {
+    fn test_remove_comms_permissions() {
         let mut settings = serde_json::json!({
             "hooks": {},
             "permissions": {
                 "allow": [
-                    "Bash(hcom send:*)",
+                    "Bash(comms send:*)",
                     "Bash(custom:*)",
                 ]
             }
         });
-        remove_hcom_hooks_from_settings(&mut settings);
+        remove_comms_hooks_from_settings(&mut settings);
         let allow = settings["permissions"]["allow"].as_array().unwrap();
         assert_eq!(allow.len(), 1);
         assert_eq!(allow[0], "Bash(custom:*)");
@@ -4135,32 +4144,32 @@ mod tests {
     #[test]
     fn test_format_claude_permission() {
         assert_eq!(
-            format_claude_permission("hcom", "send"),
-            "Bash(hcom send:*)"
+            format_claude_permission("comms", "send"),
+            "Bash(comms send:*)"
         );
         assert_eq!(
-            format_claude_permission("hcom", "--help"),
-            "Bash(hcom --help)"
+            format_claude_permission("comms", "--help"),
+            "Bash(comms --help)"
         );
         assert_eq!(
-            format_claude_permission("uvx hcom", "list"),
-            "Bash(uvx hcom list:*)"
+            format_claude_permission("uvx comms", "list"),
+            "Bash(uvx comms list:*)"
         );
     }
 
     #[test]
     fn test_format_claude_powershell_permission() {
         assert_eq!(
-            format_claude_powershell_permission("hcom", "send"),
-            "PowerShell(hcom send:*)"
+            format_claude_powershell_permission("comms", "send"),
+            "PowerShell(comms send:*)"
         );
         assert_eq!(
-            format_claude_powershell_permission("hcom", "--help"),
-            "PowerShell(hcom --help)"
+            format_claude_powershell_permission("comms", "--help"),
+            "PowerShell(comms --help)"
         );
         assert_eq!(
-            format_claude_powershell_permission("uvx hcom", "list"),
-            "PowerShell(uvx hcom list:*)"
+            format_claude_powershell_permission("uvx comms", "list"),
+            "PowerShell(uvx comms list:*)"
         );
     }
 
@@ -4170,22 +4179,22 @@ mod tests {
         assert!(!perms.is_empty());
         // Both shell variants are installed for every safe command, plus the
         // three actor-prelude statements used only by Claude subagents.
-        assert_eq!(perms.len(), SAFE_HCOM_COMMANDS.len() * 2 + 3);
+        assert_eq!(perms.len(), SAFE_COMMS_COMMANDS.len() * 2 + 3);
         assert_eq!(
             perms.iter().filter(|p| p.starts_with("Bash(")).count(),
-            SAFE_HCOM_COMMANDS.len() + 1
+            SAFE_COMMS_COMMANDS.len() + 1
         );
         assert_eq!(
             perms
                 .iter()
                 .filter(|p| p.starts_with("PowerShell("))
                 .count(),
-            SAFE_HCOM_COMMANDS.len() + 2
+            SAFE_COMMS_COMMANDS.len() + 2
         );
         assert!(
             perms
                 .iter()
-                .any(|p| { p == "Bash(export HCOM_CLAUDE_ACTOR=* HCOM_CLAUDE_ACTOR_SESSION=*)" })
+                .any(|p| { p == "Bash(export COMMS_CLAUDE_ACTOR=* COMMS_CLAUDE_ACTOR_SESSION=*)" })
         );
         // All should start with "Bash(" or "PowerShell("
         for p in &perms {
@@ -4200,15 +4209,15 @@ mod tests {
     #[test]
     fn test_build_all_claude_permission_patterns() {
         let patterns = build_all_claude_permission_patterns();
-        // Both hcom prefixes and shell variants, plus actor-prelude cleanup.
-        let expected = (SAFE_HCOM_COMMANDS.len() + LEGACY_HCOM_COMMANDS.len()) * 2 * 2 + 3 + 2;
+        // Both comms prefixes and shell variants, plus actor-prelude cleanup.
+        let expected = (SAFE_COMMS_COMMANDS.len() + LEGACY_COMMS_COMMANDS.len()) * 2 * 2 + 3 + 2;
         assert_eq!(patterns.len(), expected);
-        assert!(patterns.iter().any(|p| p.contains("hcom send")));
-        assert!(patterns.iter().any(|p| p == "PowerShell(hcom send:*)"));
-        assert!(patterns.iter().any(|p| p == "PowerShell(uvx hcom send:*)"));
-        assert!(patterns.iter().any(|p| p.contains("uvx hcom send")));
+        assert!(patterns.iter().any(|p| p.contains("comms send")));
+        assert!(patterns.iter().any(|p| p == "PowerShell(comms send:*)"));
+        assert!(patterns.iter().any(|p| p == "PowerShell(uvx comms send:*)"));
+        assert!(patterns.iter().any(|p| p.contains("uvx comms send")));
         // Legacy commands included for removal
-        assert!(patterns.iter().any(|p| p.contains("hcom daemon")));
+        assert!(patterns.iter().any(|p| p.contains("comms daemon")));
     }
 
     #[test]
@@ -4226,10 +4235,10 @@ mod tests {
         let settings = serde_json::json!({
             "hooks": {
                 "SessionStart": [{
-                    "hooks": [{"type": "command", "command": "${HCOM} sessionstart"}]
+                    "hooks": [{"type": "command", "command": "${COMMS} sessionstart"}]
                 }]
             },
-            "env": {"HCOM": "hcom"},
+            "env": {"COMMS": "comms"},
             "other_key": "preserved"
         });
         std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
@@ -4247,7 +4256,7 @@ mod tests {
     use serial_test::serial;
 
     fn claude_test_env() -> (tempfile::TempDir, PathBuf, PathBuf, EnvGuard) {
-        let (dir, _hcom_dir, test_home, guard) = isolated_test_env();
+        let (dir, _comms_dir, test_home, guard) = isolated_test_env();
         let settings_path = test_home.join(".claude").join("settings.json");
         (dir, test_home, settings_path, guard)
     }
@@ -4257,14 +4266,14 @@ mod tests {
         serde_json::from_str(&content).unwrap()
     }
 
-    /// Independent verification: no hcom hooks in Claude settings JSON.
-    fn independently_verify_no_hcom_hooks_claude(settings: &Value) -> Vec<String> {
+    /// Independent verification: no comms hooks in Claude settings JSON.
+    fn independently_verify_no_comms_hooks_claude(settings: &Value) -> Vec<String> {
         let mut violations = Vec::new();
         let hooks = match settings.get("hooks").and_then(|v| v.as_object()) {
             Some(h) => h,
             None => return violations,
         };
-        let hcom_patterns = ["hcom", "HCOM", "${HCOM}"];
+        let comms_patterns = ["comms", "COMMS", "${COMMS}"];
         for (hook_type, matchers_val) in hooks {
             let matchers = match matchers_val.as_array() {
                 Some(a) => a,
@@ -4277,7 +4286,7 @@ mod tests {
                 };
                 for (j, hook) in hooks_arr.iter().enumerate() {
                     let command = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                    if hcom_patterns.iter().any(|p| command.contains(p)) {
+                    if comms_patterns.iter().any(|p| command.contains(p)) {
                         violations.push(format!("{hook_type}[{i}].hooks[{j}]: command={command}"));
                     }
                 }
@@ -4286,8 +4295,8 @@ mod tests {
         violations
     }
 
-    /// Independent verification: expected hcom hooks present.
-    fn independently_verify_hcom_hooks_present_claude(
+    /// Independent verification: expected comms hooks present.
+    fn independently_verify_comms_hooks_present_claude(
         settings: &Value,
         expected: &[(&str, &str)], // (hook_type, command_substring)
     ) -> Vec<String> {
@@ -4337,16 +4346,16 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_remove_claude_only_removes_hcom() {
+    fn test_remove_claude_only_removes_comms() {
         let (_dir, _test_home, settings_path, _guard) = claude_test_env();
 
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
-        // Mixed hcom + user hooks in same type
+        // Mixed comms + user hooks in same type
         let settings = serde_json::json!({
             "hooks": {
                 "PostToolUse": [{
                     "hooks": [
-                        {"type": "command", "command": "${HCOM} post"},
+                        {"type": "command", "command": "${COMMS} post"},
                         {"type": "command", "command": "echo user hook", "name": "my-logger"},
                     ]
                 }]
@@ -4368,9 +4377,9 @@ mod tests {
         assert_eq!(hooks_list.len(), 1);
         assert_eq!(hooks_list[0]["command"], "echo user hook");
 
-        // No hcom hooks
-        let violations = independently_verify_no_hcom_hooks_claude(&updated);
-        assert!(violations.is_empty(), "hcom hooks remain: {violations:?}");
+        // No comms hooks
+        let violations = independently_verify_no_comms_hooks_claude(&updated);
+        assert!(violations.is_empty(), "comms hooks remain: {violations:?}");
 
         drop(_guard);
     }
@@ -4391,7 +4400,7 @@ mod tests {
         )
         .unwrap();
 
-        // Plant a legacy install (same shape older hcom wrote).
+        // Plant a legacy install (same shape older comms wrote).
         let mut legacy = user_settings.clone();
         merge_per_run_settings(&mut legacy, true).unwrap();
         std::fs::write(&settings_path, legacy.to_string()).unwrap();
@@ -4402,7 +4411,7 @@ mod tests {
             ("PermissionRequest", "permission-request"),
             ("Notification", "notify"),
         ];
-        let missing = independently_verify_hcom_hooks_present_claude(&after_setup, &expected);
+        let missing = independently_verify_comms_hooks_present_claude(&after_setup, &expected);
         assert!(
             missing.is_empty(),
             "legacy install missing hooks: {missing:?}"
@@ -4411,10 +4420,10 @@ mod tests {
         // Remove
         assert!(remove_hooks_from_settings_path(&settings_path));
         let after_remove = read_json(&settings_path);
-        let violations = independently_verify_no_hcom_hooks_claude(&after_remove);
+        let violations = independently_verify_no_comms_hooks_claude(&after_remove);
         assert!(
             violations.is_empty(),
-            "after remove, hcom hooks still present: {violations:?}"
+            "after remove, comms hooks still present: {violations:?}"
         );
 
         // User data preserved
@@ -4424,7 +4433,7 @@ mod tests {
             serde_json::json!(["dangerous"])
         );
         assert!(after_remove["permissions"].get("allow").is_none());
-        assert!(after_remove["env"].get("HCOM").is_none());
+        assert!(after_remove["env"].get("COMMS").is_none());
 
         drop(_guard);
     }
@@ -4465,29 +4474,29 @@ mod tests {
     // bug — which branch a given hook payload falls into — not a bug inside
     // any one handler. They need `isolated_test_env()` because
     // `route_claude_hook` exercises real log::log_info call sites (spawn ownership,
-    // sessionstart and lifecycle handlers), which resolve the hcom log path
+    // sessionstart and lifecycle handlers), which resolve the comms log path
     // through the global `Config`; without isolation that would touch the
-    // real `~/.hcom` of whatever machine runs the test.
+    // real `~/.comms` of whatever machine runs the test.
 
-    /// Hook context of an hcom-launched Claude (per-run hooks always carry
-    /// HCOM_PROCESS_ID). The process is unbound, so identity comes from the
+    /// Hook context of an comms-launched Claude (per-run hooks always carry
+    /// COMMS_PROCESS_ID). The process is unbound, so identity comes from the
     /// session binding each test sets up.
-    fn make_ctx() -> HcomContext {
+    fn make_ctx() -> CommsContext {
         let env = std::collections::HashMap::from([(
-            "HCOM_PROCESS_ID".to_string(),
+            "COMMS_PROCESS_ID".to_string(),
             "process-test".to_string(),
         )]);
-        HcomContext::from_env(&env, PathBuf::from("/tmp"))
+        CommsContext::from_env(&env, PathBuf::from("/tmp"))
     }
 
-    fn make_isolated_test_db() -> (tempfile::TempDir, EnvGuard, HcomDb) {
-        let (dir, hcom_dir, _test_home, guard) = isolated_test_env();
-        let db = HcomDb::open_raw(&hcom_dir.join("test.db")).unwrap();
+    fn make_isolated_test_db() -> (tempfile::TempDir, EnvGuard, CommsDb) {
+        let (dir, comms_dir, _test_home, guard) = isolated_test_env();
+        let db = CommsDb::open_raw(&comms_dir.join("test.db")).unwrap();
         db.init_db().unwrap();
         (dir, guard, db)
     }
 
-    fn bind_validated_session(db: &HcomDb, session_id: &str, instance_name: &str) {
+    fn bind_validated_session(db: &CommsDb, session_id: &str, instance_name: &str) {
         db.set_session_binding(session_id, instance_name).unwrap();
         db.mark_claude_session_validated(session_id, instance_name)
             .unwrap();
@@ -4557,7 +4566,7 @@ mod tests {
             "session_id": "sess-1",
             "tool_name": "Bash",
             "tool_use_id": "toolu-1",
-            "tool_input": {"command": "hcom list"},
+            "tool_input": {"command": "comms list"},
         });
         let payload = HookPayload::from_claude(raw);
         let (_, stdout) = handle_pretooluse(&db, &payload, "nova", "sess-1", None);
@@ -4577,45 +4586,45 @@ mod tests {
     }
 
     #[test]
-    fn test_hcom_command_detection_biases_toward_instrumentation() {
+    fn test_comms_command_detection_biases_toward_instrumentation() {
         for command in [
-            "hcom list",
-            "PATH=/tmp/bin hcom list",
-            "echo ready && hcom send @nova -- hi",
-            "printf data | hcom events",
-            "/opt/hcom/bin/hcom list | head",
-            "uvx hcom list",
-            "$HCOM list",
-            "${HCOM} list",
-            "timeout 5 hcom list",
-            "bash -c 'hcom list'",
-            "echo hcom list",
-            "printf 'run hcom list later'",
-            "rg hcom src",
+            "comms list",
+            "PATH=/tmp/bin comms list",
+            "echo ready && comms send @nova -- hi",
+            "printf data | comms events",
+            "/opt/comms/bin/comms list | head",
+            "uvx comms list",
+            "$COMMS list",
+            "${COMMS} list",
+            "timeout 5 comms list",
+            "bash -c 'comms list'",
+            "echo comms list",
+            "printf 'run comms list later'",
+            "rg comms src",
         ] {
             assert!(
-                visibly_invokes_hcom(command),
-                "expected hcom token to trigger instrumentation: {command}"
+                visibly_invokes_comms(command),
+                "expected comms token to trigger instrumentation: {command}"
             );
         }
 
         for command in [
             "git status",
-            "./script-containing-hcom-in-its-name",
-            "echo hcommunication",
+            "./script-containing-comms-in-its-name",
+            "echo commsmunication",
             "rg hook-comms src",
             "node tool.js",
         ] {
             assert!(
-                !visibly_invokes_hcom(command),
-                "non-hcom token must not trigger instrumentation: {command}"
+                !visibly_invokes_comms(command),
+                "non-comms token must not trigger instrumentation: {command}"
             );
         }
     }
 
     #[test]
     #[serial]
-    fn test_subagent_non_hcom_shell_command_is_not_modified() {
+    fn test_subagent_non_comms_shell_command_is_not_modified() {
         crate::config::Config::init();
         let (_dir, _guard, db) = make_isolated_test_db();
         db.conn()
@@ -4649,7 +4658,7 @@ mod tests {
             handle_pretooluse(&db, &payload, "nova_task_1", "sess-1", Some("agent-1"));
         assert!(
             stdout.is_empty(),
-            "non-hcom command must remain byte-for-byte untouched"
+            "non-comms command must remain byte-for-byte untouched"
         );
         let capabilities: i64 = db
             .conn()
@@ -4691,7 +4700,7 @@ mod tests {
             "agent_id": "agent-1",
             "tool_name": "Bash",
             "tool_use_id": "toolu-1",
-            "tool_input": {"command": "hcom list | head"},
+            "tool_input": {"command": "comms list | head"},
         });
         let payload = HookPayload::from_claude(raw);
         let (_, first) = handle_pretooluse(&db, &payload, "nova_task_1", "sess-1", Some("agent-1"));
@@ -4709,7 +4718,7 @@ mod tests {
         let prefix = format!("export {}=", crate::claude_actor::ENV_VAR);
         assert!(command.starts_with(&prefix));
         assert!(command.contains(&format!("{}=sess-1", crate::claude_actor::SESSION_ENV_VAR)));
-        assert!(command.ends_with("\nhcom list | head"));
+        assert!(command.ends_with("\ncomms list | head"));
         let token = command
             .strip_prefix(&prefix)
             .unwrap()
@@ -4726,7 +4735,7 @@ mod tests {
             "agent_id": "agent-1",
             "tool_name": "Bash",
             "tool_use_id": "toolu-1",
-            "tool_input": {"command": "hcom list | head"},
+            "tool_input": {"command": "comms list | head"},
             "error": "failed",
         });
         let failure = HookPayload::from_claude(failure_raw);
@@ -4766,7 +4775,7 @@ mod tests {
             "agent_id": "agent-1",
             "tool_name": "PowerShell",
             "tool_use_id": "toolu-ps-1",
-            "tool_input": {"command": "hcom list"},
+            "tool_input": {"command": "comms list"},
         });
         let payload = HookPayload::from_claude(raw);
         let (_, stdout) =
@@ -4781,7 +4790,7 @@ mod tests {
             "$env:{} = 'sess-1'",
             crate::claude_actor::SESSION_ENV_VAR
         )));
-        assert!(command.ends_with("\nhcom list"));
+        assert!(command.ends_with("\ncomms list"));
         let token = command
             .strip_prefix(&prefix)
             .unwrap()
@@ -4798,7 +4807,7 @@ mod tests {
             "agent_id": "agent-1",
             "tool_name": "PowerShell",
             "tool_use_id": "toolu-ps-1",
-            "tool_input": {"command": "hcom list"},
+            "tool_input": {"command": "comms list"},
             "error": "failed",
         });
         let failure = HookPayload::from_claude(failure_raw);
@@ -4900,7 +4909,7 @@ mod tests {
     /// Same fixture as `make_delivery_test_db` (instance 'nova' + a pending
     /// broadcast message from 'luna'), but under `isolated_test_env()` so
     /// dispatcher-level tests that log are safe to run.
-    fn make_isolated_delivery_test_db() -> (tempfile::TempDir, EnvGuard, HcomDb) {
+    fn make_isolated_delivery_test_db() -> (tempfile::TempDir, EnvGuard, CommsDb) {
         let (dir, guard, db) = make_isolated_test_db();
         db.conn()
             .execute(
@@ -4923,7 +4932,7 @@ mod tests {
     /// carry as `parent_session_id` — always the true root session_id — so
     /// fixtures built with this helper look the same as a real row would.
     fn insert_subagent_row(
-        db: &HcomDb,
+        db: &CommsDb,
         name: &str,
         agent_id: &str,
         parent_name: &str,
@@ -4944,16 +4953,16 @@ mod tests {
         crate::config::Config::init();
         let (dir, _guard, db) = make_isolated_delivery_test_db();
         let mut env = std::collections::HashMap::new();
-        env.insert("HCOM_LAUNCHED".to_string(), "1".to_string());
-        env.insert("HCOM_PTY_MODE".to_string(), "1".to_string());
+        env.insert("COMMS_LAUNCHED".to_string(), "1".to_string());
+        env.insert("COMMS_PTY_MODE".to_string(), "1".to_string());
         env.insert(
-            "HCOM_DIR".to_string(),
-            dir.path().join(".hcom").to_string_lossy().into_owned(),
+            "COMMS_DIR".to_string(),
+            dir.path().join(".comms").to_string_lossy().into_owned(),
         );
-        let ctx = HcomContext::from_env(&env, dir.path().to_path_buf());
+        let ctx = CommsContext::from_env(&env, dir.path().to_path_buf());
         let payload = HookPayload::from_claude(serde_json::json!({
             "session_id": "sess-1",
-            "prompt": "<hcom>",
+            "prompt": "<comms>",
         }));
         let instance = db.get_instance_full("nova").unwrap().unwrap();
         assert_eq!(instance.name_announced, 0);
@@ -5004,7 +5013,7 @@ mod tests {
         let ctx = make_ctx();
         let instance = db.get_instance_full("nova").unwrap().unwrap();
 
-        for prompt in ["ordinary user prompt", "<hcom> user draft"] {
+        for prompt in ["ordinary user prompt", "<comms> user draft"] {
             let payload = HookPayload::from_claude(serde_json::json!({ "prompt": prompt }));
             let (_code, stdout, ack) = handle_userpromptsubmit(
                 &db,
@@ -5018,7 +5027,7 @@ mod tests {
             assert!(ack.is_none());
         }
 
-        let payload = HookPayload::from_claude(serde_json::json!({ "prompt": " \n<hcom>\t" }));
+        let payload = HookPayload::from_claude(serde_json::json!({ "prompt": " \n<comms>\t" }));
         let (_code, stdout, ack) = handle_userpromptsubmit(
             &db,
             &ctx,
@@ -5120,8 +5129,8 @@ mod tests {
     #[serial]
     fn test_ambiguous_userpromptsubmit_does_not_consume_messages() {
         crate::config::Config::init();
-        let (_dir, hcom_dir, _test_home, _guard) = isolated_test_env();
-        let db = HcomDb::open_raw(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _test_home, _guard) = isolated_test_env();
+        let db = CommsDb::open_raw(&comms_dir.join("test.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -5146,7 +5155,7 @@ mod tests {
             )
             .unwrap();
 
-        let transcript = hcom_dir.join("poisoned.jsonl");
+        let transcript = comms_dir.join("poisoned.jsonl");
         std::fs::write(
             &transcript,
             "{\"message\":{\"session_id\":\"sess-original\"}}\n",
@@ -5154,20 +5163,20 @@ mod tests {
         .unwrap();
         let mut env = std::collections::HashMap::new();
         env.insert(
-            "HCOM_DIR".to_string(),
-            hcom_dir.to_string_lossy().to_string(),
+            "COMMS_DIR".to_string(),
+            comms_dir.to_string_lossy().to_string(),
         );
         env.insert("CLAUDECODE".to_string(), "1".to_string());
         env.insert(
-            "HCOM_PROCESS_ID".to_string(),
+            "COMMS_PROCESS_ID".to_string(),
             "process-restored".to_string(),
         );
-        env.insert("HCOM_PTY_MODE".to_string(), "1".to_string());
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        env.insert("COMMS_PTY_MODE".to_string(), "1".to_string());
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let raw = serde_json::json!({
             "session_id": "sess-poisoned",
             "transcript_path": transcript,
-            "prompt": "<hcom>"
+            "prompt": "<comms>"
         });
         let mut payload = HookPayload::from_claude(raw);
 
@@ -5294,7 +5303,7 @@ mod tests {
             "session_id": "sess-1",
             "agent_id": "agent-a",
             "tool_name": "Bash",
-            "tool_input": {"command": "hcom send --name agent-b -- hi"},
+            "tool_input": {"command": "comms send --name agent-b -- hi"},
         });
         let mut payload_spoof = HookPayload::from_claude(raw_spoof);
         let (exit_code, stdout, ack, _timing) =
@@ -5311,7 +5320,7 @@ mod tests {
             "session_id": "sess-1",
             "agent_id": "agent-b",
             "tool_name": "Bash",
-            "tool_input": {"command": "hcom send --name agent-b -- hi"},
+            "tool_input": {"command": "comms send --name agent-b -- hi"},
         });
         let mut payload_ok = HookPayload::from_claude(raw_ok);
         let (_exit_code, stdout_ok, ack_ok, _timing) =
@@ -5324,17 +5333,17 @@ mod tests {
     }
 
     /// Property: every Claude subagent carries `agent_id` on its hooks
-    /// regardless of whether its root ever ran `hcom start` — that's a
-    /// property of Claude's hook schema, not of hcom participation.
-    /// SubagentStart must stay a silent no-op (no `hcom start --name ...`
+    /// regardless of whether its root ever ran `comms start` — that's a
+    /// property of Claude's hook schema, not of comms participation.
+    /// SubagentStart must stay a silent no-op (no `comms start --name ...`
     /// hint and no allocated row) when the shared
-    /// session_id has no hcom root binding at all.
+    /// session_id has no comms root binding at all.
     #[test]
     #[serial]
     fn test_subagent_start_nonparticipant_root_stays_silent() {
         crate::config::Config::init();
         let (_dir, _guard, db) = make_isolated_test_db();
-        // No session binding: "sess-1" is not an hcom participant.
+        // No session binding: "sess-1" is not an comms participant.
 
         let raw = serde_json::json!({
             "session_id": "sess-1",
@@ -5349,7 +5358,7 @@ mod tests {
         assert_eq!(exit_code, 0);
         assert!(
             stdout.is_empty(),
-            "nonparticipant SubagentStart must not inject an hcom hint, got: {stdout}"
+            "nonparticipant SubagentStart must not inject an comms hint, got: {stdout}"
         );
         assert!(ack.is_none());
         assert!(
@@ -5360,21 +5369,21 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_nonparticipant_child_hcom_is_denied_but_other_shell_is_silent() {
+    fn test_nonparticipant_child_comms_is_denied_but_other_shell_is_silent() {
         crate::config::Config::init();
         let (_dir, _guard, db) = make_isolated_test_db();
         let ctx = make_ctx();
 
-        let hcom_raw = serde_json::json!({
+        let comms_raw = serde_json::json!({
             "session_id": "sess-1",
             "agent_id": "child-1",
             "tool_name": "Bash",
-            "tool_use_id": "tool-hcom",
-            "tool_input": {"command": "hcom start"},
+            "tool_use_id": "tool-comms",
+            "tool_input": {"command": "comms start"},
         });
-        let mut hcom_payload = HookPayload::from_claude(hcom_raw);
+        let mut comms_payload = HookPayload::from_claude(comms_raw);
         let (exit_code, stdout, ack, _timing) =
-            route_claude_hook(&db, &ctx, HOOK_PRE, &mut hcom_payload);
+            route_claude_hook(&db, &ctx, HOOK_PRE, &mut comms_payload);
         assert_eq!(exit_code, 0);
         assert!(ack.is_none());
         let output: Value = serde_json::from_str(&stdout).unwrap();
@@ -5593,7 +5602,7 @@ mod tests {
         let resumed_name = resumed_name.unwrap();
         assert_eq!(
             resumed_name, original_name,
-            "resume must preserve the same hcom child identity"
+            "resume must preserve the same comms child identity"
         );
         let resumed_row = db.get_instance_full(&resumed_name).unwrap().unwrap();
         assert_eq!(
@@ -5605,7 +5614,7 @@ mod tests {
 
     /// Property: the resumed subagent's next PostToolUse must resolve its
     /// identity (not the reported `unknown_subagent_actor` fail-closed path)
-    /// once resume has reattached it — otherwise `hcom list`/`send` can't see
+    /// once resume has reattached it — otherwise `comms list`/`send` can't see
     /// a subagent Claude's own TUI still shows as live.
     #[test]
     #[serial]
@@ -5656,9 +5665,9 @@ mod tests {
     #[serial]
     fn test_concurrent_resumed_subagent_start_resolves_to_same_owner() {
         crate::config::Config::init();
-        let (_dir, hcom_dir, _test_home, _guard) = isolated_test_env();
-        let db_path = hcom_dir.join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let (_dir, comms_dir, _test_home, _guard) = isolated_test_env();
+        let db_path = comms_dir.join("test.db");
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -5674,7 +5683,7 @@ mod tests {
             .map(|_| {
                 let path = db_path.clone();
                 std::thread::spawn(move || {
-                    let db = HcomDb::open_raw(&path).unwrap();
+                    let db = CommsDb::open_raw(&path).unwrap();
                     let ctx = make_ctx();
                     let raw = serde_json::json!({
                         "session_id": "sess-1",
@@ -6034,9 +6043,9 @@ mod tests {
     #[serial]
     fn test_concurrent_duplicate_subagent_stop_produces_one_teardown() {
         crate::config::Config::init();
-        let (_dir, hcom_dir, _test_home, _guard) = isolated_test_env();
-        let db_path = hcom_dir.join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let (_dir, comms_dir, _test_home, _guard) = isolated_test_env();
+        let db_path = comms_dir.join("test.db");
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -6052,7 +6061,7 @@ mod tests {
             .map(|_| {
                 let path = db_path.clone();
                 std::thread::spawn(move || {
-                    let db = HcomDb::open_raw(&path).unwrap();
+                    let db = CommsDb::open_raw(&path).unwrap();
                     // Identical payload from every "duplicate hook registration".
                     let raw = serde_json::json!({
                         "session_id": "sess-1",
@@ -6120,16 +6129,16 @@ mod tests {
             }
         }
         let _launch_env = LaunchEnv(
-            ["HCOM_PTY_MODE", "HCOM_LAUNCHED", "HCOM_LAUNCH_BATCH_ID"]
+            ["COMMS_PTY_MODE", "COMMS_LAUNCHED", "COMMS_LAUNCH_BATCH_ID"]
                 .into_iter()
                 .map(|key| (key, std::env::var_os(key)))
                 .collect(),
         );
         // SAFETY: this test is serialized; LaunchEnv restores these variables.
         unsafe {
-            std::env::set_var("HCOM_PTY_MODE", "1");
-            std::env::set_var("HCOM_LAUNCHED", "1");
-            std::env::set_var("HCOM_LAUNCH_BATCH_ID", "current");
+            std::env::set_var("COMMS_PTY_MODE", "1");
+            std::env::set_var("COMMS_LAUNCHED", "1");
+            std::env::set_var("COMMS_LAUNCH_BATCH_ID", "current");
         }
         let raw = serde_json::json!({"reason": "other"});
         let updates = serde_json::Map::from_iter([(
@@ -6249,7 +6258,7 @@ mod tests {
             "agent_id": "agent-1",
             "tool_name": "Bash",
             "tool_use_id": "toolu-old",
-            "tool_input": {"command": "hcom list"},
+            "tool_input": {"command": "comms list"},
             "tool_response": {"stdout": "done"},
         });
         let mut payload = HookPayload::from_claude(raw);

@@ -534,7 +534,7 @@ fn render_vertical(frame: &mut Frame, app: &mut App, area: Rect) {
 
     render_status_bar(frame, vlayout[0], app);
 
-    // Separator line after hcom header (brighter when filtered)
+    // Separator line after comms header (brighter when filtered)
     let sep_line = "\u{2500}".repeat(area.width as usize);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -684,7 +684,7 @@ fn render_empty(frame: &mut Frame, area: Rect, app: &App) {
     ])
     .split(area);
 
-    let bar = Line::from(vec![Span::raw("  "), Span::styled("hcom", Theme::title())]);
+    let bar = Line::from(vec![Span::raw("  "), Span::styled("comms", Theme::title())]);
     frame.render_widget(Paragraph::new(bar), layout[0]);
 
     let key = |k: &str| Span::styled(format!("  {:<10}", k), Style::default().fg(palette::FG));
@@ -714,7 +714,7 @@ fn render_empty(frame: &mut Frame, area: Rect, app: &App) {
     msg.extend([
         Line::raw(""),
         Line::from(vec![key("tab"), lbl("launch agents")]),
-        Line::from(vec![key("!"), lbl("run hcom command")]),
+        Line::from(vec![key("!"), lbl("run comms command")]),
         Line::from(vec![key("ctrl+r"), lbl("relay settings")]),
     ]);
     if app.ui.mode == InputMode::Navigate && app.ui.overlay.is_none() {
@@ -799,7 +799,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    let mut left = vec![Span::raw("  "), Span::styled("hcom", Theme::title())];
+    let mut left = vec![Span::raw("  "), Span::styled("comms", Theme::title())];
 
     // Filter/count info next to title
     let dim_info = Style::default().fg(palette::FG_DARK);
@@ -857,7 +857,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     // Relay indicator (right side, before status counts). Branches off the
     // canonical RelayHealth — same enum the CLI and JSON render from, so
-    // the indicator can't disagree with `hcom relay` / `hcom status`.
+    // the indicator can't disagree with `comms relay` / `comms status`.
     use crate::relay::{RelayErrorReason, RelayHealth};
     match &app.data.relay_health {
         RelayHealth::Connected => {

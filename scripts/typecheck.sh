@@ -11,16 +11,16 @@ if [[ "$(uname -o 2>/dev/null || true)" == "Android" ]]; then
   # The typecheck gate therefore only runs on the ubuntu CI job (see the
   # `typecheck` job in .github/workflows/ci.yml); skipping loudly here keeps a
   # local `just ci` honest about what it did and did not verify.
-  if [[ "${HCOM_TYPECHECK_FORCE:-}" != "1" ]]; then
+  if [[ "${COMMS_TYPECHECK_FORCE:-}" != "1" ]]; then
     echo "typecheck: SKIPPED on Android (TypeScript 7 has no android native build)"
-    echo "typecheck: plugin types are gated by the ubuntu CI job; set HCOM_TYPECHECK_FORCE=1 to attempt it anyway"
+    echo "typecheck: plugin types are gated by the ubuntu CI job; set COMMS_TYPECHECK_FORCE=1 to attempt it anyway"
     exit 0
   fi
 
   # Stage the plugin sources under a dedicated child dir so the rm -rf below
-  # can never target a caller-supplied path directly (e.g. HCOM_TYPECHECK_ROOT
+  # can never target a caller-supplied path directly (e.g. COMMS_TYPECHECK_ROOT
   # pointed at the repo would otherwise wipe the whole src/ tree).
-  project_root="${HCOM_TYPECHECK_ROOT:-$HOME/.hcom/.cache}/hcom-typecheck-stage"
+  project_root="${COMMS_TYPECHECK_ROOT:-$HOME/.comms/.cache}/comms-typecheck-stage"
   if [[ "$project_root" == "$repo_root" ]]; then
     echo "typecheck: refusing to stage into the repo root ($repo_root)" >&2
     exit 1

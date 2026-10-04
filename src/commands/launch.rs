@@ -1,18 +1,18 @@
-//! Launch command: `hcom [N] <tool> [--tag X] [--terminal X] [--headless] [--hcom-prompt X] [--hcom-system-prompt X] [--batch-id X] [tool-args...]`
+//! Launch command: `comms [N] <tool> [--tag X] [--terminal X] [--headless] [--comms-prompt X] [--comms-system-prompt X] [--batch-id X] [tool-args...]`
 //!
 //!
-//! Parses hcom-level flags, merges env config with CLI args via tool-specific
+//! Parses comms-level flags, merges env config with CLI args via tool-specific
 //! parsers, then delegates to `launcher::launch()`.
 
-use crate::config::HcomConfig;
+use crate::config::CommsConfig;
 use crate::core::launch_status::{self, LaunchStatus};
 use crate::core::tips::{self, LaunchTipsContext};
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::identity;
 use crate::launcher::{self, LaunchParams, LaunchResult, LaunchTool};
 use crate::log::log_info;
 use crate::router::GlobalFlags;
-use crate::shared::HcomContext;
+use crate::shared::CommsContext;
 use anyhow::{Result, bail};
 use serde_json::json;
 use std::time::Instant;
@@ -21,7 +21,7 @@ pub(crate) const INLINE_SINGLE_LAUNCH_WAIT_SECS: u64 = 10;
 
 /// Run the launch command. `argv` is the full argv[1..] including count/tool.
 pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
-    let (count, tool, hcom_flags, tool_args) = parse_launch_argv(argv)?;
+    let (count, tool, comms_flags, tool_args) = parse_launch_argv(argv)?;
     let launch_tool = LaunchTool::from_str(&tool)?;
 
     // Count validation
@@ -33,18 +33,18 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
         bail!("Too many agents requested (max {}).", max_count);
     }
 
-    let tag = hcom_flags.tag;
-    let terminal = hcom_flags.terminal;
-    let headless = hcom_flags.headless;
-    let remote_device = hcom_flags.device.clone();
-    let dir_override = hcom_flags.dir.clone();
+    let tag = comms_flags.tag;
+    let terminal = comms_flags.terminal;
+    let headless = comms_flags.headless;
+    let remote_device = comms_flags.device.clone();
+    let dir_override = comms_flags.dir.clone();
     let tag_for_output = tag.clone();
     let terminal_for_output = terminal.clone();
 
-    let hcom_config = load_hcom_config();
+    let comms_config = load_comms_config();
     let preview_background = headless || is_background_from_args(&launch_tool, &tool_args);
 
-    let ctx = HcomContext::from_os();
+    let ctx = CommsContext::from_os();
     if ctx.is_inside_ai_tool() && !flags.go && (!tool_args.is_empty() || count > 5) {
         let remote_launch_note = "Remote launch requested; the target device will still apply its own configured defaults.";
         let remote_preview_note = "Mode shown here is only a local preview; the remote target decides the final launch mode.";
@@ -62,7 +62,7 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
             tag: tag.as_deref(),
             cwd: dir_override.as_deref(),
             terminal: terminal.as_deref(),
-            config: &hcom_config,
+            config: &comms_config,
             show_config_args: remote_device.is_none(),
             notes: if remote_device.is_some() { &notes } else { &[] },
         });
@@ -70,7 +70,7 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
     }
 
     if let Some(ref device) = remote_device {
-        if hcom_flags.run_here == Some(true) {
+        if comms_flags.run_here == Some(true) {
             bail!("Remote launch does not support --run-here");
         }
         let remote_cwd = dir_override.as_ref().ok_or_else(|| {
@@ -78,9 +78,12 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
                 "Remote launch requires --dir to specify the working directory on the target device"
             )
         })?;
-        let db = HcomDb::open()?;
-        let launcher_name =
-            resolve_launcher_name(&db, flags, std::env::var("HCOM_PROCESS_ID").ok().as_deref());
+        let db = CommsDb::open()?;
+        let launcher_name = resolve_launcher_name(
+            &db,
+            flags,
+            std::env::var("COMMS_PROCESS_ID").ok().as_deref(),
+        );
         let params = json!({
             "tool": tool,
             "count": count,
@@ -90,8 +93,8 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
             "background": headless,
             "terminal": terminal.clone(),
             "cwd": remote_cwd,
-            "initial_prompt": hcom_flags.initial_prompt,
-            "system_prompt": hcom_flags.system_prompt,
+            "initial_prompt": comms_flags.initial_prompt,
+            "system_prompt": comms_flags.system_prompt,
         });
 
         match crate::relay::control::dispatch_remote(
@@ -110,7 +113,7 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
                     &launch_result,
                     tag_for_output.clone(),
                     terminal_for_output.clone(),
-                    hcom_flags.run_here,
+                    comms_flags.run_here,
                 );
                 let output = LaunchOutputContext {
                     action: "launch",
@@ -121,7 +124,7 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
                     terminal: remote_output.terminal.as_deref(),
                     background: remote_output.background,
                     run_here: remote_output.run_here,
-                    hcom_config: &hcom_config,
+                    comms_config: &comms_config,
                     inline_readiness_wait_secs: None,
                 };
                 print_launch_feedback(&db, &launch_result, &output)?;
@@ -132,20 +135,23 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
     }
 
     // System/initial prompt handling
-    let system_prompt = hcom_flags.system_prompt;
-    let initial_prompt = hcom_flags.initial_prompt;
+    let system_prompt = comms_flags.system_prompt;
+    let initial_prompt = comms_flags.initial_prompt;
 
     // Merge env config args with CLI args
     let (merged_args, background) =
-        prepare_launch_execution(&launch_tool, &tool_args, &hcom_config, headless);
+        prepare_launch_execution(&launch_tool, &tool_args, &comms_config, headless);
 
     validate_claude_headless_launch(&tool, background, &merged_args, initial_prompt.as_deref())?;
 
     // Open DB
-    let db = HcomDb::open()?;
+    let db = CommsDb::open()?;
 
-    let launcher_name =
-        resolve_launcher_name(&db, flags, std::env::var("HCOM_PROCESS_ID").ok().as_deref());
+    let launcher_name = resolve_launcher_name(
+        &db,
+        flags,
+        std::env::var("COMMS_PROCESS_ID").ok().as_deref(),
+    );
     let launcher_name_ref = launcher_name.as_str();
 
     let output = LaunchOutputContext {
@@ -156,8 +162,8 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
         launcher_name: launcher_name_ref,
         terminal: terminal_for_output.as_deref(),
         background,
-        run_here: hcom_flags.run_here,
-        hcom_config: &hcom_config,
+        run_here: comms_flags.run_here,
+        comms_config: &comms_config,
         inline_readiness_wait_secs: if ctx.is_inside_ai_tool() && count == 1 {
             Some(INLINE_SINGLE_LAUNCH_WAIT_SECS)
         } else {
@@ -193,8 +199,8 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
             }),
             env: None,
             launcher: Some(launcher_name.clone()),
-            run_here: hcom_flags.run_here,
-            batch_id: hcom_flags.batch_id,
+            run_here: comms_flags.run_here,
+            batch_id: comms_flags.batch_id,
             name: None, // --name is caller identity, not instance name
             skip_validation: false,
             terminal,
@@ -224,14 +230,14 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
 pub(crate) fn prepare_launch_execution(
     tool: &LaunchTool,
     cli_args: &[String],
-    config: &HcomConfig,
+    config: &CommsConfig,
     headless: bool,
 ) -> (Vec<String>, bool) {
     let mut merged_args = merge_tool_args(tool, cli_args, config);
     let background = headless || is_background_from_args(tool, &merged_args);
 
     // Print mode needs stream-json for the stop-hook loop. Keep this deliberately
-    // grammar-free: hcom appends its required defaults and lets Claude resolve
+    // grammar-free: comms appends its required defaults and lets Claude resolve
     // duplicates or reject incompatible combinations.
     if matches!(tool, LaunchTool::Claude | LaunchTool::ClaudePty)
         && background
@@ -261,8 +267,8 @@ pub(crate) fn validate_claude_headless_launch(
         return Ok(());
     }
 
-    let has_hcom_prompt = initial_prompt.is_some_and(|p| !p.trim().is_empty());
-    if has_hcom_prompt {
+    let has_comms_prompt = initial_prompt.is_some_and(|p| !p.trim().is_empty());
+    if has_comms_prompt {
         return Ok(());
     }
     // User positionals cannot be identified without duplicating Claude's flag
@@ -288,7 +294,7 @@ struct RemoteLaunchOutput {
 }
 
 fn build_remote_launch_output(
-    db: &HcomDb,
+    db: &CommsDb,
     flags: &GlobalFlags,
     launch_result: &LaunchResult,
     tag: Option<String>,
@@ -296,7 +302,7 @@ fn build_remote_launch_output(
     run_here: Option<bool>,
 ) -> RemoteLaunchOutput {
     let launcher_name =
-        resolve_launcher_name(db, flags, std::env::var("HCOM_PROCESS_ID").ok().as_deref());
+        resolve_launcher_name(db, flags, std::env::var("COMMS_PROCESS_ID").ok().as_deref());
     RemoteLaunchOutput {
         tool: launch_result.tool.clone(),
         tag,
@@ -308,7 +314,7 @@ fn build_remote_launch_output(
 }
 
 pub(crate) fn resolve_launcher_name(
-    db: &HcomDb,
+    db: &CommsDb,
     flags: &GlobalFlags,
     process_id: Option<&str>,
 ) -> String {
@@ -345,7 +351,7 @@ pub(crate) struct LaunchPreview<'a> {
     pub tag: Option<&'a str>,
     pub cwd: Option<&'a str>,
     pub terminal: Option<&'a str>,
-    pub config: &'a HcomConfig,
+    pub config: &'a CommsConfig,
     pub show_config_args: bool,
     pub notes: &'a [&'a str],
 }
@@ -362,7 +368,7 @@ pub(crate) fn print_launch_preview(preview: LaunchPreview<'_>) {
             .unwrap_or_else(|_| ".".to_string())
     });
     // Drive the args-env label from the spec so we never invent a key (e.g.
-    // `HCOM_ANTIGRAVITY_ARGS`) for tools that don't have one.
+    // `COMMS_ANTIGRAVITY_ARGS`) for tools that don't have one.
     let args_key: Option<&'static str> = preview
         .tool
         .parse::<crate::tool::Tool>()
@@ -390,7 +396,7 @@ pub(crate) fn print_launch_preview(preview: LaunchPreview<'_>) {
     let terminal = preview
         .terminal
         .map(|s| s.to_string())
-        .or_else(|| std::env::var("HCOM_TERMINAL").ok())
+        .or_else(|| std::env::var("COMMS_TERMINAL").ok())
         .unwrap_or_else(|| preview.config.terminal.clone());
 
     println!("\n== LAUNCH PREVIEW ==");
@@ -431,9 +437,9 @@ pub(crate) fn print_launch_preview(preview: LaunchPreview<'_>) {
     println!("\n[Preview Mode] Add --go to proceed with launch.");
 }
 
-/// Hcom-level flags extracted from launch argv.
+/// Comms-level flags extracted from launch argv.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct HcomLaunchFlags {
+pub(crate) struct CommsLaunchFlags {
     pub tag: Option<String>,
     pub terminal: Option<String>,
     pub device: Option<String>,
@@ -445,12 +451,12 @@ pub(crate) struct HcomLaunchFlags {
     pub dir: Option<String>,
 }
 
-/// Parse launch argv: extract count, tool name, hcom flags, and tool-specific args.
+/// Parse launch argv: extract count, tool name, comms flags, and tool-specific args.
 ///
-/// Input forms: `[N] <tool> [--tag X] [--terminal X] [--headless] [--hcom-prompt X] [--hcom-system-prompt X] [--batch-id X] [tool-args...]`
-fn parse_launch_argv(argv: &[String]) -> Result<(usize, String, HcomLaunchFlags, Vec<String>)> {
+/// Input forms: `[N] <tool> [--tag X] [--terminal X] [--headless] [--comms-prompt X] [--comms-system-prompt X] [--batch-id X] [tool-args...]`
+fn parse_launch_argv(argv: &[String]) -> Result<(usize, String, CommsLaunchFlags, Vec<String>)> {
     if argv.is_empty() {
-        bail!("Usage: hcom [N] <tool> [args...]");
+        bail!("Usage: comms [N] <tool> [args...]");
     }
 
     let mut idx = 0;
@@ -509,7 +515,7 @@ fn append_config_args(config_args: &str, cli_args: &[String]) -> Vec<String> {
         // unterminated quote) — surface it so the launch isn't quietly missing
         // flags the user configured.
         crate::tools::args_common::shell_split(config_args, cfg!(windows)).unwrap_or_else(|err| {
-            eprintln!("hcom: ignoring malformed configured args ({err}): {config_args}");
+            eprintln!("comms: ignoring malformed configured args ({err}): {config_args}");
             Vec::new()
         })
     };
@@ -520,7 +526,7 @@ fn append_config_args(config_args: &str, cli_args: &[String]) -> Vec<String> {
 pub(crate) fn merge_tool_args(
     tool: &LaunchTool,
     cli_args: &[String],
-    config: &HcomConfig,
+    config: &CommsConfig,
 ) -> Vec<String> {
     match tool {
         LaunchTool::Claude | LaunchTool::ClaudePty => {
@@ -557,7 +563,7 @@ fn args_contain_any(args: &[String], needles: &[&str]) -> bool {
 pub(crate) fn is_background_from_args(tool: &LaunchTool, args: &[String]) -> bool {
     match tool {
         LaunchTool::Claude | LaunchTool::ClaudePty => args_contain_any(args, &["-p", "--print"]),
-        // These tools are always hosted in hcom's PTY. Their native
+        // These tools are always hosted in comms's PTY. Their native
         // non-interactive modes are rejected by validate_tool_args.
         LaunchTool::Gemini
         | LaunchTool::Codex
@@ -573,16 +579,16 @@ pub(crate) fn is_background_from_args(tool: &LaunchTool, args: &[String]) -> boo
     }
 }
 
-pub(crate) fn load_hcom_config() -> HcomConfig {
-    HcomConfig::load(None).unwrap_or_else(|_| {
-        let mut c = HcomConfig::default();
+pub(crate) fn load_comms_config() -> CommsConfig {
+    CommsConfig::load(None).unwrap_or_else(|_| {
+        let mut c = CommsConfig::default();
         c.normalize();
         c
     })
 }
 
-pub(crate) fn extract_launch_flags(args: &[String]) -> (HcomLaunchFlags, Vec<String>) {
-    let mut flags = HcomLaunchFlags::default();
+pub(crate) fn extract_launch_flags(args: &[String]) -> (CommsLaunchFlags, Vec<String>) {
+    let mut flags = CommsLaunchFlags::default();
     let mut tool_args = Vec::new();
     let mut i = 0;
 
@@ -632,7 +638,7 @@ pub(crate) fn extract_launch_flags(args: &[String]) -> (HcomLaunchFlags, Vec<Str
                 flags.headless = true;
                 i += 1;
             }
-            "--hcom-system-prompt" if i + 1 < args.len() => {
+            "--comms-system-prompt" if i + 1 < args.len() => {
                 flags.system_prompt = Some(args[i + 1].clone());
                 i += 2;
             }
@@ -640,7 +646,7 @@ pub(crate) fn extract_launch_flags(args: &[String]) -> (HcomLaunchFlags, Vec<Str
                 flags.system_prompt = Some(args[i + 1].clone());
                 i += 2;
             }
-            "--hcom-prompt" if i + 1 < args.len() => {
+            "--comms-prompt" if i + 1 < args.len() => {
                 flags.initial_prompt = Some(args[i + 1].clone());
                 i += 2;
             }
@@ -688,12 +694,12 @@ pub(crate) struct LaunchOutputContext<'a> {
     pub terminal: Option<&'a str>,
     pub background: bool,
     pub run_here: Option<bool>,
-    pub hcom_config: &'a HcomConfig,
+    pub comms_config: &'a CommsConfig,
     pub inline_readiness_wait_secs: Option<u64>,
 }
 
 pub(crate) fn print_launch_feedback(
-    db: &HcomDb,
+    db: &CommsDb,
     result: &LaunchResult,
     ctx: &LaunchOutputContext<'_>,
 ) -> Result<()> {
@@ -734,7 +740,7 @@ pub(crate) fn print_launch_feedback(
     }
     println!("Batch id: {}", result.batch_id);
     if ctx.inline_readiness_wait_secs.is_none() {
-        println!("To block until ready or fail (30s timeout), run: hcom events launch");
+        println!("To block until ready or fail (30s timeout), run: comms events launch");
     }
 
     let launcher_participating = db
@@ -744,7 +750,7 @@ pub(crate) fn print_launch_feedback(
         .is_some();
     let (terminal_mode, terminal_auto_detected) = crate::terminal::resolve_terminal_mode_for_tips(
         ctx.terminal,
-        &ctx.hcom_config.terminal,
+        &ctx.comms_config.terminal,
         ctx.background,
         ctx.run_here.unwrap_or(false),
     );
@@ -784,7 +790,7 @@ pub(crate) fn readiness_exit_code(state: Option<InlineLaunchReadiness>, failed: 
 }
 
 pub(crate) fn print_inline_launch_readiness(
-    db: &HcomDb,
+    db: &CommsDb,
     result: &LaunchResult,
     timeout_secs: u64,
 ) -> InlineLaunchReadiness {
@@ -863,7 +869,7 @@ fn format_inline_launch_readiness(
             format!("Launch blocked: {detail} (batch: {}).", result.batch_id)
         }
         InlineLaunchReadiness::Launching => format!(
-            "Still launching after {elapsed}: {target} ({progress}, batch: {}). Check `hcom list -v` or `hcom events launch {} --timeout 30`.",
+            "Still launching after {elapsed}: {target} ({progress}, batch: {}). Check `comms list -v` or `comms events launch {} --timeout 30`.",
             result.batch_id, result.batch_id
         ),
     }
@@ -965,7 +971,7 @@ mod tests {
             ("gemini", "gemini_args"),
             ("codex", "codex_args"),
         ] {
-            let mut config = HcomConfig::default();
+            let mut config = CommsConfig::default();
             config.set_field(field, "--future-config value").unwrap();
             let cli = s(&["--future-upstream-flag", "raw-value"]);
             let merged = merge_tool_args(&lt(tool), &cli, &config);
@@ -991,7 +997,7 @@ mod tests {
             ("kilo", "kilo_args"),
             ("kimi", "kimi_args"),
         ] {
-            let mut config = HcomConfig::default();
+            let mut config = CommsConfig::default();
             config.set_field(field, "--model from-config").unwrap();
             let merged = merge_tool_args(&lt(tool), &cli, &config);
             assert_eq!(
@@ -1024,10 +1030,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_launch_argv_hcom_prompt() {
+    fn test_parse_launch_argv_comms_prompt() {
         let (_, _, flags, args) = parse_launch_argv(&s(&[
             "claude",
-            "--hcom-prompt",
+            "--comms-prompt",
             "do the thing",
             "--model",
             "haiku",
@@ -1038,10 +1044,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_launch_argv_hcom_system_prompt() {
+    fn test_parse_launch_argv_comms_system_prompt() {
         let (_, _, flags, args) = parse_launch_argv(&s(&[
             "claude",
-            "--hcom-system-prompt",
+            "--comms-system-prompt",
             "you are helpful",
             "--model",
             "haiku",
@@ -1084,7 +1090,7 @@ mod tests {
     #[test]
     fn test_prepare_launch_execution_claude_print_adds_background_defaults() {
         // Explicit `-p` opts into print mode → detached print-mode defaults applied.
-        let config = HcomConfig::default();
+        let config = CommsConfig::default();
         let (args, background) =
             prepare_launch_execution(&lt("claude"), &s(&["-p"]), &config, true);
         assert!(background);
@@ -1098,9 +1104,9 @@ mod tests {
 
     #[test]
     fn test_prepare_launch_execution_headless_no_print_flag_stays_pty() {
-        // `hcom claude --headless` (no -p) is the live PTY session now — no -p is
+        // `comms claude --headless` (no -p) is the live PTY session now — no -p is
         // injected and no print-mode defaults are added.
-        let config = HcomConfig::default();
+        let config = CommsConfig::default();
         let (args, background) = prepare_launch_execution(&lt("claude"), &s(&[]), &config, true);
         assert!(background);
         assert!(
@@ -1113,8 +1119,8 @@ mod tests {
 
     #[test]
     fn test_prepare_launch_execution_headless_positional_prompt_stays_pty() {
-        // `hcom claude --headless "task text"` — positional prompt, no -p → PTY.
-        let config = HcomConfig::default();
+        // `comms claude --headless "task text"` — positional prompt, no -p → PTY.
+        let config = CommsConfig::default();
         let (args, _background) =
             prepare_launch_execution(&lt("claude"), &s(&["task text"]), &config, true);
         assert_eq!(args, s(&["task text"]));
@@ -1123,15 +1129,15 @@ mod tests {
     #[test]
     fn test_prepare_launch_execution_headless_only_applies_to_claude() {
         // --headless on other tools must not grow a -p; that flag is Claude-specific.
-        let config = HcomConfig::default();
+        let config = CommsConfig::default();
         let (args, _bg) = prepare_launch_execution(&lt("codex"), &s(&[]), &config, true);
         assert!(!args.iter().any(|t| t == "-p"));
     }
 
     #[test]
     fn test_prepare_launch_execution_interactive_claude_unchanged() {
-        // Foreground `hcom claude` (no --headless, no -p) stays untouched.
-        let config = HcomConfig::default();
+        // Foreground `comms claude` (no --headless, no -p) stays untouched.
+        let config = CommsConfig::default();
         let (args, background) = prepare_launch_execution(&lt("claude"), &s(&[]), &config, false);
         assert!(!background);
         assert!(args.is_empty());
@@ -1145,23 +1151,23 @@ mod tests {
     #[test]
     fn test_validate_claude_print_accepts_cli_prompt() {
         assert!(
-            validate_claude_headless_launch("claude", true, &s(&["-p", "say hi in hcom"]), None)
+            validate_claude_headless_launch("claude", true, &s(&["-p", "say hi in comms"]), None)
                 .is_ok()
         );
     }
 
     #[test]
-    fn test_validate_claude_print_accepts_hcom_prompt() {
+    fn test_validate_claude_print_accepts_comms_prompt() {
         assert!(
-            validate_claude_headless_launch("claude", true, &s(&["-p"]), Some("say hi in hcom"))
+            validate_claude_headless_launch("claude", true, &s(&["-p"]), Some("say hi in comms"))
                 .is_ok()
         );
     }
 
     #[test]
     fn test_validate_claude_headless_pty_allows_no_prompt() {
-        // Bare `hcom claude --headless` (no -p) is a valid live-session launch —
-        // the PTY wrapper keeps the TUI alive waiting for hcom inject.
+        // Bare `comms claude --headless` (no -p) is a valid live-session launch —
+        // the PTY wrapper keeps the TUI alive waiting for comms inject.
         assert!(validate_claude_headless_launch("claude", true, &[], None).is_ok());
     }
 
@@ -1230,7 +1236,7 @@ mod tests {
         );
 
         assert!(line.contains("Still launching after 10.0s: mari (0/1 ready"));
-        assert!(line.contains("hcom events launch batch-2 --timeout 30"));
+        assert!(line.contains("comms events launch batch-2 --timeout 30"));
     }
 
     #[test]
@@ -1265,7 +1271,7 @@ mod tests {
         crate::config::Config::init();
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
 
         let output = build_remote_launch_output(
@@ -1298,7 +1304,7 @@ mod tests {
         crate::config::Config::init();
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
 
         let output = build_remote_launch_output(
@@ -1344,7 +1350,7 @@ mod tests {
         crate::config::Config::init();
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         let flags = GlobalFlags {
             name: Some("explicit".to_string()),
@@ -1360,7 +1366,7 @@ mod tests {
         crate::config::Config::init();
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         let now = crate::shared::time::now_epoch_f64();
         db.conn()

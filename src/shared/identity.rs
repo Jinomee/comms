@@ -16,7 +16,7 @@ pub struct SenderIdentity {
 /// Sender identity kind — determines routing rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SenderKind {
-    /// Registered hcom participant (full routing rules apply).
+    /// Registered comms participant (full routing rules apply).
     Instance,
     /// External sender via --from flag (broadcasts to all).
     External,
@@ -87,7 +87,7 @@ mod tests {
 
         let system = SenderIdentity {
             kind: SenderKind::System,
-            name: "hcom".into(),
+            name: "comms".into(),
             instance_data: None,
             session_id: None,
         };

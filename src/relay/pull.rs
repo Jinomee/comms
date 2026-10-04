@@ -8,7 +8,7 @@
 use rusqlite::params;
 use serde_json::Value;
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::log;
 
 use super::crypto;
@@ -37,11 +37,11 @@ fn state_ts_key(device_id: &str) -> String {
     format!("relay_state_ts_{}", device_id)
 }
 
-fn state_ts_watermark(db: &HcomDb, device_id: &str) -> Option<u64> {
+fn state_ts_watermark(db: &CommsDb, device_id: &str) -> Option<u64> {
     safe_kv_get(db, &state_ts_key(device_id)).and_then(|s| s.parse().ok())
 }
 
-fn record_state_ts_watermark(db: &HcomDb, device_id: &str, ts_secs: u64) {
+fn record_state_ts_watermark(db: &CommsDb, device_id: &str, ts_secs: u64) {
     let current = state_ts_watermark(db, device_id).unwrap_or(0);
     if ts_secs > current {
         safe_kv_set(db, &state_ts_key(device_id), Some(&ts_secs.to_string()));
@@ -106,7 +106,7 @@ fn open_envelope_for_handler(
 
 /// Handle an authenticated null state from a departing device.
 /// Removes all instances belonging to the disconnected device.
-pub fn handle_device_gone(db: &HcomDb, device_id: &str) {
+pub fn handle_device_gone(db: &CommsDb, device_id: &str) {
     if let Err(e) = db.conn().execute(
         "DELETE FROM instances WHERE origin_device_id = ?",
         params![device_id],
@@ -141,7 +141,7 @@ pub fn handle_device_gone(db: &HcomDb, device_id: &str) {
 
 /// Handle a control message from the control topic.
 pub fn handle_control_message(
-    db: &HcomDb,
+    db: &CommsDb,
     payload: &[u8],
     own_device: &str,
     ctx: &mut InboundContext<'_>,
@@ -184,7 +184,7 @@ pub fn handle_control_message(
 
 /// Handle a state message from a remote device.
 pub fn handle_state_message(
-    db: &HcomDb,
+    db: &CommsDb,
     device_id: &str,
     payload: &[u8],
     own_device: &str,
@@ -561,14 +561,14 @@ pub fn handle_state_message(
 }
 
 /// The reset generation already applied for a peer (0.0 when none has been seen).
-fn cached_reset_ts(db: &HcomDb, device_id: &str) -> f64 {
+fn cached_reset_ts(db: &CommsDb, device_id: &str) -> f64 {
     safe_kv_get(db, &format!("relay_reset_{}", device_id))
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.0)
 }
 
 /// The imported-event cursor for a peer (0 before first contact or after a reset).
-fn event_cursor(db: &HcomDb, device_id: &str) -> i64 {
+fn event_cursor(db: &CommsDb, device_id: &str) -> i64 {
     safe_kv_get(db, &format!("relay_events_{}", device_id))
         .and_then(|s| s.parse().ok())
         .unwrap_or(0)
@@ -586,7 +586,7 @@ fn remote_max_event_id(events: &[Value]) -> i64 {
 
 /// True when a snapshot's events end below what was already imported from that peer: the
 /// condition import_remote_events treats as a recreated peer database.
-fn ends_below_cursor(db: &HcomDb, device_id: &str, events: &[Value]) -> bool {
+fn ends_below_cursor(db: &CommsDb, device_id: &str, events: &[Value]) -> bool {
     let cursor = event_cursor(db, device_id);
     let remote_max_id = remote_max_event_id(events);
     cursor > 0 && remote_max_id > 0 && remote_max_id < cursor
@@ -594,7 +594,7 @@ fn ends_below_cursor(db: &HcomDb, device_id: &str, events: &[Value]) -> bool {
 
 /// Import remote events with cursor-based dedup.
 fn import_remote_events(
-    db: &HcomDb,
+    db: &CommsDb,
     device_id: &str,
     short_id: &str,
     events: &[Value],
@@ -719,7 +719,7 @@ pub(crate) fn event_ts_string(event: &Value) -> String {
 /// Namespace one remote event and insert it locally. Shared by snapshot import
 /// and catch-up backfill so both produce identical rows.
 pub(crate) fn insert_remote_event(
-    db: &HcomDb,
+    db: &CommsDb,
     device_id: &str,
     short_id: &str,
     event_id: i64,
@@ -808,7 +808,7 @@ pub(crate) fn insert_remote_event(
 }
 
 /// Reverse lookup: find short_id for a device UUID.
-fn resolve_short_id(db: &HcomDb, device_id: &str) -> Option<String> {
+fn resolve_short_id(db: &CommsDb, device_id: &str) -> Option<String> {
     if let Some(short_id) = safe_kv_get(db, &format!("relay_uuid_short_{}", device_id)) {
         return Some(short_id);
     }
@@ -825,7 +825,7 @@ fn resolve_short_id(db: &HcomDb, device_id: &str) -> Option<String> {
 /// Emit a relay device lifecycle event. Returns whether it was logged; the CALLER wakes waiters
 /// once the change the event announces has been applied.
 fn emit_device_event(
-    db: &HcomDb,
+    db: &CommsDb,
     action: &str,
     short_id: &str,
     device_id_prefix: &str,
@@ -841,7 +841,7 @@ fn emit_device_event(
     if reconnect {
         data["reconnect"] = serde_json::json!(true);
     }
-    // A lifecycle event is new local work that `hcom events --wait` may be waiting for,
+    // A lifecycle event is new local work that `comms events --wait` may be waiting for,
     // but waking here was too early for a join or
     // reconnect: the snapshot handler logs those before it applies the peer's state, so a
     // waiter could act on the event and still be told the peer is unsynced.
@@ -894,8 +894,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_device_lifecycle_event_wakes_event_waiters() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         probe.set_nonblocking(true).unwrap();
         db.upsert_notify_endpoint("waiter", "pty", probe.local_addr().unwrap().port())
@@ -920,8 +920,8 @@ mod tests {
     #[test]
     #[serial]
     fn logging_a_lifecycle_event_does_not_wake_by_itself() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         probe.set_nonblocking(true).unwrap();
         db.upsert_notify_endpoint("waiter", "pty", probe.local_addr().unwrap().port())
@@ -946,8 +946,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_joining_peer_wakes_waiters_after_its_state_is_applied() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         probe.set_nonblocking(true).unwrap();
         db.upsert_notify_endpoint("waiter", "pty", probe.local_addr().unwrap().port())
@@ -994,8 +994,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_handle_state_message_drops_remote_unique_identity_fields() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
 
         let payload = json!({
             "state": {
@@ -1068,8 +1068,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_handle_state_message_caches_remote_capabilities() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
 
         let payload = json!({
             "state": {
@@ -1112,8 +1112,8 @@ mod tests {
         // relay::control reads this sentinel as `CachedCapabilities::Legacy`
         // and lets requests through optimistically so rolling upgrades don't
         // break remote actions against older peers.
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
 
         let payload = json!({
             "state": {
@@ -1151,8 +1151,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_handle_state_message_accepts_sender_clock_skew_in_both_directions() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         let mut guard = ReplayGuard::default();
         let psk = fixture_psk();
         let now = crate::shared::time::now_epoch_f64() as i64;
@@ -1219,8 +1219,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_handle_state_message_rejects_rollback_behind_watermark() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         safe_kv_set(&db, "relay_state_ts_device-1234", Some("1500"));
 
         let payload = json!({
@@ -1274,8 +1274,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_decrypt_failure_does_not_consume_replay_slot() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         let topic = "relay-test/device-1234";
         let payload = json!({
             "state": {
@@ -1332,8 +1332,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_handle_state_message_authenticated_null_state_cleans_up_device_and_watermark() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, origin_device_id, created_at) VALUES (?1, ?2, ?3)",
@@ -1382,8 +1382,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_snapshot_starting_above_the_cursor_records_the_skipped_range() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         safe_kv_set(&db, "relay_events_device-1234", Some("100"));
 
         // We last imported id 100; the peer's snapshot now starts at 180.
@@ -1410,8 +1410,8 @@ mod tests {
     #[test]
     #[serial]
     fn an_overlapping_snapshot_records_no_gap() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         safe_kv_set(&db, "relay_events_device-1234", Some("100"));
 
         // The retained tail re-carries id 100, so nothing was skipped even
@@ -1431,8 +1431,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_first_contact_starts_from_the_tail_without_a_gap() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
 
         let events = vec![own_event(5000, "tail")];
         assert!(import_remote_events(
@@ -1449,8 +1449,8 @@ mod tests {
     #[test]
     #[serial]
     fn an_id_regression_clears_recorded_gaps() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         safe_kv_set(&db, "relay_events_device-1234", Some("100"));
         crate::relay::backfill::record_gap(&db, "device-1234", "ABCD", 40, 90);
 
@@ -1460,12 +1460,12 @@ mod tests {
         assert!(crate::relay::backfill::load_gaps(&db, "device-1234").is_empty());
     }
 
-    fn apply_snapshot_at(db: &HcomDb, events: Vec<serde_json::Value>, ts_secs: u64) {
+    fn apply_snapshot_at(db: &CommsDb, events: Vec<serde_json::Value>, ts_secs: u64) {
         apply_snapshot_with_reset_at(db, events, ts_secs, 0.0);
     }
 
     fn apply_snapshot_with_reset_at(
-        db: &HcomDb,
+        db: &CommsDb,
         events: Vec<serde_json::Value>,
         ts_secs: u64,
         reset_ts: f64,
@@ -1494,7 +1494,7 @@ mod tests {
         );
     }
 
-    fn imported_from_peer(db: &HcomDb) -> i64 {
+    fn imported_from_peer(db: &CommsDb) -> i64 {
         db.conn()
             .query_row(
                 "SELECT COUNT(*) FROM events WHERE json_extract(data, '$._relay.device') = 'device-1234'",
@@ -1507,8 +1507,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_same_second_older_snapshot_is_skipped_not_treated_as_a_reset() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         apply_snapshot_at(&db, vec![own_event(10, "a"), own_event(11, "b")], 2000);
         crate::relay::backfill::record_gap(&db, "device-1234", "ABCD", 3, 9);
         assert_eq!(imported_from_peer(&db), 2);
@@ -1532,8 +1532,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_same_second_snapshot_announcing_a_newer_reset_still_resets() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         apply_snapshot_at(&db, vec![own_event(10, "a"), own_event(11, "b")], 2000);
         crate::relay::backfill::record_gap(&db, "device-1234", "ABCD", 3, 9);
 
@@ -1556,8 +1556,8 @@ mod tests {
     #[test]
     #[serial]
     fn a_later_snapshot_below_the_cursor_still_resets() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         apply_snapshot_at(&db, vec![own_event(10, "a"), own_event(11, "b")], 2000);
         crate::relay::backfill::record_gap(&db, "device-1234", "ABCD", 3, 9);
 

@@ -4,7 +4,7 @@
 //! launch metadata capture, placeholder/canonical binding, and instance-row
 //! initialization for newly launched or recovered sessions.
 
-use crate::db::{HcomDb, InstanceRow};
+use crate::db::{CommsDb, InstanceRow};
 use crate::instance_names::{PLACEHOLDER_CONTEXT, PLACEHOLDER_STATUS};
 use crate::instances::update_instance_position;
 use crate::shared::time::{now_epoch_f64, now_epoch_i64};
@@ -24,7 +24,7 @@ pub enum ToolCheckedBind {
 /// The launcher owns the authoritative preset decision. launch_context is only
 /// for late-bound metadata such as pane_id, terminal_id, and env snapshot.
 pub fn persist_terminal_launch_context(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     requested_preset: Option<&str>,
     effective_preset: &str,
@@ -84,7 +84,7 @@ pub fn persist_terminal_launch_context(
 /// Capture environment context and store it for the instance.
 ///
 /// Captures git branch, terminal program, tty, and relevant env vars.
-pub fn capture_and_store_launch_context(db: &HcomDb, instance_name: &str) {
+pub fn capture_and_store_launch_context(db: &CommsDb, instance_name: &str) {
     let new_ctx = capture_context();
 
     // Preserve fields from prior context that can't be recaptured in hook env
@@ -221,7 +221,7 @@ fn capture_context() -> serde_json::Map<String, serde_json::Value> {
     // The launcher already resolved the effective preset; record it so
     // child agents can inherit it (see commands::launch). Pane IDs are
     // late-bound from the env vars the preset declares.
-    if let Ok(preset_name) = std::env::var("HCOM_LAUNCHED_PRESET")
+    if let Ok(preset_name) = std::env::var("COMMS_LAUNCHED_PRESET")
         && !preset_name.is_empty()
     {
         ctx.insert(
@@ -238,13 +238,13 @@ fn capture_context() -> serde_json::Map<String, serde_json::Value> {
     }
 
     // Process ID for kitty close-by-env matching
-    if let Ok(pid) = std::env::var("HCOM_PROCESS_ID")
+    if let Ok(pid) = std::env::var("COMMS_PROCESS_ID")
         && !pid.is_empty()
     {
         ctx.insert("process_id".into(), serde_json::json!(pid));
 
         // Terminal ID from parent's stdout capture
-        let id_file = crate::paths::hcom_dir()
+        let id_file = crate::paths::comms_dir()
             .join(".tmp")
             .join("terminal_ids")
             .join(&pid);
@@ -252,7 +252,7 @@ fn capture_context() -> serde_json::Map<String, serde_json::Value> {
             if let Ok(content) = std::fs::read_to_string(&id_file) {
                 let terminal_id = content.trim().to_string();
                 if !terminal_id.is_empty() {
-                    if std::env::var("HCOM_LAUNCHED_PRESET").as_deref() == Ok("zellij")
+                    if std::env::var("COMMS_LAUNCHED_PRESET").as_deref() == Ok("zellij")
                         && let Some(pane_id) = zellij_pane_id_from_terminal_id(&terminal_id)
                     {
                         ctx.insert("pane_id".into(), serde_json::json!(pane_id));
@@ -298,7 +298,7 @@ fn is_true_launch_placeholder(data: Option<&InstanceRow>) -> bool {
         )
 }
 
-fn migrate_placeholder_notify(db: &HcomDb, placeholder_name: &str, canonical_name: &str) -> bool {
+fn migrate_placeholder_notify(db: &CommsDb, placeholder_name: &str, canonical_name: &str) -> bool {
     match db.migrate_notify_endpoints(placeholder_name, canonical_name) {
         Ok(()) => true,
         Err(e) => {
@@ -309,7 +309,7 @@ fn migrate_placeholder_notify(db: &HcomDb, placeholder_name: &str, canonical_nam
 }
 
 /// Delete a true launch placeholder row. Notify endpoints remain on the canonical instance.
-fn delete_true_placeholder_instance(db: &HcomDb, placeholder_name: &str) {
+fn delete_true_placeholder_instance(db: &CommsDb, placeholder_name: &str) {
     match db.delete_instance(placeholder_name) {
         Ok(true) => {}
         Ok(false) => {
@@ -328,10 +328,10 @@ fn delete_true_placeholder_instance(db: &HcomDb, placeholder_name: &str) {
 /// Carry runtime state the PTY wrapper wrote onto the placeholder row over to the
 /// canonical instance before the placeholder is deleted. The OS `pid` and terminal
 /// `launch_context` (pane_id) are written once at spawn under the launch name
-/// (`src/pty/mod.rs`); without migrating them, `hcom kill <canonical>` finds no pid
+/// (`src/pty/mod.rs`); without migrating them, `comms kill <canonical>` finds no pid
 /// and can't close the terminal pane.
 fn migrate_placeholder_runtime_state(
-    db: &HcomDb,
+    db: &CommsDb,
     canonical_name: &str,
     placeholder_data: Option<&InstanceRow>,
 ) -> bool {
@@ -366,7 +366,7 @@ fn migrate_placeholder_runtime_state(
 }
 
 fn delete_true_placeholder_if_migrated(
-    db: &HcomDb,
+    db: &CommsDb,
     placeholder_name: &str,
     canonical_name: &str,
     placeholder_data: Option<&InstanceRow>,
@@ -385,7 +385,7 @@ fn delete_true_placeholder_if_migrated(
 
 /// Path 2: after restore_stopped bind, merge notify ports and drop the launch placeholder.
 fn retire_true_placeholder_after_canonical_bind(
-    db: &HcomDb,
+    db: &CommsDb,
     placeholder_name: Option<&String>,
     canonical_name: &str,
     placeholder_data: Option<&InstanceRow>,
@@ -411,10 +411,10 @@ fn retire_true_placeholder_after_canonical_bind(
 /// (kept, inactive) rather than deleted. The stopped event records its session so
 /// resuming that session later restores this identity instead of the current one.
 /// The process's pid and terminal context move to the new identity so
-/// `hcom kill <new>` still works and `hcom kill <old>` can't reach a process it
+/// `comms kill <new>` still works and `comms kill <old>` can't reach a process it
 /// no longer owns.
 fn retire_switched_identity(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     new_name: &str,
     old_data: Option<&InstanceRow>,
@@ -438,7 +438,7 @@ fn retire_switched_identity(
 
 /// Recreate a missing instance row from an active placeholder (resume after stop/kill).
 fn recreate_instance_from_placeholder(
-    db: &HcomDb,
+    db: &CommsDb,
     target_name: &str,
     session_id: &str,
     ph: Option<&InstanceRow>,
@@ -471,7 +471,7 @@ fn recreate_instance_from_placeholder(
 /// Handles 4 paths: canonical exists (with placeholder merge/switch), placeholder bind,
 /// and two no-op paths.
 pub fn bind_session_to_process(
-    db: &HcomDb,
+    db: &CommsDb,
     session_id: &str,
     process_id: Option<&str>,
 ) -> Option<String> {
@@ -483,7 +483,7 @@ pub fn bind_session_to_process(
 /// every write the bind made (session rebind, placeholder retirement, ...) has
 /// been rolled back, so ownership stays with the placeholder.
 fn bind_session_to_process_checked(
-    db: &HcomDb,
+    db: &CommsDb,
     session_id: &str,
     process_id: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
@@ -499,7 +499,7 @@ fn bind_session_to_process_checked(
 }
 
 fn bind_session_to_process_inner(
-    db: &HcomDb,
+    db: &CommsDb,
     session_id: &str,
     process_id: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
@@ -521,7 +521,7 @@ fn bind_session_to_process_inner(
                 let data = match db.get_instance_full(&name) {
                     Ok(d) => d,
                     Err(e) => {
-                        eprintln!("[hcom] warn: get_instance_full failed for {name}: {e}");
+                        eprintln!("[comms] warn: get_instance_full failed for {name}: {e}");
                         None
                     }
                 };
@@ -537,7 +537,7 @@ fn bind_session_to_process_inner(
     let canonical = match db.get_session_binding(session_id) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[hcom] warn: get_session_binding failed for {session_id}: {e}");
+            eprintln!("[comms] warn: get_session_binding failed for {session_id}: {e}");
             None
         }
     };
@@ -585,7 +585,7 @@ fn bind_session_to_process_inner(
                         resume_updates.insert("launch_args".into(), serde_json::json!(args));
                     }
                     // Reset status_context for ready event
-                    if std::env::var("HCOM_LAUNCHED").as_deref() == Ok("1") {
+                    if std::env::var("COMMS_LAUNCHED").as_deref() == Ok("1") {
                         resume_updates.insert("status_context".into(), serde_json::json!("new"));
                     }
                 }
@@ -757,7 +757,7 @@ fn bind_session_to_process_inner(
 /// transaction. A disagreement therefore rolls back any mutation performed by
 /// `bind_session_to_process`, including placeholder retirement and rebinding.
 pub fn bind_session_to_process_for_tool(
-    db: &HcomDb,
+    db: &CommsDb,
     session_id: &str,
     process_id: Option<&str>,
     expected_tool: &str,
@@ -905,9 +905,9 @@ pub fn bind_session_to_process_for_tool(
 /// Rebind process/session after soft-finalize cleared bindings but left the
 /// instance row (typically inactive). Used when `bind_session_to_process` finds
 /// no process binding, but the caller still knows the instance name via
-/// `HCOM_INSTANCE_NAME` in a live OMP process.
+/// `COMMS_INSTANCE_NAME` in a live OMP process.
 pub fn recover_process_binding_for_instance(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     session_id: &str,
     process_id: &str,
@@ -962,7 +962,7 @@ pub fn recover_process_binding_for_instance(
 /// This is the shared setup path used by launch, resume, and orphan recovery.
 #[allow(clippy::too_many_arguments)]
 pub fn initialize_instance_in_position_file(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     session_id: Option<&str>,
     parent_session_id: Option<&str>,
@@ -982,7 +982,7 @@ pub fn initialize_instance_in_position_file(
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default()
     });
-    let is_launched = std::env::var("HCOM_LAUNCHED").as_deref() == Ok("1");
+    let is_launched = std::env::var("COMMS_LAUNCHED").as_deref() == Ok("1");
 
     match db.get_instance_full(instance_name) {
         Ok(Some(existing)) => {
@@ -1020,7 +1020,7 @@ pub fn initialize_instance_in_position_file(
                 && existing.status_context == PLACEHOLDER_CONTEXT;
             if existing.last_event_id == 0 && is_true_placeholder {
                 let current_max = db.get_last_event_id();
-                let launch_event_id = std::env::var("HCOM_LAUNCH_EVENT_ID")
+                let launch_event_id = std::env::var("COMMS_LAUNCH_EVENT_ID")
                     .ok()
                     .and_then(|s| s.parse::<i64>().ok());
 
@@ -1048,7 +1048,7 @@ pub fn initialize_instance_in_position_file(
         Ok(None) => {
             let now = now_epoch_f64();
             let current_max = db.get_last_event_id();
-            let launch_event_id = std::env::var("HCOM_LAUNCH_EVENT_ID")
+            let launch_event_id = std::env::var("COMMS_LAUNCH_EVENT_ID")
                 .ok()
                 .and_then(|s| s.parse::<i64>().ok());
 
@@ -1085,17 +1085,17 @@ pub fn initialize_instance_in_position_file(
             if let Some(t) = tag {
                 data.insert("tag".into(), serde_json::json!(t));
             } else if (session_id.is_some() || parent_session_id.is_some() || is_launched)
-                && let Ok(hcom_config) = crate::config::HcomConfig::load(None)
-                && !hcom_config.tag.is_empty()
+                && let Ok(comms_config) = crate::config::CommsConfig::load(None)
+                && !comms_config.tag.is_empty()
             {
-                data.insert("tag".into(), serde_json::json!(hcom_config.tag));
+                data.insert("tag".into(), serde_json::json!(comms_config.tag));
             }
 
-            // Resolve HCOM_TIMEOUT explicitly rather than leaving the column
+            // Resolve COMMS_TIMEOUT explicitly rather than leaving the column
             // unset — the schema's DEFAULT 86400 would otherwise silently
             // mask the configured value for every non-PTY instance (issue #71).
             let effective_wait_timeout =
-                wait_timeout.unwrap_or_else(crate::config::HcomConfig::effective_timeout);
+                wait_timeout.unwrap_or_else(crate::config::CommsConfig::effective_timeout);
             data.insert(
                 "wait_timeout".into(),
                 serde_json::json!(effective_wait_timeout),
@@ -1139,18 +1139,18 @@ pub fn initialize_instance_in_position_file(
 }
 
 fn log_created_and_auto_subscribe(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     is_launched: bool,
     parent_session_id: Option<&str>,
     parent_name: Option<&str>,
     tool: &str,
 ) {
-    let launcher = std::env::var("HCOM_LAUNCHED_BY").unwrap_or_else(|_| "unknown".to_string());
+    let launcher = std::env::var("COMMS_LAUNCHED_BY").unwrap_or_else(|_| "unknown".to_string());
     let event_data = serde_json::json!({
         "action": "created",
         "by": launcher,
-        "is_hcom_launched": is_launched,
+        "is_comms_launched": is_launched,
         "is_subagent": parent_session_id.is_some(),
         "parent_name": parent_name.unwrap_or(""),
     });
@@ -1161,7 +1161,7 @@ fn log_created_and_auto_subscribe(
 /// Create orphaned PTY identity — called when process binding exists but session_id
 /// is fresh (e.g., after /clear). Generates new name, creates instance, binds it.
 pub fn create_orphaned_pty_identity(
-    db: &HcomDb,
+    db: &CommsDb,
     session_id: &str,
     process_id: Option<&str>,
     tool: &str,
@@ -1200,26 +1200,26 @@ pub fn create_orphaned_pty_identity(
     }
 
     if let Err(e) = db.rebind_session(session_id, &name) {
-        eprintln!("[hcom] warn: rebind_session failed for {name}: {e}");
+        eprintln!("[comms] warn: rebind_session failed for {name}: {e}");
     }
     if let Some(pid) = process_id
         && let Err(e) = db.set_process_binding(pid, session_id, &name)
     {
-        eprintln!("[hcom] warn: set_process_binding failed for {name}: {e}");
+        eprintln!("[comms] warn: set_process_binding failed for {name}: {e}");
     }
 
     Some(name)
 }
 
 /// Resolve instance name for a process_id via process_bindings.
-pub fn resolve_process_binding(db: &HcomDb, process_id: Option<&str>) -> Option<String> {
+pub fn resolve_process_binding(db: &CommsDb, process_id: Option<&str>) -> Option<String> {
     let pid = process_id?;
     db.get_process_binding(pid).ok()?
 }
 
 /// Resolve instance via process or session binding.
 pub fn resolve_instance_from_binding(
-    db: &HcomDb,
+    db: &CommsDb,
     session_id: Option<&str>,
     process_id: Option<&str>,
 ) -> Option<InstanceRow> {
@@ -1247,14 +1247,14 @@ fn auto_subscribe_eligible(tool: &str) -> bool {
         .is_ok_and(|tool| tool.spec().released)
 }
 
-fn auto_subscribe_defaults(db: &HcomDb, instance_name: &str, tool: &str) {
+fn auto_subscribe_defaults(db: &CommsDb, instance_name: &str, tool: &str) {
     if !auto_subscribe_eligible(tool) {
         return;
     }
 
     let _ = db.cleanup_subscriptions(instance_name);
     let _ = db.cleanup_thread_memberships_for_name_reuse(instance_name);
-    let config = match crate::config::HcomConfig::load(None) {
+    let config = match crate::config::CommsConfig::load(None) {
         Ok(c) => c,
         Err(_) => return,
     };
@@ -1336,7 +1336,7 @@ mod tests {
         }
     }
 
-    fn setup_test_db() -> (HcomDb, PathBuf) {
+    fn setup_test_db() -> (CommsDb, PathBuf) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1348,7 +1348,7 @@ mod tests {
             test_id
         ));
 
-        let db = HcomDb::open_at(&db_path).unwrap();
+        let db = CommsDb::open_at(&db_path).unwrap();
         (db, db_path)
     }
 
@@ -1407,17 +1407,17 @@ mod tests {
     #[test]
     #[serial]
     fn test_capture_context_records_launched_preset() {
-        // capture_context tags the launch with HCOM_LAUNCHED_PRESET so later
+        // capture_context tags the launch with COMMS_LAUNCHED_PRESET so later
         // child agents launched from inside this pane can inherit the preset.
         // Running tests inside a herdr session would otherwise leak
         // HERDR_PANE_ID into the captured context, so explicitly clear the
         // herdr-related identity vars before exercising the capture path.
         crate::config::Config::init();
-        let _preset = EnvVarGuard::set("HCOM_LAUNCHED_PRESET", "herdr");
+        let _preset = EnvVarGuard::set("COMMS_LAUNCHED_PRESET", "herdr");
         let _herdr_pane = EnvVarGuard::set("HERDR_PANE_ID", "");
         let _herdr_socket = EnvVarGuard::set("HERDR_SOCKET_PATH", "");
         let _herdr_env = EnvVarGuard::set("HERDR_ENV", "");
-        let _process_id = EnvVarGuard::set("HCOM_PROCESS_ID", "");
+        let _process_id = EnvVarGuard::set("COMMS_PROCESS_ID", "");
 
         let ctx = capture_context();
 
@@ -1450,8 +1450,8 @@ mod tests {
                 ],
             )
             .unwrap();
-        let _preset = EnvVarGuard::set("HCOM_LAUNCHED_PRESET", "");
-        let _process_id = EnvVarGuard::set("HCOM_PROCESS_ID", "");
+        let _preset = EnvVarGuard::set("COMMS_LAUNCHED_PRESET", "");
+        let _process_id = EnvVarGuard::set("COMMS_PROCESS_ID", "");
 
         capture_and_store_launch_context(&db, "luna");
 
@@ -2149,7 +2149,7 @@ mod tests {
         cleanup(path);
     }
 
-    fn notify_endpoint_port(db: &HcomDb, instance: &str, kind: &str) -> Option<i64> {
+    fn notify_endpoint_port(db: &CommsDb, instance: &str, kind: &str) -> Option<i64> {
         db.conn()
             .query_row(
                 "SELECT port FROM notify_endpoints WHERE instance = ?1 AND kind = ?2",
@@ -2163,14 +2163,14 @@ mod tests {
 
     impl MigrateNotifyFailGuard {
         fn enable() -> Self {
-            HcomDb::set_test_migrate_notify_fail(true);
+            CommsDb::set_test_migrate_notify_fail(true);
             Self
         }
     }
 
     impl Drop for MigrateNotifyFailGuard {
         fn drop(&mut self) {
-            HcomDb::set_test_migrate_notify_fail(false);
+            CommsDb::set_test_migrate_notify_fail(false);
         }
     }
 
@@ -2293,7 +2293,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_pending_placeholder_promotion_auto_subscribes_without_created_event() {
-        let _env = EnvVarGuard::set("HCOM_AUTO_SUBSCRIBE", "collision");
+        let _env = EnvVarGuard::set("COMMS_AUTO_SUBSCRIBE", "collision");
         let (db, path) = setup_test_db();
 
         let now = now_epoch_i64();
@@ -2378,12 +2378,12 @@ mod tests {
 
     #[test]
     #[serial]
-    fn new_row_honors_configured_hcom_timeout() {
+    fn new_row_honors_configured_comms_timeout() {
         // Regression test for issue #71: a brand-new instance row (the path
-        // used by adhoc `hcom start`, launched, and resumed sessions) must
-        // carry the effective HCOM_TIMEOUT rather than silently falling back
+        // used by adhoc `comms start`, launched, and resumed sessions) must
+        // carry the effective COMMS_TIMEOUT rather than silently falling back
         // to the old always-86400 schema default.
-        let _env = EnvVarGuard::set("HCOM_TIMEOUT", "30");
+        let _env = EnvVarGuard::set("COMMS_TIMEOUT", "30");
         let (db, path) = setup_test_db();
 
         let ok = initialize_instance_in_position_file(
@@ -2413,7 +2413,7 @@ mod tests {
     #[test]
     #[serial]
     fn new_row_falls_back_to_120_without_config() {
-        let _env = EnvVarGuard::unset("HCOM_TIMEOUT");
+        let _env = EnvVarGuard::unset("COMMS_TIMEOUT");
         let (db, path) = setup_test_db();
 
         let ok = initialize_instance_in_position_file(
@@ -2435,8 +2435,8 @@ mod tests {
         assert!(ok);
 
         let row = db.get_instance_full("luna").unwrap().unwrap();
-        // Default HcomConfig::timeout is 86400 (schema-equivalent default),
-        // preserved for anyone who hasn't set HCOM_TIMEOUT.
+        // Default CommsConfig::timeout is 86400 (schema-equivalent default),
+        // preserved for anyone who hasn't set COMMS_TIMEOUT.
         assert_eq!(row.wait_timeout, Some(86400));
 
         cleanup(path);

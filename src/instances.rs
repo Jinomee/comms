@@ -4,7 +4,7 @@
 //! binding lives in `instance_binding.rs`. This module stays focused on small
 //! helpers shared by commands, UI rendering, and lifecycle code.
 
-use crate::db::{HcomDb, InstanceRow};
+use crate::db::{CommsDb, InstanceRow};
 use crate::shared::ST_INACTIVE;
 
 pub fn is_remote_instance(data: &InstanceRow) -> bool {
@@ -26,7 +26,7 @@ pub fn is_launching_placeholder(data: &InstanceRow) -> bool {
 /// Update instance position atomically.
 /// If instance doesn't exist, UPDATE silently affects 0 rows.
 pub fn update_instance_position(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     updates: &serde_json::Map<String, serde_json::Value>,
 ) {
@@ -61,7 +61,7 @@ mod tests {
     use std::collections::HashSet;
     use std::path::PathBuf;
 
-    fn setup_test_db() -> (HcomDb, PathBuf) {
+    fn setup_test_db() -> (CommsDb, PathBuf) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -73,7 +73,7 @@ mod tests {
             test_id
         ));
 
-        let db = HcomDb::open_at(&db_path).unwrap();
+        let db = CommsDb::open_at(&db_path).unwrap();
         (db, db_path)
     }
 

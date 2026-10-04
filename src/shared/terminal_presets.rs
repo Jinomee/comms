@@ -158,7 +158,12 @@ pub static TERMINAL_PRESETS: LazyLock<Vec<(&'static str, TerminalPreset)>> = Laz
             p(
                 Some("kitty"),
                 Some("kitty"),
-                argv(&["kitty", "--env", "HCOM_PROCESS_ID={process_id}", "{script}"]),
+                argv(&[
+                    "kitty",
+                    "--env",
+                    "COMMS_PROCESS_ID={process_id}",
+                    "{script}",
+                ]),
                 argv(&["kitten", "@", "close-window", "--match", "id:{pane_id}"]),
                 None,
                 DL,
@@ -169,7 +174,12 @@ pub static TERMINAL_PRESETS: LazyLock<Vec<(&'static str, TerminalPreset)>> = Laz
             p(
                 Some("kitty"),
                 Some("kitty"),
-                argv(&["kitty", "--env", "HCOM_PROCESS_ID={process_id}", "{script}"]),
+                argv(&[
+                    "kitty",
+                    "--env",
+                    "COMMS_PROCESS_ID={process_id}",
+                    "{script}",
+                ]),
                 argv(&["kitten", "@", "close-window", "--match", "id:{pane_id}"]),
                 None,
                 DL,
@@ -251,7 +261,7 @@ pub static TERMINAL_PRESETS: LazyLock<Vec<(&'static str, TerminalPreset)>> = Laz
             p(
                 None,
                 Some("Warp"),
-                argv(&["open", "warp://launch/hcom-{process_id}"]),
+                argv(&["open", "warp://launch/comms-{process_id}"]),
                 NONE_ARGV,
                 None,
                 &["Darwin"],
@@ -520,7 +530,7 @@ pub static TERMINAL_PRESETS: LazyLock<Vec<(&'static str, TerminalPreset)>> = Laz
                     "launch",
                     "--type=tab",
                     "--env",
-                    "HCOM_PROCESS_ID={process_id}",
+                    "COMMS_PROCESS_ID={process_id}",
                     "--",
                     "bash",
                     "{script}",
@@ -541,7 +551,7 @@ pub static TERMINAL_PRESETS: LazyLock<Vec<(&'static str, TerminalPreset)>> = Laz
                     "launch",
                     "--type=window",
                     "--env",
-                    "HCOM_PROCESS_ID={process_id}",
+                    "COMMS_PROCESS_ID={process_id}",
                     "--",
                     "bash",
                     "{script}",
@@ -554,9 +564,9 @@ pub static TERMINAL_PRESETS: LazyLock<Vec<(&'static str, TerminalPreset)>> = Laz
         // Herdr workspace manager. Launched natively in two steps (see
         // `launch_herdr_two_step` in `terminal.rs`): first this `tab create`
         // opens a pane (its stdout JSON carries the pane id), then
-        // `herdr pane run <pane_id> "bash {script}"` starts hcom's normal
-        // `hcom pty` runner inside it. `agent start` can't be used — current
-        // herdr forces the executable and won't run hcom's wrapper script.
+        // `herdr pane run <pane_id> "bash {script}"` starts comms's normal
+        // `comms pty` runner inside it. `agent start` can't be used — current
+        // herdr forces the executable and won't run comms's wrapper script.
         // `--label {instance_name}` labels the *tab* (e.g. `luna`) — herdr's
         // `tab create --label` sets the tab label, not the pane label, which
         // stays null until the delivery loop's first `pane.rename`. The styled

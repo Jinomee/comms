@@ -9,7 +9,7 @@ track_launch() {
 }
 cleanup() {
   for name in "${LAUNCHED_NAMES[@]}"; do
-    hcom kill "$name" --go 2>/dev/null || true
+    comms kill "$name" --go 2>/dev/null || true
   done
 }
 
@@ -25,22 +25,22 @@ thread="basic-$(date +%s)"
 
 trap cleanup ERR INT TERM
 
-launch_out=$(hcom 1 claude --tag worker --go --headless \
-  --hcom-prompt "Do this: ${task}. Send result to @reviewer- via: hcom send \"@reviewer-\" --thread ${thread} --intent inform -- \"RESULT: <your answer>\". Then stop: hcom stop" 2>&1)
+launch_out=$(comms 1 claude --tag worker --go --headless \
+  --comms-prompt "Do this: ${task}. Send result to @reviewer- via: comms send \"@reviewer-\" --thread ${thread} --intent inform -- \"RESULT: <your answer>\". Then stop: comms stop" 2>&1)
 track_launch "$launch_out"
 worker=$(echo "$launch_out" | grep '^Names: ' | sed 's/^Names: //' | tr -d ' ')
 echo "Worker: $worker"
 
-launch_out=$(hcom 1 claude --tag reviewer --go --headless \
-  --hcom-prompt "Wait for a message from @worker-. When received, reply: hcom send \"@${worker}\" --thread ${thread} --intent ack -- \"ACK: received\". Then send: hcom send \"@bigboss\" --thread ${thread} --intent inform -- \"DONE\". Then stop: hcom stop" 2>&1)
+launch_out=$(comms 1 claude --tag reviewer --go --headless \
+  --comms-prompt "Wait for a message from @worker-. When received, reply: comms send \"@${worker}\" --thread ${thread} --intent ack -- \"ACK: received\". Then send: comms send \"@bigboss\" --thread ${thread} --intent inform -- \"DONE\". Then stop: comms stop" 2>&1)
 track_launch "$launch_out"
 reviewer=$(echo "$launch_out" | grep '^Names: ' | sed 's/^Names: //' | tr -d ' ')
 echo "Reviewer: $reviewer"
 echo "Thread: $thread"
 echo "Waiting..."
 
-hcom events --wait 120 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%DONE%'" $name_arg >/dev/null 2>&1 && echo "PASS" || echo "FAIL"
+comms events --wait 120 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%DONE%'" $name_arg >/dev/null 2>&1 && echo "PASS" || echo "FAIL"
 
 trap - ERR
-for name in "${LAUNCHED_NAMES[@]}"; do hcom kill "$name" --go 2>/dev/null || true; done
-hcom events --sql "msg_thread='${thread}'" --last 10 2>&1
+for name in "${LAUNCHED_NAMES[@]}"; do comms kill "$name" --go 2>/dev/null || true; done
+comms events --sql "msg_thread='${thread}'" --last 10 2>&1

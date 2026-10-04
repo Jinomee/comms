@@ -1,7 +1,7 @@
 //! Relay daemon process management.
 //!
-//! Accessed via `hcom relay daemon [start|stop|restart|status]`.
-//! Manages the `hcom relay-worker` background process for MQTT relay.
+//! Accessed via `comms relay daemon [start|stop|restart|status]`.
+//! Manages the `comms relay-worker` background process for MQTT relay.
 
 use std::thread;
 use std::time::Duration;
@@ -87,7 +87,7 @@ pub fn cmd_daemon(argv: &[String]) -> i32 {
         }
         other => {
             eprintln!("Unknown daemon subcommand: {other}");
-            eprintln!("Usage: hcom relay daemon [status|start|stop|restart]");
+            eprintln!("Usage: comms relay daemon [status|start|stop|restart]");
             1
         }
     }

@@ -46,7 +46,7 @@ jobs:
               print "### Install via PyPI"
               print ""
               print "```sh"
-              print "uv tool install hcom  # or: pip install hcom"
+              print "uv tool install comms  # or: pip install comms"
               print "```"
               print ""
               pypi_done = 1
@@ -57,7 +57,7 @@ jobs:
               print "### Update an existing install"
               print ""
               print "```sh"
-              print "hcom update"
+              print "comms update"
               print "```"
               print ""
               print "Auto-detects your install method (brew, uv tool, pip, or curl installer) and runs the right upgrade command."

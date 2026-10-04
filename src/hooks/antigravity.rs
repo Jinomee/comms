@@ -7,13 +7,13 @@ pub enum VerifyFailReason {
     SettingsUnreadableOrEmpty,
     #[error("agy permissions missing or incomplete in: {0}")]
     PermissionsMissing(PathBuf),
-    #[error("hooks.json missing 'hcom-lifecycle' group key")]
-    HcomLifecycleKeyMissing,
+    #[error("hooks.json missing 'comms-lifecycle' group key")]
+    CommsLifecycleKeyMissing,
     #[error("hook event '{0}' missing or empty")]
     HookEventMissing(String),
-    #[error("hcom hook command '{cmd_suffix}' not found under event '{event}'")]
+    #[error("comms hook command '{cmd_suffix}' not found under event '{event}'")]
     HookCommandMissing { event: String, cmd_suffix: String },
-    #[error("event '{0}': hcom entry has 'type' != \"command\"")]
+    #[error("event '{0}': comms entry has 'type' != \"command\"")]
     HookTypeFieldNotCommand(String),
     #[error("event '{event}' name mismatch: expected {expected:?}, got {actual:?}")]
     HookNameMismatch {
@@ -29,7 +29,7 @@ pub enum VerifyFailReason {
     },
     #[error("event '{event}' has no numeric 'timeout' field (canonical)")]
     HookTimeoutMissing { event: String },
-    #[error("duplicate hcom hook entry for event '{0}'")]
+    #[error("duplicate comms hook entry for event '{0}'")]
     HookDuplicated(String),
 }
 
@@ -75,9 +75,9 @@ fn antigravity_hooks_path(gemini_dir: &Path) -> PathBuf {
     gemini_dir.join("config").join("hooks.json")
 }
 
-/// Shell wrapper for a single hcom hook subcommand (`gemini-beforeagent`, etc.).
+/// Shell wrapper for a single comms hook subcommand (`gemini-beforeagent`, etc.).
 ///
-/// `fallback_json` is echoed to stdout when hcom is missing, before exiting 0.
+/// `fallback_json` is echoed to stdout when comms is missing, before exiting 0.
 /// agy requires a `decision` JSON response on PreToolUse and Stop; PostToolUse and
 /// PostInvocation accept an empty body.
 ///
@@ -85,10 +85,10 @@ fn antigravity_hooks_path(gemini_dir: &Path) -> PathBuf {
 /// JSON's quotes (and any apostrophes) survive the nested `sh -c '...'` pass —
 /// naive interpolation gets stripped or mis-tokenized by the inner shell.
 ///
-fn hook_sh_cmd(hcom_cmd: &str, subcmd: &str, fallback_json: &str) -> String {
-    let bin = hcom_cmd.split_whitespace().next().unwrap_or("hcom");
+fn hook_sh_cmd(comms_cmd: &str, subcmd: &str, fallback_json: &str) -> String {
+    let bin = comms_cmd.split_whitespace().next().unwrap_or("comms");
     if cfg!(windows) {
-        let invoke = format!("set \"ANTIGRAVITY_AGENT=1\" && {hcom_cmd} {subcmd}");
+        let invoke = format!("set \"ANTIGRAVITY_AGENT=1\" && {comms_cmd} {subcmd}");
         if fallback_json.is_empty() {
             return format!("where {bin} >nul 2>nul && ({invoke}) || exit /b 0");
         }
@@ -98,25 +98,25 @@ fn hook_sh_cmd(hcom_cmd: &str, subcmd: &str, fallback_json: &str) -> String {
     }
     if fallback_json.is_empty() {
         format!(
-            "sh -c 'command -v {bin} >/dev/null 2>&1 && ANTIGRAVITY_AGENT=1 exec {hcom_cmd} {subcmd} || exit 0'"
+            "sh -c 'command -v {bin} >/dev/null 2>&1 && ANTIGRAVITY_AGENT=1 exec {comms_cmd} {subcmd} || exit 0'"
         )
     } else {
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode(fallback_json.as_bytes());
         format!(
-            "sh -c 'command -v {bin} >/dev/null 2>&1 && ANTIGRAVITY_AGENT=1 exec {hcom_cmd} {subcmd} || {{ printf %s {b64} | base64 -d; exit 0; }}'"
+            "sh -c 'command -v {bin} >/dev/null 2>&1 && ANTIGRAVITY_AGENT=1 exec {comms_cmd} {subcmd} || {{ printf %s {b64} | base64 -d; exit 0; }}'"
         )
     }
 }
 
-/// PreInvocation sessionstart: invoke hcom; idempotent via `name_announced`
+/// PreInvocation sessionstart: invoke comms; idempotent via `name_announced`
 /// (bootstrap injection no-ops after first run, so re-firing per turn is safe).
-fn hook_sessionstart_cmd(hcom_cmd: &str) -> String {
-    hook_sh_cmd(hcom_cmd, "gemini-sessionstart", "")
+fn hook_sessionstart_cmd(comms_cmd: &str) -> String {
+    hook_sh_cmd(comms_cmd, "gemini-sessionstart", "")
 }
 
 /// Try to set up Antigravity hooks in `hooks.json`.
-/// Reads existing hooks.json, merges "hcom-lifecycle" group, and preserves all other keys.
+/// Reads existing hooks.json, merges "comms-lifecycle" group, and preserves all other keys.
 pub fn try_setup_antigravity_hooks(include_permissions: bool) -> Result<(), SetupError> {
     let hooks_path = get_antigravity_hooks_path();
     if let Some(parent) = hooks_path.parent() {
@@ -146,10 +146,10 @@ pub fn try_setup_antigravity_hooks(include_permissions: bool) -> Result<(), Setu
         serde_json::Map::new()
     };
 
-    let hcom_cmd = crate::runtime_env::build_hcom_command();
+    let comms_cmd = crate::runtime_env::build_comms_command();
 
     // Fallback JSON constants for hooks where agy requires a decision response when
-    // hcom is missing. PreToolUse needs `{"decision":"allow"}`; Stop needs a decision
+    // comms is missing. PreToolUse needs `{"decision":"allow"}`; Stop needs a decision
     // field where any value other than "continue" allows the stop. PostToolUse and the
     // *Invocation lifecycle hooks accept an empty body.
     const ALLOW_JSON: &str = "{\"decision\":\"allow\"}";
@@ -159,39 +159,39 @@ pub fn try_setup_antigravity_hooks(include_permissions: bool) -> Result<(), Setu
     // blocking the agent turn for half a minute.
     const HOOK_TIMEOUT_SEC: u64 = 15;
 
-    let hcom_lifecycle = json!({
+    let comms_lifecycle = json!({
         "PreInvocation": [
             {
-                "name": "hcom-sessionstart",
+                "name": "comms-sessionstart",
                 "type": "command",
-                "command": hook_sessionstart_cmd(&hcom_cmd),
+                "command": hook_sessionstart_cmd(&comms_cmd),
                 "timeout": HOOK_TIMEOUT_SEC,
-                "description": "Initialize hcom session"
+                "description": "Initialize comms session"
             },
             {
-                "name": "hcom-beforeagent",
+                "name": "comms-beforeagent",
                 "type": "command",
-                "command": hook_sh_cmd(&hcom_cmd, "gemini-beforeagent", ""),
+                "command": hook_sh_cmd(&comms_cmd, "gemini-beforeagent", ""),
                 "timeout": HOOK_TIMEOUT_SEC,
                 "description": "Deliver pending messages"
             }
         ],
         "PostInvocation": [
             {
-                "name": "hcom-afteragent",
+                "name": "comms-afteragent",
                 "type": "command",
-                "command": hook_sh_cmd(&hcom_cmd, "gemini-afteragent", ""),
+                "command": hook_sh_cmd(&comms_cmd, "gemini-afteragent", ""),
                 "timeout": HOOK_TIMEOUT_SEC,
                 "description": "Signal ready for messages"
             }
         ],
         "Stop": [
             {
-                "name": "hcom-sessionend",
+                "name": "comms-sessionend",
                 "type": "command",
-                "command": hook_sh_cmd(&hcom_cmd, "gemini-sessionend", ALLOW_JSON),
+                "command": hook_sh_cmd(&comms_cmd, "gemini-sessionend", ALLOW_JSON),
                 "timeout": HOOK_TIMEOUT_SEC,
-                "description": "Disconnect from hcom"
+                "description": "Disconnect from comms"
             }
         ],
         "PreToolUse": [
@@ -199,9 +199,9 @@ pub fn try_setup_antigravity_hooks(include_permissions: bool) -> Result<(), Setu
                 "matcher": ".*",
                 "hooks": [
                     {
-                        "name": "hcom-beforetool",
+                        "name": "comms-beforetool",
                         "type": "command",
-                        "command": hook_sh_cmd(&hcom_cmd, "gemini-beforetool", ALLOW_JSON),
+                        "command": hook_sh_cmd(&comms_cmd, "gemini-beforetool", ALLOW_JSON),
                         "timeout": HOOK_TIMEOUT_SEC,
                         "description": "Track tool execution"
                     }
@@ -213,9 +213,9 @@ pub fn try_setup_antigravity_hooks(include_permissions: bool) -> Result<(), Setu
                 "matcher": ".*",
                 "hooks": [
                     {
-                        "name": "hcom-aftertool",
+                        "name": "comms-aftertool",
                         "type": "command",
-                        "command": hook_sh_cmd(&hcom_cmd, "gemini-aftertool", ""),
+                        "command": hook_sh_cmd(&comms_cmd, "gemini-aftertool", ""),
                         "timeout": HOOK_TIMEOUT_SEC,
                         "description": "Deliver messages after tools"
                     }
@@ -224,7 +224,7 @@ pub fn try_setup_antigravity_hooks(include_permissions: bool) -> Result<(), Setu
         ]
     });
 
-    hooks_root.insert("hcom-lifecycle".to_string(), hcom_lifecycle);
+    hooks_root.insert("comms-lifecycle".to_string(), comms_lifecycle);
 
     let json_str = serde_json::to_string_pretty(&Value::Object(hooks_root))
         .map_err(SetupError::SerializationFailed)?;
@@ -259,14 +259,14 @@ pub fn verify_antigravity_hooks_installed(check_permissions: bool) -> bool {
     verify_hooks_at(&get_antigravity_hooks_path(), check_permissions).is_ok()
 }
 
-/// Cleanly remove the `"hcom-lifecycle"` group key from `hooks.json` and
-/// strip hcom permission rules from `~/.gemini/antigravity-cli/settings.json`.
+/// Cleanly remove the `"comms-lifecycle"` group key from `hooks.json` and
+/// strip comms permission rules from `~/.gemini/antigravity-cli/settings.json`.
 /// Preserves other hooks.json keys, and removes the file if no other keys remain.
 ///
 /// Returns true only when BOTH the hooks cleanup and the permission cleanup
 /// succeed. Permission cleanup is attempted unconditionally \u2014 even when
 /// hooks.json is missing, unreadable, or invalid \u2014 so a partially broken
-/// install does not leave stale `command(hcom ...)` allow-rules behind.
+/// install does not leave stale `command(comms ...)` allow-rules behind.
 pub fn remove_antigravity_hooks() -> bool {
     antigravity_cleanup_dirs().iter().all(|dir| {
         remove_hooks_lifecycle_block_at(&antigravity_hooks_path(dir))
@@ -274,7 +274,7 @@ pub fn remove_antigravity_hooks() -> bool {
     })
 }
 
-/// Strip just the `"hcom-lifecycle"` block from hooks.json. Returns true on
+/// Strip just the `"comms-lifecycle"` block from hooks.json. Returns true on
 /// success, including the "file absent" case. Does not touch permissions.
 fn remove_hooks_lifecycle_block_at(path: &Path) -> bool {
     if !path.exists() {
@@ -292,7 +292,7 @@ fn remove_hooks_lifecycle_block_at(path: &Path) -> bool {
         Some(o) => o,
         None => return false,
     };
-    obj.remove("hcom-lifecycle");
+    obj.remove("comms-lifecycle");
     if obj.is_empty() {
         return std::fs::remove_file(path).is_ok();
     }
@@ -316,9 +316,9 @@ fn verify_hooks_at(path: &Path, check_permissions: bool) -> Result<(), VerifyFai
         .ok_or(VerifyFailReason::SettingsUnreadableOrEmpty)?;
 
     let lifecycle = root
-        .get("hcom-lifecycle")
+        .get("comms-lifecycle")
         .and_then(|v| v.as_object())
-        .ok_or(VerifyFailReason::HcomLifecycleKeyMissing)?;
+        .ok_or(VerifyFailReason::CommsLifecycleKeyMissing)?;
 
     // Check PreInvocation
     let pre_invocation = lifecycle
@@ -350,7 +350,7 @@ fn verify_hooks_at(path: &Path, check_permissions: bool) -> Result<(), VerifyFai
             });
         }
 
-        if name == "hcom-sessionstart" {
+        if name == "comms-sessionstart" {
             if found_sessionstart {
                 return Err(VerifyFailReason::HookDuplicated(
                     "PreInvocation".to_string(),
@@ -363,7 +363,7 @@ fn verify_hooks_at(path: &Path, check_permissions: bool) -> Result<(), VerifyFai
                 });
             }
             found_sessionstart = true;
-        } else if name == "hcom-beforeagent" {
+        } else if name == "comms-beforeagent" {
             if found_beforeagent {
                 return Err(VerifyFailReason::HookDuplicated(
                     "PreInvocation".to_string(),
@@ -419,7 +419,7 @@ fn verify_hooks_at(path: &Path, check_permissions: bool) -> Result<(), VerifyFai
             });
         }
 
-        if name == "hcom-afteragent" {
+        if name == "comms-afteragent" {
             if found_afteragent {
                 return Err(VerifyFailReason::HookDuplicated(
                     "PostInvocation".to_string(),
@@ -469,7 +469,7 @@ fn verify_hooks_at(path: &Path, check_permissions: bool) -> Result<(), VerifyFai
             });
         }
 
-        if name == "hcom-sessionend" {
+        if name == "comms-sessionend" {
             if found_sessionend {
                 return Err(VerifyFailReason::HookDuplicated("Stop".to_string()));
             }
@@ -536,7 +536,7 @@ fn verify_hooks_at(path: &Path, check_permissions: bool) -> Result<(), VerifyFai
                 });
             }
 
-            if name == "hcom-beforetool" {
+            if name == "comms-beforetool" {
                 if found_beforetool {
                     return Err(VerifyFailReason::HookDuplicated("PreToolUse".to_string()));
                 }
@@ -604,7 +604,7 @@ fn verify_hooks_at(path: &Path, check_permissions: bool) -> Result<(), VerifyFai
                 });
             }
 
-            if name == "hcom-aftertool" {
+            if name == "comms-aftertool" {
                 if found_aftertool {
                     return Err(VerifyFailReason::HookDuplicated("PostToolUse".to_string()));
                 }
@@ -649,18 +649,18 @@ fn antigravity_cleanup_dirs() -> Vec<PathBuf> {
     crate::runtime_env::gemini_family_cleanup_dirs()
 }
 
-/// Build the list of `command(...)` rules for safe hcom commands.
+/// Build the list of `command(...)` rules for safe comms commands.
 fn antigravity_permission_rules() -> Vec<String> {
     let mut rules = Vec::new();
-    for prefix in &["hcom", "uvx hcom"] {
-        for cmd in crate::hooks::common::SAFE_HCOM_COMMANDS {
+    for prefix in &["comms", "uvx comms"] {
+        for cmd in crate::hooks::common::SAFE_COMMS_COMMANDS {
             rules.push(format!("command({} {})", prefix, cmd));
         }
     }
     rules
 }
 
-/// Merge hcom permission rules into `~/.gemini/antigravity-cli/settings.json`.
+/// Merge comms permission rules into `~/.gemini/antigravity-cli/settings.json`.
 /// Preserves any other keys and pre-existing entries in `permissions.allow`.
 fn setup_antigravity_permissions() -> bool {
     let path = get_antigravity_settings_path();
@@ -713,7 +713,7 @@ fn setup_antigravity_permissions() -> bool {
     crate::paths::atomic_write(&path, &json_str)
 }
 
-/// Remove hcom rules from agy settings.json. Cleans `permissions.allow` and
+/// Remove comms rules from agy settings.json. Cleans `permissions.allow` and
 /// `permissions` if they become empty. Leaves the file otherwise untouched.
 fn remove_antigravity_permissions() -> bool {
     remove_antigravity_permissions_at(&get_antigravity_settings_path())
@@ -769,7 +769,7 @@ fn remove_antigravity_permissions_at(path: &Path) -> bool {
     crate::paths::atomic_write(path, &json_str)
 }
 
-/// Check that every hcom rule we install is present in agy settings.json.
+/// Check that every comms rule we install is present in agy settings.json.
 fn antigravity_permissions_complete(path: &Path) -> bool {
     if !path.exists() {
         return false;
@@ -826,7 +826,7 @@ mod tests {
     use serial_test::serial;
 
     fn antigravity_test_env() -> (tempfile::TempDir, PathBuf, PathBuf, EnvGuard) {
-        let (dir, _hcom_dir, test_home, guard) = isolated_test_env();
+        let (dir, _comms_dir, test_home, guard) = isolated_test_env();
         let hooks_path = test_home.join(".gemini").join("config").join("hooks.json");
         (dir, test_home, hooks_path, guard)
     }
@@ -884,7 +884,7 @@ mod tests {
         let content = std::fs::read_to_string(&hooks_path).unwrap();
         let root: Value = serde_json::from_str(&content).unwrap();
 
-        assert!(root.get("hcom-lifecycle").is_some());
+        assert!(root.get("comms-lifecycle").is_some());
         assert_eq!(
             root["guard-shell"]["PreToolUse"][0]["hooks"][0]["name"],
             "guard-shell"
@@ -908,7 +908,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_remove_only_hcom_lifecycle() {
+    fn test_remove_only_comms_lifecycle() {
         let (_dir, _test_home, hooks_path, _guard) = antigravity_test_env();
 
         // Setup hooks
@@ -940,13 +940,13 @@ mod tests {
         assert!(hooks_path.exists());
         let content = std::fs::read_to_string(&hooks_path).unwrap();
         let root: Value = serde_json::from_str(&content).unwrap();
-        assert!(root.get("hcom-lifecycle").is_none());
+        assert!(root.get("comms-lifecycle").is_none());
         assert!(root.get("guard-shell").is_some());
     }
 
     #[test]
     #[serial]
-    fn test_remove_also_strips_hcom_permissions() {
+    fn test_remove_also_strips_comms_permissions() {
         let (_dir, test_home, _hooks_path, _guard) = antigravity_test_env();
 
         // Install hooks WITH permissions
@@ -967,27 +967,27 @@ mod tests {
         let allow = val["permissions"]["allow"].as_array().unwrap();
         assert!(
             !allow.is_empty(),
-            "hcom rules should be present after install"
+            "comms rules should be present after install"
         );
 
-        // Remove hooks — should also strip hcom permissions
+        // Remove hooks — should also strip comms permissions
         assert!(remove_antigravity_hooks());
 
         // Permissions should now be gone
         if settings_path.exists() {
             let content2 = std::fs::read_to_string(&settings_path).unwrap();
             let val2: Value = serde_json::from_str(&content2).unwrap();
-            // permissions key should be absent, or allow should not contain hcom rules
-            let has_hcom_rules = val2
+            // permissions key should be absent, or allow should not contain comms rules
+            let has_comms_rules = val2
                 .get("permissions")
                 .and_then(|p| p.get("allow"))
                 .and_then(|a| a.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .any(|v| v.as_str().is_some_and(|s| s.contains("hcom")))
+                        .any(|v| v.as_str().is_some_and(|s| s.contains("comms")))
                 })
                 .unwrap_or(false);
-            assert!(!has_hcom_rules, "hcom permission rules should be removed");
+            assert!(!has_comms_rules, "comms permission rules should be removed");
         }
     }
 
@@ -1000,22 +1000,22 @@ mod tests {
     }
 
     #[test]
-    fn test_hook_sh_cmd_includes_subcmd_and_hcom() {
-        let cmd = hook_sh_cmd("hcom gemini-beforeagent", "gemini-beforeagent", "");
+    fn test_hook_sh_cmd_includes_subcmd_and_comms() {
+        let cmd = hook_sh_cmd("comms gemini-beforeagent", "gemini-beforeagent", "");
         assert!(cmd.contains("gemini-beforeagent"));
         if cfg!(windows) {
-            assert!(cmd.contains("where hcom"));
+            assert!(cmd.contains("where comms"));
             assert!(!cmd.contains("sh -c"));
         } else {
-            assert!(cmd.contains("command -v hcom"));
+            assert!(cmd.contains("command -v comms"));
         }
         assert!(cmd.contains("ANTIGRAVITY_AGENT=1"));
-        assert!(cmd.contains("hcom gemini-beforeagent"));
+        assert!(cmd.contains("comms gemini-beforeagent"));
     }
 
     #[test]
     fn test_hook_sh_cmd_with_fallback_uses_base64_pipeline() {
-        let cmd = hook_sh_cmd("hcom", "gemini-beforetool", "{\"decision\":\"allow\"}");
+        let cmd = hook_sh_cmd("comms", "gemini-beforetool", "{\"decision\":\"allow\"}");
         assert!(cmd.contains("gemini-beforetool"));
         if cfg!(windows) {
             assert!(cmd.contains("echo {\"decision\":\"allow\"}"));
@@ -1026,7 +1026,7 @@ mod tests {
 
     #[test]
     fn test_hook_sh_cmd_without_fallback_exits_zero_only() {
-        let cmd = hook_sh_cmd("hcom", "gemini-afteragent", "");
+        let cmd = hook_sh_cmd("comms", "gemini-afteragent", "");
         // no printf/echo when fallback is empty
         assert!(!cmd.contains("printf"));
         assert!(!cmd.contains("base64"));
@@ -1041,7 +1041,7 @@ mod tests {
         use std::process::Command;
         // Reference an obviously-missing binary so the `||` fallback branch fires.
         let cmd = hook_sh_cmd(
-            "definitely_missing_hcom_xyz123",
+            "definitely_missing_comms_xyz123",
             "gemini-beforetool",
             "{\"decision\":\"allow\"}",
         );
@@ -1068,7 +1068,7 @@ mod tests {
         use std::process::Command;
         let payload = "{\"reason\":\"don't allow\"}";
         let cmd = hook_sh_cmd(
-            "definitely_missing_hcom_xyz123",
+            "definitely_missing_comms_xyz123",
             "gemini-beforetool",
             payload,
         );
@@ -1085,8 +1085,8 @@ mod tests {
     }
 
     #[test]
-    fn test_sessionstart_cmd_invokes_hcom_with_env() {
-        let cmd = hook_sessionstart_cmd("hcom");
+    fn test_sessionstart_cmd_invokes_comms_with_env() {
+        let cmd = hook_sessionstart_cmd("comms");
         assert!(cmd.contains("gemini-sessionstart"));
         assert!(cmd.contains("ANTIGRAVITY_AGENT=1"));
         // Lockfile machinery removed — sessionstart is idempotent via name_announced.
@@ -1132,7 +1132,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[serial]
-    fn test_remove_cleans_default_and_active_hcom_dir_local_paths() {
+    fn test_remove_cleans_default_and_active_comms_dir_local_paths() {
         let _guard = EnvGuard::new();
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
@@ -1140,7 +1140,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", workspace.join(".hcom"));
+            std::env::set_var("COMMS_DIR", workspace.join(".comms"));
             std::env::remove_var("GEMINI_CLI_HOME");
         }
         let gemini_dirs = [home.join(".gemini"), workspace.join(".gemini")];
@@ -1152,7 +1152,7 @@ mod tests {
             std::fs::write(
                 &hooks,
                 serde_json::to_string_pretty(&json!({
-                    "hcom-lifecycle": {},
+                    "comms-lifecycle": {},
                     "custom": true
                 }))
                 .unwrap(),
@@ -1162,7 +1162,7 @@ mod tests {
                 &settings,
                 serde_json::to_string_pretty(&json!({
                     "permissions": {
-                        "allow": ["command(hcom send)", "custom"]
+                        "allow": ["command(comms send)", "custom"]
                     }
                 }))
                 .unwrap(),

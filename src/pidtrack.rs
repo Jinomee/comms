@@ -1,4 +1,4 @@
-//! Track hcom-launched process PIDs for orphan detection and recovery.
+//! Track comms-launched process PIDs for orphan detection and recovery.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -83,9 +83,9 @@ impl From<(u32, &PidEntry)> for OrphanProcess {
     }
 }
 
-/// Resolve the pidfile path from hcom_dir.
-fn pidfile_path(hcom_dir: &Path) -> PathBuf {
-    hcom_dir.join(PIDFILE_NAME)
+/// Resolve the pidfile path from comms_dir.
+fn pidfile_path(comms_dir: &Path) -> PathBuf {
+    comms_dir.join(PIDFILE_NAME)
 }
 
 /// Check if a process is alive. See [`crate::sys::process::is_alive`].
@@ -94,24 +94,24 @@ pub fn is_alive(pid: u32) -> bool {
 }
 
 /// Read raw pidfile data.
-fn read_raw(hcom_dir: &Path) -> HashMap<String, PidEntry> {
-    match std::fs::read_to_string(pidfile_path(hcom_dir)) {
+fn read_raw(comms_dir: &Path) -> HashMap<String, PidEntry> {
+    match std::fs::read_to_string(pidfile_path(comms_dir)) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
         Err(_) => HashMap::new(),
     }
 }
 
 /// Write pidfile data atomically (temp + rename).
-fn write_raw(hcom_dir: &Path, data: &HashMap<String, PidEntry>) {
+fn write_raw(comms_dir: &Path, data: &HashMap<String, PidEntry>) {
     if let Ok(content) = serde_json::to_string(data) {
-        crate::paths::atomic_write(&pidfile_path(hcom_dir), &content);
+        crate::paths::atomic_write(&pidfile_path(comms_dir), &content);
     }
 }
 
 /// Parameters for recording a launched process.
 #[derive(Debug)]
 pub struct PidRecord<'a> {
-    pub hcom_dir: &'a Path,
+    pub comms_dir: &'a Path,
     pub pid: u32,
     pub tool: &'a str,
     pub name: &'a str,
@@ -131,14 +131,14 @@ pub struct PidRecord<'a> {
 impl<'a> PidRecord<'a> {
     /// Create with required fields, defaulting optional ones.
     pub fn new(
-        hcom_dir: &'a Path,
+        comms_dir: &'a Path,
         pid: u32,
         tool: &'a str,
         name: &'a str,
         directory: &'a str,
     ) -> Self {
         Self {
-            hcom_dir,
+            comms_dir,
             pid,
             tool,
             name,
@@ -160,7 +160,7 @@ impl<'a> PidRecord<'a> {
 /// Record a launched process PID.
 pub fn record_pid(rec: &PidRecord<'_>) {
     let PidRecord {
-        hcom_dir,
+        comms_dir,
         pid,
         tool,
         name,
@@ -176,7 +176,7 @@ pub fn record_pid(rec: &PidRecord<'_>) {
         inject_port,
         tag,
     } = rec;
-    let mut data = read_raw(hcom_dir);
+    let mut data = read_raw(comms_dir);
     let key = pid.to_string();
 
     if let Some(entry) = data.get_mut(&key) {
@@ -237,19 +237,19 @@ pub fn record_pid(rec: &PidRecord<'_>) {
         );
     }
 
-    write_raw(hcom_dir, &data);
+    write_raw(comms_dir, &data);
 }
 
-/// Get running hcom processes not accounted for by active instances.
+/// Get running comms processes not accounted for by active instances.
 ///
 /// Auto-prunes dead PIDs from the file. If `active_pids` is provided,
 /// also prunes PIDs that are now active from the file and filters them
 /// from the result.
 pub fn get_orphan_processes(
-    hcom_dir: &Path,
+    comms_dir: &Path,
     active_pids: Option<&std::collections::HashSet<u32>>,
 ) -> Vec<OrphanProcess> {
-    let data = read_raw(hcom_dir);
+    let data = read_raw(comms_dir);
 
     // Filter to alive processes only
     let mut alive: HashMap<String, PidEntry> = HashMap::new();
@@ -263,7 +263,7 @@ pub fn get_orphan_processes(
 
     // Write back pruned data if anything was removed
     if alive.len() != data.len() {
-        write_raw(hcom_dir, &alive);
+        write_raw(comms_dir, &alive);
     }
 
     // Build result
@@ -289,7 +289,7 @@ pub fn get_orphan_processes(
             for k in &active_in_file {
                 pruned.remove(k);
             }
-            write_raw(hcom_dir, &pruned);
+            write_raw(comms_dir, &pruned);
         }
         result.retain(|p| !active.contains(&p.pid));
     }
@@ -298,17 +298,17 @@ pub fn get_orphan_processes(
 }
 
 /// Remove a PID from tracking (after kill).
-pub fn remove_pid(hcom_dir: &Path, pid: u32) {
-    let mut data = read_raw(hcom_dir);
+pub fn remove_pid(comms_dir: &Path, pid: u32) {
+    let mut data = read_raw(comms_dir);
     let key = pid.to_string();
     if data.remove(&key).is_some() {
-        write_raw(hcom_dir, &data);
+        write_raw(comms_dir, &data);
     }
 }
 
 /// Name of the live row that already owns this PTY, if any.
 ///
-/// A stopped PTY can rejoin through a hook or `hcom start` without going
+/// A stopped PTY can rejoin through a hook or `comms start` without going
 /// through orphan recovery. That leaves a live row with no `pid` while the
 /// pidfile still lists the process, so it looks orphaned; recovering it again
 /// would split one agent across two identities.
@@ -357,8 +357,8 @@ pub fn owning_instance(
 ///
 /// Returns the remaining orphans and each adopted entry with the row it went to.
 pub fn claim_orphans(
-    db: &crate::db::HcomDb,
-    hcom_dir: &Path,
+    db: &crate::db::CommsDb,
+    comms_dir: &Path,
 ) -> (Vec<OrphanProcess>, Vec<(OrphanProcess, String)>) {
     let active_pids: std::collections::HashSet<u32> = db
         .iter_instances_full()
@@ -368,7 +368,7 @@ pub fn claim_orphans(
                 .collect()
         })
         .unwrap_or_default();
-    let mut orphans = get_orphan_processes(hcom_dir, Some(&active_pids));
+    let mut orphans = get_orphan_processes(comms_dir, Some(&active_pids));
     let mut adopted = Vec::new();
     orphans.retain(|orphan| {
         let Some(name) = owning_instance(db.conn(), &orphan.process_id, &orphan.session_id) else {
@@ -382,7 +382,7 @@ pub fn claim_orphans(
             );
             return true;
         }
-        remove_pid(hcom_dir, orphan.pid);
+        remove_pid(comms_dir, orphan.pid);
         crate::log::log_info(
             "pidtrack",
             "orphan.adopted",
@@ -400,7 +400,7 @@ pub fn claim_orphans(
 /// kill, pane close and wake reach the process again. Status and session
 /// bindings are left alone: the row is already live.
 fn adopt_orphan(
-    db: &crate::db::HcomDb,
+    db: &crate::db::CommsDb,
     orphan: &OrphanProcess,
     instance_name: &str,
 ) -> Result<(), String> {
@@ -423,7 +423,7 @@ fn adopt_orphan(
 /// The pid is written last and must succeed: once a row has it, the pidfile
 /// entry is dropped, so every other route to the process has to be in place.
 fn attach_runtime_state(
-    db: &crate::db::HcomDb,
+    db: &crate::db::CommsDb,
     orphan: &OrphanProcess,
     instance_name: &str,
 ) -> Result<(), String> {
@@ -498,7 +498,7 @@ fn attach_runtime_state(
 /// Returns `Err` if the critical instance INSERT fails. Caller must leave the
 /// pidtrack entry intact on failure so recovery can be retried later.
 pub fn recover_single_orphan_to_db(
-    db: &crate::db::HcomDb,
+    db: &crate::db::CommsDb,
     orphan: &OrphanProcess,
     instance_name: &str,
 ) -> Result<(), String> {
@@ -507,7 +507,7 @@ pub fn recover_single_orphan_to_db(
     let now = crate::shared::time::now_epoch_i64();
 
     db.conn()
-        .execute_batch("SAVEPOINT hcom_recover_orphan")
+        .execute_batch("SAVEPOINT comms_recover_orphan")
         .map_err(|e| format!("failed to begin orphan recovery: {e}"))?;
     let recovery = (|| -> Result<(), String> {
         // Create instance row — this is the critical step; fail = abort recovery
@@ -545,12 +545,12 @@ pub fn recover_single_orphan_to_db(
     })();
 
     if let Err(error) = recovery {
-        let _ = db.conn().execute_batch("ROLLBACK TO hcom_recover_orphan");
-        let _ = db.conn().execute_batch("RELEASE hcom_recover_orphan");
+        let _ = db.conn().execute_batch("ROLLBACK TO comms_recover_orphan");
+        let _ = db.conn().execute_batch("RELEASE comms_recover_orphan");
         return Err(error);
     }
     db.conn()
-        .execute_batch("RELEASE hcom_recover_orphan")
+        .execute_batch("RELEASE comms_recover_orphan")
         .map_err(|e| format!("failed to commit orphan recovery: {e}"))?;
 
     // Set listening so PTY delivery gate allows message injection.
@@ -584,7 +584,7 @@ mod tests {
     fn test_record_and_read() {
         let dir = make_temp_dir();
         record_pid(&PidRecord {
-            hcom_dir: dir.path(),
+            comms_dir: dir.path(),
             pid: 12345,
             tool: "claude",
             name: "luna",
@@ -739,7 +739,7 @@ mod tests {
         // DB without init_db → no instances table → INSERT fails
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = crate::db::HcomDb::open_raw(&db_path).unwrap();
+        let db = crate::db::CommsDb::open_raw(&db_path).unwrap();
         // Deliberately NOT calling db.init_db()
 
         let orphan = OrphanProcess {
@@ -769,8 +769,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_recover_single_orphan_rolls_back_partial_registration() {
-        let (_dir, _hcom_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
-        let db = crate::db::HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let db = crate::db::CommsDb::open().unwrap();
         let orphan = OrphanProcess {
             pid: u32::MAX,
             tool: "claude".into(),
@@ -804,8 +804,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_owning_instance_ignores_rows_with_their_own_process() {
-        let (_dir, _hcom_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
-        let db = crate::db::HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let db = crate::db::CommsDb::open().unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, session_id, pid, tool, status, created_at)

@@ -2,7 +2,7 @@
 //!
 //! Uses kv store to track which tips have been shown per instance.
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 
 pub struct LaunchTipsContext<'a> {
     pub launched: usize,
@@ -22,7 +22,7 @@ pub fn get_tip(key: &str) -> Option<&'static str> {
               \u{25a0} blocked (needs human user approval)  \u{25cb} inactive (dead)  \u{25e6} unknown (neutral)",
         ),
         "list:types" => Some(
-            "[tip] Tool labels: [CLAUDE] etc. get messages automatically; a * means not bound yet or lost (hcom list <name>); [AD-HOC] checks manually with hcom listen.",
+            "[tip] Tool labels: [CLAUDE] etc. get messages automatically; a * means not bound yet or lost (comms list <name>); [AD-HOC] checks manually with comms listen.",
         ),
         // Send-side
         "send:intent:request" => Some(
@@ -44,14 +44,14 @@ pub fn get_tip(key: &str) -> Option<&'static str> {
         ),
         // Subscriptions
         "sub:created" => Some(
-            "[tip] You'll be notified via hcom message when the next matching event occurs. Safe to end your turn.",
+            "[tip] You'll be notified via comms message when the next matching event occurs. Safe to end your turn.",
         ),
         _ => None,
     }
 }
 
 /// Check if instance has seen this tip before.
-pub fn has_seen_tip(db: &HcomDb, instance_name: &str, command: &str) -> bool {
+pub fn has_seen_tip(db: &CommsDb, instance_name: &str, command: &str) -> bool {
     if instance_name.is_empty() {
         return true;
     }
@@ -60,7 +60,7 @@ pub fn has_seen_tip(db: &HcomDb, instance_name: &str, command: &str) -> bool {
 }
 
 /// Mark tip as seen for this instance.
-pub fn mark_tip_seen(db: &HcomDb, instance_name: &str, command: &str) {
+pub fn mark_tip_seen(db: &CommsDb, instance_name: &str, command: &str) {
     if instance_name.is_empty() {
         return;
     }
@@ -69,7 +69,7 @@ pub fn mark_tip_seen(db: &HcomDb, instance_name: &str, command: &str) {
 }
 
 /// Show one-time tip for command if not seen before.
-pub fn maybe_show_tip(db: &HcomDb, instance_name: &str, command: &str, json_output: bool) {
+pub fn maybe_show_tip(db: &CommsDb, instance_name: &str, command: &str, json_output: bool) {
     if json_output {
         return;
     }
@@ -85,17 +85,17 @@ pub fn maybe_show_tip(db: &HcomDb, instance_name: &str, command: &str, json_outp
 }
 
 /// Print contextual tips after launch. One-time tips tracked per launcher via kv.
-pub fn print_launch_tips(db: &HcomDb, ctx: LaunchTipsContext<'_>) {
+pub fn print_launch_tips(db: &CommsDb, ctx: LaunchTipsContext<'_>) {
     if ctx.launched == 0 {
         return;
     }
 
-    let inside_tool = crate::shared::context::HcomContext::from_os().is_inside_ai_tool();
+    let inside_tool = crate::shared::context::CommsContext::from_os().is_inside_ai_tool();
     let mut tips: Vec<String> = Vec::new();
 
     /// Append tip if not yet seen by this launcher.
     /// When launcher_name is None (ad-hoc usage), always show — no tracking.
-    fn once(db: &HcomDb, tips: &mut Vec<String>, tip_id: Option<&str>, key: &str, text: &str) {
+    fn once(db: &CommsDb, tips: &mut Vec<String>, tip_id: Option<&str>, key: &str, text: &str) {
         if let Some(id) = tip_id {
             if has_seen_tip(db, id, key) {
                 return;
@@ -142,7 +142,7 @@ pub fn print_launch_tips(db: &HcomDb, ctx: LaunchTipsContext<'_>) {
 
     if let Some(t) = ctx.tag {
         tips.push(format!(
-            "[tip] Tag prefix targets all agents with that tag: hcom send @{t}- <message>"
+            "[tip] Tag prefix targets all agents with that tag: comms send @{t}- <message>"
         ));
     }
 
@@ -165,7 +165,7 @@ pub fn print_launch_tips(db: &HcomDb, ctx: LaunchTipsContext<'_>) {
                 &mut tips,
                 ctx.launcher_name,
                 "launch:start",
-                "[tip] Run 'hcom start' to receive notifications/messages from instances",
+                "[tip] Run 'comms start' to receive notifications/messages from instances",
             );
         }
 
@@ -175,7 +175,7 @@ pub fn print_launch_tips(db: &HcomDb, ctx: LaunchTipsContext<'_>) {
                 &mut tips,
                 ctx.launcher_name,
                 "launch:kill",
-                "[tip] Kill agents and close their panes: hcom kill <name1> <name2> ...",
+                "[tip] Kill agents and close their panes: comms kill <name1> <name2> ...",
             );
         }
 
@@ -185,7 +185,7 @@ pub fn print_launch_tips(db: &HcomDb, ctx: LaunchTipsContext<'_>) {
                 &mut tips,
                 ctx.launcher_name,
                 "launch:term",
-                "[tip] View an agent's screen: hcom term <name> | Inject keystrokes: hcom term inject <name> [text] --enter",
+                "[tip] View an agent's screen: comms term <name> | Inject keystrokes: comms term inject <name> [text] --enter",
             );
         }
 
@@ -195,7 +195,7 @@ pub fn print_launch_tips(db: &HcomDb, ctx: LaunchTipsContext<'_>) {
                 &mut tips,
                 ctx.launcher_name,
                 "launch:sub-blocked",
-                "[tip] Get notified when an agent needs approval: hcom events sub --blocked <name>",
+                "[tip] Get notified when an agent needs approval: comms events sub --blocked <name>",
             );
         } else {
             once(
@@ -203,7 +203,7 @@ pub fn print_launch_tips(db: &HcomDb, ctx: LaunchTipsContext<'_>) {
                 &mut tips,
                 ctx.launcher_name,
                 "launch:sub-idle",
-                "[tip] Get notified when an agent goes idle: hcom events sub --idle <name>",
+                "[tip] Get notified when an agent goes idle: comms events sub --idle <name>",
             );
         }
 
@@ -220,14 +220,14 @@ pub fn print_launch_tips(db: &HcomDb, ctx: LaunchTipsContext<'_>) {
             &mut tips,
             ctx.launcher_name,
             "launch:send",
-            "[tip] Send a message to an agent: hcom send @<name> <message>",
+            "[tip] Send a message to an agent: comms send @<name> <message>",
         );
         once(
             db,
             &mut tips,
             ctx.launcher_name,
             "launch:list",
-            "[tip] Check status: hcom list",
+            "[tip] Check status: comms list",
         );
     }
 

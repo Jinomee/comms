@@ -1,4 +1,4 @@
-//! `hcom list` command — list active instances.
+//! `comms list` command — list active instances.
 //!
 //!
 //! Supports: human-readable, --json, --names, --format, -v,
@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::db::{HcomDb, InstanceRow};
+use crate::db::{CommsDb, InstanceRow};
 use crate::identity;
 use crate::identity::{get_full_name, resolve_display_name};
 use crate::instance_lifecycle::{
@@ -18,10 +18,10 @@ use crate::shared::{
     CommandContext, SENDER, ST_LISTENING, shorten_path, shorten_path_max, status_icon,
 };
 
-/// Tool label shown in `hcom list`, e.g. `CLAUDE` or `CODEX*`.
+/// Tool label shown in `comms list`, e.g. `CLAUDE` or `CODEX*`.
 ///
 /// A star means an agent whose delivery depends on local bindings has a
-/// missing one: its hooks haven't bound yet (or never will), or its hcom
+/// missing one: its hooks haven't bound yet (or never will), or its comms
 /// process is gone. Subagents use their parent's session and relay mirrors are
 /// bound on their own device, so neither gets a star.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -31,7 +31,7 @@ struct Bindings {
 }
 
 impl Bindings {
-    fn for_instance(db: &HcomDb, name: &str) -> Self {
+    fn for_instance(db: &CommsDb, name: &str) -> Self {
         Self {
             session: db.has_session_binding(name),
             process: db.has_process_binding_for_instance(name),
@@ -39,7 +39,7 @@ impl Bindings {
     }
 }
 
-fn get_bindings_batch(db: &HcomDb) -> HashMap<String, Bindings> {
+fn get_bindings_batch(db: &CommsDb) -> HashMap<String, Bindings> {
     let Ok(mut stmt) = db.conn().prepare(
         "SELECT name,
             EXISTS(SELECT 1 FROM session_bindings WHERE instance_name = instances.name),
@@ -94,7 +94,7 @@ fn bindings_display(bindings: Bindings, data: &InstanceRow) -> &'static str {
     }
 }
 
-/// Parsed arguments for `hcom list`.
+/// Parsed arguments for `comms list`.
 #[derive(clap::Parser, Debug)]
 #[command(name = "list", about = "List active agents")]
 pub struct ListArgs {
@@ -129,7 +129,7 @@ pub struct ListArgs {
 }
 
 /// Get unread message count for a single instance.
-fn get_unread_count(db: &HcomDb, name: &str, last_event_id: i64) -> i64 {
+fn get_unread_count(db: &CommsDb, name: &str, last_event_id: i64) -> i64 {
     db.conn()
         .query_row(
             "SELECT COUNT(*) FROM events WHERE id > ? AND type = 'message'
@@ -141,7 +141,7 @@ fn get_unread_count(db: &HcomDb, name: &str, last_event_id: i64) -> i64 {
 }
 
 /// Get unread counts for all instances in batch.
-fn get_unread_counts_batch(db: &HcomDb, instances: &[InstanceRow]) -> HashMap<String, i64> {
+fn get_unread_counts_batch(db: &CommsDb, instances: &[InstanceRow]) -> HashMap<String, i64> {
     let recipients: HashMap<&str, i64> = instances
         .iter()
         .filter(|inst| !is_remote_instance(inst))
@@ -187,10 +187,10 @@ fn get_unread_counts_batch(db: &HcomDb, instances: &[InstanceRow]) -> HashMap<St
     counts
 }
 
-/// Main entry point for `hcom list` command.
+/// Main entry point for `comms list` command.
 ///
 /// Returns exit code (0 = success, 1 = error).
-pub fn cmd_list(db: &HcomDb, args: &ListArgs, ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_list(db: &CommsDb, args: &ListArgs, ctx: Option<&CommandContext>) -> i32 {
     // Clean up stale placeholders and instances
     cleanup_stale_placeholders(db);
     let _ = cleanup_stale_instances(db, 3600, 3600);
@@ -233,12 +233,12 @@ pub fn cmd_list(db: &HcomDb, args: &ListArgs, ctx: Option<&CommandContext>) -> i
             .unwrap_or((None, None))
     };
 
-    // Single instance query: hcom list <name|self> [field] [--json]
+    // Single instance query: comms list <name|self> [field] [--json]
     if let Some(target) = target_name {
         let is_self = target == "self";
 
         if is_self && sender_identity.is_none() {
-            eprintln!("Error: Cannot use 'self' without identity. Run 'hcom start' first.");
+            eprintln!("Error: Cannot use 'self' without identity. Run 'comms start' first.");
             return 1;
         }
 
@@ -645,7 +645,7 @@ pub fn cmd_list(db: &HcomDb, args: &ListArgs, ctx: Option<&CommandContext>) -> i
     }
 
     if sorted_instances.is_empty() {
-        println!("No active agents. Launch one with: hcom claude");
+        println!("No active agents. Launch one with: comms claude");
     }
 
     // Recently stopped summary
@@ -663,12 +663,12 @@ pub fn cmd_list(db: &HcomDb, args: &ListArgs, ctx: Option<&CommandContext>) -> i
             )
         };
         println!("\nRecently stopped (10m): {names}");
-        println!("  -> hcom list --stopped [name]");
+        println!("  -> comms list --stopped [name]");
     }
 
     // Hint about archives if no instances
     if sorted_instances.is_empty() {
-        let archive_dir = crate::paths::hcom_dir().join("archive");
+        let archive_dir = crate::paths::comms_dir().join("archive");
         if archive_dir.exists()
             && let Ok(entries) = std::fs::read_dir(&archive_dir)
         {
@@ -683,7 +683,7 @@ pub fn cmd_list(db: &HcomDb, args: &ListArgs, ctx: Option<&CommandContext>) -> i
                 .count();
             if archive_count > 0 {
                 let plural = if archive_count != 1 { "s" } else { "" };
-                println!("({archive_count} archived session{plural} - run: hcom archive)");
+                println!("({archive_count} archived session{plural} - run: comms archive)");
             }
         }
     }
@@ -691,7 +691,7 @@ pub fn cmd_list(db: &HcomDb, args: &ListArgs, ctx: Option<&CommandContext>) -> i
     0
 }
 
-fn print_instance_details(db: &HcomDb, data: &InstanceRow, display_name: &str) {
+fn print_instance_details(db: &CommsDb, data: &InstanceRow, display_name: &str) {
     let cs = get_instance_status(data, db);
     let status = cs.status;
 
@@ -817,7 +817,7 @@ fn extract_field_value(payload: &serde_json::Value, field: &str) -> String {
     }
 }
 
-/// Print shell-export format for `hcom list --sh`.
+/// Print shell-export format for `comms list --sh`.
 fn print_sh_exports(payload: &serde_json::Value) {
     let name = payload.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let session_id = payload
@@ -833,19 +833,19 @@ fn print_sh_exports(payload: &serde_json::Value) {
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    println!("export HCOM_INSTANCE_NAME={}", shell_quote(name));
-    println!("export HCOM_SID={}", shell_quote(session_id));
-    println!("export HCOM_STATUS={}", shell_quote(status));
-    println!("export HCOM_DIRECTORY={}", shell_quote(directory));
+    println!("export COMMS_INSTANCE_NAME={}", shell_quote(name));
+    println!("export COMMS_SID={}", shell_quote(session_id));
+    println!("export COMMS_STATUS={}", shell_quote(status));
+    println!("export COMMS_DIRECTORY={}", shell_quote(directory));
 }
 
 use crate::tools::args_common::shell_quote;
 
-/// `hcom list --stopped [name] [--all] [--last N]` — show stopped instances from life events.
+/// `comms list --stopped [name] [--all] [--last N]` — show stopped instances from life events.
 /// Without a name: shows recent stopped (default last 20, use --all for unlimited).
 /// With a name: shows details for that specific stopped instance.
 /// Uses human-friendly formatting rather than raw JSON for readability.
-fn cmd_list_stopped(db: &HcomDb, args: &ListArgs) -> i32 {
+fn cmd_list_stopped(db: &CommsDb, args: &ListArgs) -> i32 {
     use rusqlite::params;
 
     let show_all = args.all;
@@ -952,7 +952,7 @@ fn cmd_list_stopped(db: &HcomDb, args: &ListArgs) -> i32 {
         {
             println!("  Transcript: {tp}");
         }
-        println!("\n  Resume: hcom r {}", entry.instance);
+        println!("\n  Resume: comms r {}", entry.instance);
 
         // Show history if multiple stop events
         if entries.len() > 1 {
@@ -1022,8 +1022,8 @@ fn cmd_list_stopped(db: &HcomDb, args: &ListArgs) -> i32 {
         if !show_all {
             println!("\n  --all: show all  |  --last N: show last N");
         }
-        println!("  Details: hcom list --stopped <name>");
-        println!("  Resume:  hcom r <name>");
+        println!("  Details: comms list --stopped <name>");
+        println!("  Resume:  comms r <name>");
     }
 
     0
@@ -1031,7 +1031,7 @@ fn cmd_list_stopped(db: &HcomDb, args: &ListArgs) -> i32 {
 
 /// Get names of recently stopped instances (within 10 minutes).
 fn get_recently_stopped(
-    db: &HcomDb,
+    db: &CommsDb,
     exclude_active: &std::collections::HashSet<String>,
 ) -> Vec<String> {
     let now = crate::shared::time::now_epoch_f64();
@@ -1062,9 +1062,9 @@ fn get_recently_stopped(
 mod tests {
     use super::*;
 
-    fn test_db() -> HcomDb {
+    fn test_db() -> CommsDb {
         let dir = tempfile::tempdir().unwrap();
-        let db = HcomDb::open_raw(&dir.path().join("test.db")).unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("test.db")).unwrap();
         db.init_db().unwrap();
         std::mem::forget(dir);
         db
@@ -1204,7 +1204,7 @@ mod tests {
         }
     }
 
-    fn label(db: &HcomDb, name: &str) -> String {
+    fn label(db: &CommsDb, name: &str) -> String {
         tool_label(
             get_bindings_batch(db)
                 .get(name)

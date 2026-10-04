@@ -40,7 +40,7 @@ impl Ejector {
             replay_items: VecDeque::new(),
             replay_lines: VecDeque::new(),
             replay_emitted_any: false,
-            replay_lines_per_tick: std::env::var("HCOM_TUI_REPLAY_LINES_PER_TICK")
+            replay_lines_per_tick: std::env::var("COMMS_TUI_REPLAY_LINES_PER_TICK")
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
                 .filter(|n| *n > 0)
@@ -247,7 +247,7 @@ impl Ejector {
             (0..w).map(|i| chars[(i + offset) % 3]).collect()
         };
 
-        let label = " hcom ";
+        let label = " comms ";
         let label_w = 6;
         let left_w = width.saturating_sub(label_w) / 2;
         let right_w = width.saturating_sub(label_w + left_w);

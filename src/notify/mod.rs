@@ -30,11 +30,11 @@ pub enum WakeKind {
     Pty,
     /// Post-tool hook polling loop (`crate::hooks`).
     Hook,
-    /// `hcom listen` blocking poll.
+    /// `comms listen` blocking poll.
     Listen,
-    /// `hcom listen --filter` blocking poll.
+    /// `comms listen --filter` blocking poll.
     ListenFilter,
-    /// `hcom events --wait` blocking poll.
+    /// `comms events --wait` blocking poll.
     EventsWait,
     /// Temporary launch-confirmation waiter.
     LaunchWait,
@@ -66,7 +66,7 @@ impl WakeKind {
     ];
 
     /// Kinds woken when an instance's status changes — the delivery-loop
-    /// listeners (PTY thread + the two `hcom listen` variants).
+    /// listeners (PTY thread + the two `comms listen` variants).
     pub const DELIVERY_LOOPS: &'static [WakeKind] =
         &[WakeKind::Pty, WakeKind::Listen, WakeKind::ListenFilter];
 

@@ -1,4 +1,4 @@
-//! `hcom config` command — view and edit configuration.
+//! `comms config` command — view and edit configuration.
 //!
 //!
 //! Supports: show all, get/set single key, --json, --edit, --reset,
@@ -8,22 +8,22 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::db::CommsDb;
 use crate::db::DEV_ROOT_KV_KEY;
-use crate::db::HcomDb;
 use crate::identity;
 use crate::instances;
 use crate::launcher::{LaunchTool, validate_tool_args};
 use crate::shared::CommandContext;
 
-/// Parsed arguments for `hcom config`.
+/// Parsed arguments for `comms config`.
 ///
 /// Note: multi-word or dash-prefixed values should be quoted:
-///   `hcom config codex_args "--model o3"`
-///   `hcom config tag "my tag"`
+///   `comms config codex_args "--model o3"`
+///   `comms config tag "my tag"`
 #[derive(clap::Parser, Debug)]
 #[command(name = "config", about = "View and edit configuration")]
 pub struct ConfigArgs {
-    /// Config key (e.g., "tag", "terminal", "HCOM_TIMEOUT")
+    /// Config key (e.g., "tag", "terminal", "COMMS_TIMEOUT")
     pub key: Option<String>,
     /// Value to set (quote multi-word or dash-prefixed values)
     #[arg(allow_hyphen_values = true)]
@@ -55,122 +55,122 @@ pub struct ConfigArgs {
 
 /// Known config keys with descriptions and types.
 pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
-    ("HCOM_TAG", "Group tag for launched instances", "string"),
-    ("HCOM_HINTS", "Text injected with all messages", "string"),
+    ("COMMS_TAG", "Group tag for launched instances", "string"),
+    ("COMMS_HINTS", "Text injected with all messages", "string"),
     (
-        "HCOM_NOTES",
+        "COMMS_NOTES",
         "One-time notes appended at bootstrap",
         "string",
     ),
     (
-        "HCOM_TIMEOUT",
+        "COMMS_TIMEOUT",
         "Idle timeout in seconds (default: 86400)",
         "integer",
     ),
     (
-        "HCOM_SUBAGENT_TIMEOUT",
+        "COMMS_SUBAGENT_TIMEOUT",
         "Timeout for Claude subagents in seconds (default: 30)",
         "integer",
     ),
     (
-        "HCOM_CLAUDE_ARGS",
+        "COMMS_CLAUDE_ARGS",
         "Default args for claude on launch",
         "string",
     ),
     (
-        "HCOM_GEMINI_ARGS",
+        "COMMS_GEMINI_ARGS",
         "Default args for gemini on launch",
         "string",
     ),
     (
-        "HCOM_CODEX_ARGS",
+        "COMMS_CODEX_ARGS",
         "Default args for codex on launch",
         "string",
     ),
     (
-        "HCOM_OPENCODE_ARGS",
+        "COMMS_OPENCODE_ARGS",
         "Default args for opencode on launch",
         "string",
     ),
     (
-        "HCOM_KILO_ARGS",
+        "COMMS_KILO_ARGS",
         "Default args for kilo on launch",
         "string",
     ),
-    ("HCOM_PI_ARGS", "Default args for pi on launch", "string"),
-    ("HCOM_OMP_ARGS", "Default args for omp on launch", "string"),
+    ("COMMS_PI_ARGS", "Default args for pi on launch", "string"),
+    ("COMMS_OMP_ARGS", "Default args for omp on launch", "string"),
     (
-        "HCOM_CURSOR_ARGS",
+        "COMMS_CURSOR_ARGS",
         "Default args for cursor-agent on launch",
         "string",
     ),
     (
-        "HCOM_KIMI_ARGS",
+        "COMMS_KIMI_ARGS",
         "Default args for kimi on launch",
         "string",
     ),
     (
-        "HCOM_COPILOT_ARGS",
+        "COMMS_COPILOT_ARGS",
         "Default args for copilot on launch",
         "string",
     ),
     (
-        "HCOM_GEMINI_SYSTEM_PROMPT",
+        "COMMS_GEMINI_SYSTEM_PROMPT",
         "System prompt for gemini on launch",
         "string",
     ),
     (
-        "HCOM_CODEX_SYSTEM_PROMPT",
+        "COMMS_CODEX_SYSTEM_PROMPT",
         "System prompt for codex on launch",
         "string",
     ),
     (
-        "HCOM_TERMINAL",
+        "COMMS_TERMINAL",
         "Terminal preset for spawning agent panes",
         "string",
     ),
     (
-        "HCOM_AUTO_APPROVE",
-        "Auto-approve safe hcom commands (true/false)",
+        "COMMS_AUTO_APPROVE",
+        "Auto-approve safe comms commands (true/false)",
         "boolean",
     ),
     (
-        "HCOM_AUTO_SUBSCRIBE",
+        "COMMS_AUTO_SUBSCRIBE",
         "Auto-subscribe event presets (comma-separated)",
         "string",
     ),
     (
-        "HCOM_AUTO_TRUST_WORKSPACE",
+        "COMMS_AUTO_TRUST_WORKSPACE",
         "Auto-inject ephemeral workspace trust for gemini/codex/cursor at launch (true/false)",
         "boolean",
     ),
     (
-        "HCOM_NAME_EXPORT",
+        "COMMS_NAME_EXPORT",
         "Export instance name to custom env var",
         "string",
     ),
     (
-        "HCOM_TITLE_MODE",
+        "COMMS_TITLE_MODE",
         "Terminal title mode (combined | label | off)",
         "string",
     ),
     (
-        "HCOM_RELAY",
+        "COMMS_RELAY",
         "Relay MQTT broker URL (config file only)",
         "string",
     ),
     (
-        "HCOM_RELAY_ID",
+        "COMMS_RELAY_ID",
         "Relay group identifier (config file only)",
         "string",
     ),
     (
-        "HCOM_RELAY_TOKEN",
+        "COMMS_RELAY_TOKEN",
         "Relay authentication token (config file only)",
         "string",
     ),
     (
-        "HCOM_RELAY_ENABLED",
+        "COMMS_RELAY_ENABLED",
         "Enable relay sync (config file only)",
         "boolean",
     ),
@@ -191,9 +191,9 @@ const INSTANCE_KEYS: &[(&str, &str)] = &[
 
 // ── TOML Key Mapping ────────────────────
 
-/// Maps HCOM_ field name (lowercase, no prefix) to nested TOML dotted path.
+/// Maps COMMS_ field name (lowercase, no prefix) to nested TOML dotted path.
 fn toml_path_for_key(field_name: &str) -> Option<&'static str> {
-    // relay_psk is set through `hcom relay`, not `hcom config`.
+    // relay_psk is set through `comms relay`, not `comms config`.
     if field_name == "relay_psk" {
         return None;
     }
@@ -203,7 +203,7 @@ fn toml_path_for_key(field_name: &str) -> Option<&'static str> {
 // ── Config File Operations ───────────────────────────────────────────────
 
 fn config_path() -> PathBuf {
-    crate::paths::hcom_dir().join("config.toml")
+    crate::paths::comms_dir().join("config.toml")
 }
 
 /// Load raw TOML content from config file.
@@ -281,12 +281,12 @@ pub fn config_set(key: &str, value: &str) -> Result<(), String> {
 
 fn launch_tool_for_args_field(field_name: &str) -> Option<LaunchTool> {
     // Derive the field → tool map from the spec's `args_env` (the single source
-    // of truth, e.g. `HCOM_CLAUDE_ARGS` → `claude_args`) so a new tool's config
+    // of truth, e.g. `COMMS_CLAUDE_ARGS` → `claude_args`) so a new tool's config
     // args are validated as soon as its spec declares `args_env` — no parallel
     // match to keep in sync. See `drift_released_tools_with_args_env_merge_...`.
     let spec = crate::integration_spec::ALL.iter().find(|s| {
         s.launch.args_env.is_some_and(|env| {
-            env.strip_prefix("HCOM_")
+            env.strip_prefix("COMMS_")
                 .map(str::to_ascii_lowercase)
                 .as_deref()
                 == Some(field_name)
@@ -323,8 +323,8 @@ fn config_set_at_path(path: &Path, key: &str, value: &str) -> Result<(), String>
         .parse()
         .map_err(|e| format!("Failed to parse config.toml: {e}"))?;
 
-    // Map HCOM_KEY to field name, then to nested TOML path
-    let field_name = key.strip_prefix("HCOM_").unwrap_or(key).to_lowercase();
+    // Map COMMS_KEY to field name, then to nested TOML path
+    let field_name = key.strip_prefix("COMMS_").unwrap_or(key).to_lowercase();
     validate_config_args(&field_name, value)?;
 
     if field_name == "title_mode"
@@ -366,7 +366,7 @@ pub fn config_get(key: &str) -> (String, &'static str) {
     }
 
     // Map to field name and nested TOML path
-    let field_name = key.strip_prefix("HCOM_").unwrap_or(key).to_lowercase();
+    let field_name = key.strip_prefix("COMMS_").unwrap_or(key).to_lowercase();
 
     let content = load_config_content();
     if let Ok(table) = content.parse::<toml::Table>() {
@@ -400,18 +400,18 @@ pub fn config_get(key: &str) -> (String, &'static str) {
 
     // Default
     let default = match key {
-        "HCOM_TIMEOUT" => "86400",
-        "HCOM_SUBAGENT_TIMEOUT" => "30",
-        "HCOM_AUTO_APPROVE" => "true",
-        "HCOM_AUTO_TRUST_WORKSPACE" => "true",
-        "HCOM_TITLE_MODE" => "combined",
+        "COMMS_TIMEOUT" => "86400",
+        "COMMS_SUBAGENT_TIMEOUT" => "30",
+        "COMMS_AUTO_APPROVE" => "true",
+        "COMMS_AUTO_TRUST_WORKSPACE" => "true",
+        "COMMS_TITLE_MODE" => "combined",
         _ => "",
     };
     (default.to_string(), "default")
 }
 
 fn config_dev_root(
-    db: &HcomDb,
+    db: &CommsDb,
     value: Option<&str>,
     unset: bool,
     json_mode: bool,
@@ -421,15 +421,15 @@ fn config_dev_root(
         println!(
             "dev_root - Persistent dev-worktree fallback for binary re-exec\n\
              \n\
-             Stored in kv key `{}` under the active HCOM_DIR.\n\
+             Stored in kv key `{}` under the active COMMS_DIR.\n\
              Router precedence is:\n\
-               1. HCOM_DEV_ROOT env\n\
+               1. COMMS_DEV_ROOT env\n\
                2. kv dev_root fallback\n\
              \n\
              Examples:\n\
-               hcom config dev_root /path/to/worktree\n\
-               hcom config dev_root\n\
-               hcom config dev_root --unset",
+               comms config dev_root /path/to/worktree\n\
+               comms config dev_root\n\
+               comms config dev_root --unset",
             DEV_ROOT_KV_KEY
         );
         return 0;
@@ -491,9 +491,9 @@ fn config_dev_root(
 
 // ── Instance Config ──────────────────────────────────────────────────────
 
-/// Handle instance-level config: `hcom config -i <name> [key] [value]`
+/// Handle instance-level config: `comms config -i <name> [key] [value]`
 fn config_instance(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_arg: &str,
     args: &[String],
     ctx: Option<&CommandContext>,
@@ -789,7 +789,7 @@ pub fn render_config_instance_set_feedback(instance_name: &str, key: &str, value
 
 /// Build the canonical JSON shape returned by both local and remote no-key
 /// instance config reads. Stable contract for scripts consuming
-/// `hcom config -i <name> --json`:
+/// `comms config -i <name> --json`:
 ///   `name`            — base name
 ///   `full_name`       — tag-prefixed display name
 ///   `tag` / `hints`   — null when unset (not "")
@@ -810,7 +810,7 @@ fn build_instance_config_json(
 }
 
 pub fn config_instance_get(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_arg: &str,
     key: Option<&str>,
 ) -> Result<Value, String> {
@@ -838,7 +838,7 @@ pub fn config_instance_get(
 }
 
 pub fn config_instance_set(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_arg: &str,
     key: &str,
     value: &str,
@@ -923,8 +923,8 @@ pub fn config_instance_set(
 
 // ── Main Entry Point ─────────────────────────────────────────────────────
 
-/// Main entry point for `hcom config` command.
-pub fn cmd_config(db: &HcomDb, args: &ConfigArgs, ctx: Option<&CommandContext>) -> i32 {
+/// Main entry point for `comms config` command.
+pub fn cmd_config(db: &CommsDb, args: &ConfigArgs, ctx: Option<&CommandContext>) -> i32 {
     let json_mode = args.json;
     let edit_mode = args.edit;
     let unset_mode = args.unset;
@@ -948,7 +948,7 @@ pub fn cmd_config(db: &HcomDb, args: &ConfigArgs, ctx: Option<&CommandContext>) 
             && positional[1].starts_with("kitty");
         if !is_kitty_terminal {
             eprintln!(
-                "Error: --setup is only valid with kitty: hcom config terminal kitty --setup"
+                "Error: --setup is only valid with kitty: comms config terminal kitty --setup"
             );
             return 1;
         }
@@ -1018,7 +1018,7 @@ pub fn cmd_config(db: &HcomDb, args: &ConfigArgs, ctx: Option<&CommandContext>) 
         let path = config_path();
         // Ensure file exists
         if !path.exists() {
-            let _ = std::fs::write(&path, "# hcom configuration\n");
+            let _ = std::fs::write(&path, "# comms configuration\n");
         }
         let editor = std::env::var("EDITOR")
             .or_else(|_| std::env::var("VISUAL"))
@@ -1049,7 +1049,7 @@ pub fn cmd_config(db: &HcomDb, args: &ConfigArgs, ctx: Option<&CommandContext>) 
 
     let key_arg = &argv[0];
 
-    if normalize_key(key_arg) == "HCOM_DEV_ROOT" {
+    if normalize_key(key_arg) == "COMMS_DEV_ROOT" {
         return config_dev_root(
             db,
             argv.get(1).map(|s| s.as_str()),
@@ -1060,7 +1060,7 @@ pub fn cmd_config(db: &HcomDb, args: &ConfigArgs, ctx: Option<&CommandContext>) 
     }
 
     if unset_mode {
-        eprintln!("Error: --unset is only supported with 'hcom config dev_root'");
+        eprintln!("Error: --unset is only supported with 'comms config dev_root'");
         return 1;
     }
 
@@ -1078,7 +1078,7 @@ pub fn cmd_config(db: &HcomDb, args: &ConfigArgs, ctx: Option<&CommandContext>) 
         || argv.get(1).map(|s| s.as_str()) == Some("info")
         || argv.get(1).map(|s| s.as_str()) == Some("?");
 
-    // Normalize key to HCOM_ prefix
+    // Normalize key to COMMS_ prefix
     let key = normalize_key(key_arg);
 
     if wants_info {
@@ -1087,20 +1087,20 @@ pub fn cmd_config(db: &HcomDb, args: &ConfigArgs, ctx: Option<&CommandContext>) 
 
     // Unknown keys would silently read as "(not set)" or be written to
     // config.toml where nothing reads them. Reading an env-only setting that
-    // is actually set (e.g. HCOM_DIR) stays allowed.
+    // is actually set (e.g. COMMS_DIR) stays allowed.
     let is_set_mode = argv.len() >= 2;
     let env_readable = !is_set_mode && std::env::var(&key).is_ok();
     if !CONFIG_KEYS.iter().any(|(k, _, _)| *k == key) && !env_readable {
         let typed = key_arg.to_lowercase();
         let short: Vec<String> = CONFIG_KEYS
             .iter()
-            .map(|(k, _, _)| k.trim_start_matches("HCOM_").to_lowercase())
+            .map(|(k, _, _)| k.trim_start_matches("COMMS_").to_lowercase())
             .chain(["dev_root".to_string()])
             .collect();
         eprintln!(
             "Error: Unknown config key '{key_arg}'{}\nValid keys: {}",
             crate::shared::suggest::did_you_mean(
-                typed.trim_start_matches("hcom_"),
+                typed.trim_start_matches("comms_"),
                 short.iter().map(String::as_str)
             ),
             short.join(", ")
@@ -1117,7 +1117,7 @@ pub fn cmd_config(db: &HcomDb, args: &ConfigArgs, ctx: Option<&CommandContext>) 
                 println!("Set {key} = {value}");
 
                 // Side effect: auto_approve changes must update tool permissions
-                if key == "HCOM_AUTO_APPROVE" {
+                if key == "COMMS_AUTO_APPROVE" {
                     return if update_auto_approve_permissions(&value) {
                         0
                     } else {
@@ -1149,13 +1149,13 @@ pub fn cmd_config(db: &HcomDb, args: &ConfigArgs, ctx: Option<&CommandContext>) 
     0
 }
 
-/// Normalize a key argument to HCOM_* format.
+/// Normalize a key argument to COMMS_* format.
 fn normalize_key(input: &str) -> String {
     let upper = input.to_uppercase();
-    if upper.starts_with("HCOM_") {
+    if upper.starts_with("COMMS_") {
         upper
     } else {
-        format!("HCOM_{upper}")
+        format!("COMMS_{upper}")
     }
 }
 
@@ -1165,7 +1165,7 @@ fn normalize_key(input: &str) -> String {
 /// (tag, wait_timeout, hints, subagent_timeout) and returns overrides
 /// where the instance value differs from the global config value.
 fn get_runtime_overrides(
-    db: &HcomDb,
+    db: &CommsDb,
     ctx: Option<&CommandContext>,
 ) -> std::collections::HashMap<&'static str, String> {
     use std::collections::HashMap;
@@ -1174,10 +1174,10 @@ fn get_runtime_overrides(
 
     // DB column -> config key mapping
     const RUNTIME_KEYS: &[(&str, &str)] = &[
-        ("tag", "HCOM_TAG"),
-        ("wait_timeout", "HCOM_TIMEOUT"),
-        ("hints", "HCOM_HINTS"),
-        ("subagent_timeout", "HCOM_SUBAGENT_TIMEOUT"),
+        ("tag", "COMMS_TAG"),
+        ("wait_timeout", "COMMS_TIMEOUT"),
+        ("hints", "COMMS_HINTS"),
+        ("subagent_timeout", "COMMS_SUBAGENT_TIMEOUT"),
     ];
 
     // Use identity from command context (already resolved by CLI router)
@@ -1216,7 +1216,7 @@ fn get_runtime_overrides(
 }
 
 /// Show all config keys with values and sources.
-fn show_all_config(db: &HcomDb, ctx: Option<&CommandContext>, json_mode: bool) -> i32 {
+fn show_all_config(db: &CommsDb, ctx: Option<&CommandContext>, json_mode: bool) -> i32 {
     let runtime_overrides = get_runtime_overrides(db, ctx);
     let dev_root = crate::router::resolve_effective_dev_root(db.path());
 
@@ -1225,7 +1225,7 @@ fn show_all_config(db: &HcomDb, ctx: Option<&CommandContext>, json_mode: bool) -
         for (key, _, _) in CONFIG_KEYS {
             let (value, _source) = config_get(key);
             // {KEY: value} — mask relay token
-            let display = if *key == "HCOM_RELAY_TOKEN" && value.len() > 4 {
+            let display = if *key == "COMMS_RELAY_TOKEN" && value.len() > 4 {
                 format!("{}***", &value[..4])
             } else {
                 value
@@ -1247,8 +1247,8 @@ fn show_all_config(db: &HcomDb, ctx: Option<&CommandContext>, json_mode: bool) -
             serde_json::to_string(&Value::Object(result)).unwrap_or_default()
         );
     } else {
-        println!("hcom configuration ({})\n", config_path().display());
-        println!("hcom Settings:");
+        println!("comms configuration ({})\n", config_path().display());
+        println!("comms Settings:");
         for (key, _desc, _) in CONFIG_KEYS {
             // Check runtime override first
             let (display, source) = if let Some(val) = runtime_overrides.get(key) {
@@ -1257,7 +1257,7 @@ fn show_all_config(db: &HcomDb, ctx: Option<&CommandContext>, json_mode: bool) -
                 let (value, source) = config_get(key);
                 let display = if value.is_empty() {
                     "(not set)".to_string()
-                } else if *key == "HCOM_RELAY_TOKEN" && !value.is_empty() {
+                } else if *key == "COMMS_RELAY_TOKEN" && !value.is_empty() {
                     let visible = value.len().min(4);
                     format!("{}...", &value[..visible])
                 } else {
@@ -1271,9 +1271,9 @@ fn show_all_config(db: &HcomDb, ctx: Option<&CommandContext>, json_mode: bool) -
             println!("  {:<28} {:<30} [{}]", "dev_root", path.display(), source);
         }
         println!(
-            "\n[env] = environment, [toml] = config.toml, [file] = env file, [runtime] = agent override, [kv] = hcom.db key-value, (blank) = default"
+            "\n[env] = environment, [toml] = config.toml, [file] = env file, [runtime] = agent override, [kv] = comms.db key-value, (blank) = default"
         );
-        println!("\nEdit: hcom config --edit");
+        println!("\nEdit: comms config --edit");
     }
     0
 }
@@ -1282,20 +1282,20 @@ fn show_all_config(db: &HcomDb, ctx: Option<&CommandContext>, json_mode: bool) -
 /// Rich per-key help text.
 pub fn config_help(key: &str) -> Option<&'static str> {
     match key {
-        "HCOM_TAG" => Some(
+        "COMMS_TAG" => Some(
             "\
-HCOM_TAG - Group tag for launched instances
+COMMS_TAG - Group tag for launched instances
 
 Purpose:
   Creates named groups of agents that can be addressed together.
   When set, launched instances get names like: <tag>-<name>
 
 Usage:
-  hcom config tag myteam        # Set tag
-  hcom config tag \"\"            # Clear tag
+  comms config tag myteam        # Set tag
+  comms config tag \"\"            # Clear tag
 
   # Or via environment:
-  HCOM_TAG=myteam hcom 3 claude
+  COMMS_TAG=myteam comms 3 claude
 
 Effect:
   Without tag: launches create → luna, nova, kira
@@ -1308,53 +1308,53 @@ Addressing:
 Allowed characters: letters, numbers, hyphens (a-z, A-Z, 0-9, -)",
         ),
 
-        "HCOM_HINTS" => Some(
+        "COMMS_HINTS" => Some(
             "\
-HCOM_HINTS - Text injected with all messages
+COMMS_HINTS - Text injected with all messages
 
 Purpose:
   Appends text to every message received by launched agents.
   Useful for persistent instructions or context.
 
 Usage:
-  hcom config hints \"Always respond in JSON format\"
-  hcom config hints \"\"   # Clear hints
+  comms config hints \"Always respond in JSON format\"
+  comms config hints \"\"   # Clear hints
 
 Example:
-  hcom config hints \"You are part of team-alpha. Coordinate with @team-alpha members.\"
+  comms config hints \"You are part of team-alpha. Coordinate with @team-alpha members.\"
 
 Notes:
   - Hints are appended to message content, not system prompt
-  - Each agent can have different hints (set via hcom config -i <name> hints)
+  - Each agent can have different hints (set via comms config -i <name> hints)
   - Global hints apply to all new launches",
         ),
 
-        "HCOM_NOTES" => Some(
+        "COMMS_NOTES" => Some(
             "\
-HCOM_NOTES - One-time notes appended to bootstrap
+COMMS_NOTES - One-time notes appended to bootstrap
 
   Custom text added to agent system context at startup.
-  Unlike HCOM_HINTS (per-message), this is injected once and does not repeat.
+  Unlike COMMS_HINTS (per-message), this is injected once and does not repeat.
 
 Usage:
-  hcom config notes \"Always check hcom list before spawning new agents\"
-  hcom config notes \"\"                            # Clear
-  HCOM_NOTES=\"tips\" hcom 1 claude                 # Per-launch override
+  comms config notes \"Always check comms list before spawning new agents\"
+  comms config notes \"\"                            # Clear
+  COMMS_NOTES=\"tips\" comms 1 claude                 # Per-launch override
 
   Changing after launch has no effect (bootstrap already delivered).",
         ),
 
-        "HCOM_TIMEOUT" => Some(
+        "COMMS_TIMEOUT" => Some(
             "\
-HCOM_TIMEOUT - Advanced: idle timeout for headless Claude (seconds)
+COMMS_TIMEOUT - Advanced: idle timeout for headless Claude (seconds)
 
 Default: 86400 (24 hours)
 
 This setting only applies to:
-  - Headless Claude: hcom N claude -p
+  - Headless Claude: comms N claude -p
 
 Does NOT apply to:
-  - Interactive PTY mode: hcom N claude (main path)
+  - Interactive PTY mode: comms N claude (main path)
   - Gemini or Codex
 
 How it works:
@@ -1363,13 +1363,13 @@ How it works:
   - If no message within timeout, instance is unregistered
 
 Usage (if needed):
-  hcom config HCOM_TIMEOUT 3600   # 1 hour
-  export HCOM_TIMEOUT=3600        # via environment",
+  comms config COMMS_TIMEOUT 3600   # 1 hour
+  export COMMS_TIMEOUT=3600        # via environment",
         ),
 
-        "HCOM_SUBAGENT_TIMEOUT" => Some(
+        "COMMS_SUBAGENT_TIMEOUT" => Some(
             "\
-HCOM_SUBAGENT_TIMEOUT - Timeout for Claude subagents (seconds)
+COMMS_SUBAGENT_TIMEOUT - Timeout for Claude subagents (seconds)
 
 Default: 30
 
@@ -1378,8 +1378,8 @@ Purpose:
   Shorter than main timeout since subagents should be quick.
 
 Usage:
-  hcom config subagent_timeout 60    # 1 minute
-  hcom config subagent_timeout 30    # 30 seconds (default)
+  comms config subagent_timeout 60    # 1 minute
+  comms config subagent_timeout 30    # 30 seconds (default)
 
 Notes:
   - Only applies to Claude Code's Task tool spawned agents
@@ -1387,102 +1387,102 @@ Notes:
   - Increase for complex subagent tasks",
         ),
 
-        "HCOM_CLAUDE_ARGS" => Some(
+        "COMMS_CLAUDE_ARGS" => Some(
             "\
-HCOM_CLAUDE_ARGS - Default args passed to claude on launch
+COMMS_CLAUDE_ARGS - Default args passed to claude on launch
 
-Example: hcom config claude_args \"--model opus\"
-Clear:   hcom config claude_args \"\"
+Example: comms config claude_args \"--model opus\"
+Clear:   comms config claude_args \"\"
 
 Merged with launch-time cli args (launch args win on conflict).",
         ),
 
-        "HCOM_GEMINI_ARGS" => Some(
+        "COMMS_GEMINI_ARGS" => Some(
             "\
-HCOM_GEMINI_ARGS - Default args passed to gemini on launch
+COMMS_GEMINI_ARGS - Default args passed to gemini on launch
 
-Example: hcom config gemini_args \"--model flash\"
-Clear:   hcom config gemini_args \"\"
+Example: comms config gemini_args \"--model flash\"
+Clear:   comms config gemini_args \"\"
 
 Merged with launch-time cli args (launch args win on conflict).",
         ),
 
-        "HCOM_CODEX_ARGS" => Some(
+        "COMMS_CODEX_ARGS" => Some(
             "\
-HCOM_CODEX_ARGS - Default args passed to codex on launch
+COMMS_CODEX_ARGS - Default args passed to codex on launch
 
-Example: hcom config codex_args \"--search\"
-Clear:   hcom config codex_args \"\"
+Example: comms config codex_args \"--search\"
+Clear:   comms config codex_args \"\"
 
 Merged with launch-time cli args (launch args win on conflict).",
         ),
 
-        "HCOM_RELAY" => Some(
+        "COMMS_RELAY" => Some(
             "\
-HCOM_RELAY - MQTT broker URL
+COMMS_RELAY - MQTT broker URL
 
 Empty = use public brokers (broker.emqx.io, broker.hivemq.com, test.mosquitto.org).
-Set automatically by 'hcom relay new' (pins first working broker).
+Set automatically by 'comms relay new' (pins first working broker).
 Stored in [relay] in config.toml. Environment overrides are ignored for relay fields.
 
-Private broker: hcom relay new --broker mqtts://host:port",
+Private broker: comms relay new --broker mqtts://host:port",
         ),
 
-        "HCOM_RELAY_ID" => Some(
+        "COMMS_RELAY_ID" => Some(
             "\
-HCOM_RELAY_ID - Shared UUID for relay group
+COMMS_RELAY_ID - Shared UUID for relay group
 
-Generated by 'hcom relay new'. Other devices join with 'hcom relay connect <token>'.
+Generated by 'comms relay new'. Other devices join with 'comms relay connect <token>'.
 Stored in [relay] in config.toml. Environment overrides are ignored for relay fields.
 All devices with the same relay_id sync state via MQTT pub/sub.",
         ),
 
-        "HCOM_RELAY_TOKEN" => Some(
+        "COMMS_RELAY_TOKEN" => Some(
             "\
-HCOM_RELAY_TOKEN - Auth token for MQTT broker
+COMMS_RELAY_TOKEN - Auth token for MQTT broker
 
-Optional. Set via 'hcom relay new --password <secret>' or directly here.
+Optional. Set via 'comms relay new --password <secret>' or directly here.
 Stored in [relay] in config.toml. Environment overrides are ignored for relay fields.
 Only needed if your broker requires authentication.",
         ),
 
-        "HCOM_AUTO_APPROVE" => Some(
+        "COMMS_AUTO_APPROVE" => Some(
             "\
-HCOM_AUTO_APPROVE - Auto-approve safe hcom commands
+COMMS_AUTO_APPROVE - Auto-approve safe comms commands
 
 Purpose:
-  When enabled, Claude/Gemini/Codex/OpenCode/Kilo/Pi/OMP/Antigravity/Cursor/Kimi/Copilot/Grok auto-approve \"safe\" hcom commands
+  When enabled, Claude/Gemini/Codex/OpenCode/Kilo/Pi/OMP/Antigravity/Cursor/Kimi/Copilot/Grok auto-approve \"safe\" comms commands
   without requiring user confirmation.
 
 Usage:
-  hcom config auto_approve 1    # Enable auto-approve
-  hcom config auto_approve 0    # Disable (require approval)
+  comms config auto_approve 1    # Enable auto-approve
+  comms config auto_approve 0    # Disable (require approval)
 
 Safe commands (auto-approved when enabled):
   send, start, list, events, listen, relay, config,
   transcript, archive, status, help, --help, --version
 
 Always require approval:
-  - hcom reset          (archives and clears database)
-  - hcom stop           (stops instances)
-  - hcom <N> claude     (launches new instances)
+  - comms reset          (archives and clears database)
+  - comms stop           (stops instances)
+  - comms <N> claude     (launches new instances)
 
 Values: 1, true, yes, on (enabled) | 0, false, no, off, \"\" (disabled)",
         ),
 
-        "HCOM_AUTO_SUBSCRIBE" => Some(
+        "COMMS_AUTO_SUBSCRIBE" => Some(
             "\
-HCOM_AUTO_SUBSCRIBE - Auto-subscribe event presets for new instances
+COMMS_AUTO_SUBSCRIBE - Auto-subscribe event presets for new instances
 
 Default: collision
 
 Purpose:
   Comma-separated list of event subscriptions automatically added
-  when an instance registers with 'hcom start'.
+  when an instance registers with 'comms start'.
 
 Usage:
-  hcom config auto_subscribe \"collision,created\"
-  hcom config auto_subscribe \"\"   # No auto-subscribe
+  comms config auto_subscribe \"collision,created\"
+  comms config auto_subscribe \"\"   # No auto-subscribe
 
 Available presets:
   collision    - Alert when agents edit same file (within 30s window)
@@ -1492,40 +1492,40 @@ Available presets:
 
 Notes:
   - Instances can add/remove subscriptions at runtime
-  - See 'hcom events --help' for subscription management",
+  - See 'comms events --help' for subscription management",
         ),
 
-        "HCOM_TITLE_MODE" => Some(
+        "COMMS_TITLE_MODE" => Some(
             "\
-HCOM_TITLE_MODE - What appears in the terminal/tab title for hcom-launched agents
+COMMS_TITLE_MODE - What appears in the terminal/tab title for comms-launched agents
 
 Default: combined
 
 Purpose:
-  Controls whether hcom replaces, combines, or leaves alone the wrapped tool's
-  terminal title. In combined mode, hcom keeps its live status and appends the
+  Controls whether comms replaces, combines, or leaves alone the wrapped tool's
+  terminal title. In combined mode, comms keeps its live status and appends the
   tool's own live title (for example, a Codex spinner).
 
 Values:
   combined - Show '{icon} name - {tool title}' and update it live.
-  label    - Show hcom's status label only: '{icon} name [tool]'.
-  off      - Pass the tool's own terminal title through unchanged; hcom writes none.
+  label    - Show comms's status label only: '{icon} name [tool]'.
+  off      - Pass the tool's own terminal title through unchanged; comms writes none.
 
 Usage:
-  hcom config title_mode combined   # hcom status + live tool title (default)
-  hcom config title_mode label      # hcom status label only
-  hcom config title_mode off        # use the tool's title
-  hcom config title_mode <empty>     # reset to the default
+  comms config title_mode combined   # comms status + live tool title (default)
+  comms config title_mode label      # comms status label only
+  comms config title_mode off        # use the tool's title
+  comms config title_mode <empty>     # reset to the default
 
 Notes:
   - This affects terminal/tab titles, not the visible PTY output.
   - Tools that do not emit terminal titles have no live child title to append.
-  - The same setting can be provided with HCOM_TITLE_MODE in the environment.",
+  - The same setting can be provided with COMMS_TITLE_MODE in the environment.",
         ),
 
-        "HCOM_NAME_EXPORT" => Some(
+        "COMMS_NAME_EXPORT" => Some(
             "\
-HCOM_NAME_EXPORT - Export instance name to custom env var
+COMMS_NAME_EXPORT - Export instance name to custom env var
 
 Purpose:
   When set, launched instances will have their name exported to
@@ -1533,95 +1533,95 @@ Purpose:
   to reference the current instance name.
 
 Usage:
-  hcom config name_export \"MY_AGENT_NAME\"   # Export to MY_AGENT_NAME
-  hcom config name_export \"\"                 # Disable export
+  comms config name_export \"MY_AGENT_NAME\"   # Export to MY_AGENT_NAME
+  comms config name_export \"\"                 # Disable export
 
 Example:
   # Set export variable
-  hcom config name_export \"HCOM_NAME\"
+  comms config name_export \"COMMS_NAME\"
 
   # Now launched instances have:
-  # HCOM_NAME=luna (or whatever name was generated)
+  # COMMS_NAME=luna (or whatever name was generated)
 
   # Scripts can use it:
-  # hcom send \"@$HCOM_NAME completed task\"
+  # comms send \"@$COMMS_NAME completed task\"
 
 Notes:
-  - Only affects hcom-launched instances (hcom N claude/gemini/codex/opencode/kilo/pi/omp/agy/cursor/kimi/copilot)
+  - Only affects comms-launched instances (comms N claude/gemini/codex/opencode/kilo/pi/omp/agy/cursor/kimi/copilot)
   - Variable name must be a valid shell identifier
-  - Works alongside HCOM_PROCESS_ID (always set) for identity",
+  - Works alongside COMMS_PROCESS_ID (always set) for identity",
         ),
 
-        "HCOM_OPENCODE_ARGS" => Some(
+        "COMMS_OPENCODE_ARGS" => Some(
             "\
-HCOM_OPENCODE_ARGS - Default args passed to opencode on launch
+COMMS_OPENCODE_ARGS - Default args passed to opencode on launch
 
-Example: hcom config opencode_args \"--agent plan\"
-Clear:   hcom config opencode_args \"\"
+Example: comms config opencode_args \"--agent plan\"
+Clear:   comms config opencode_args \"\"
 
 Merged with launch-time cli args (launch args win on conflict).",
         ),
 
-        "HCOM_KILO_ARGS" => Some(
+        "COMMS_KILO_ARGS" => Some(
             "\
-HCOM_KILO_ARGS - Default args passed to kilo on launch
+COMMS_KILO_ARGS - Default args passed to kilo on launch
 
-Example: hcom config kilo_args \"--model kilo/kilo-auto/free\"
-Clear:   hcom config kilo_args \"\"
+Example: comms config kilo_args \"--model kilo/kilo-auto/free\"
+Clear:   comms config kilo_args \"\"
 
 Prepended to launch-time cli args.",
         ),
 
-        "HCOM_COPILOT_ARGS" => Some(
+        "COMMS_COPILOT_ARGS" => Some(
             "\
-HCOM_COPILOT_ARGS - Default args passed to copilot on launch
+COMMS_COPILOT_ARGS - Default args passed to copilot on launch
 
-Example: hcom config copilot_args \"--model auto\"
-Clear:   hcom config copilot_args \"\"
+Example: comms config copilot_args \"--model auto\"
+Clear:   comms config copilot_args \"\"
 
 Prepended to launch-time cli args.",
         ),
 
-        "HCOM_CURSOR_ARGS" => Some(
+        "COMMS_CURSOR_ARGS" => Some(
             "\
-HCOM_CURSOR_ARGS - Default args passed to cursor-agent on launch
+COMMS_CURSOR_ARGS - Default args passed to cursor-agent on launch
 
-Example: hcom config cursor_args \"--model auto\"
-Clear:   hcom config cursor_args \"\"
+Example: comms config cursor_args \"--model auto\"
+Clear:   comms config cursor_args \"\"
 
 Prepended to launch-time cli args.",
         ),
 
-        "HCOM_GROK_ARGS" => Some(
+        "COMMS_GROK_ARGS" => Some(
             "\
-HCOM_GROK_ARGS - Default args passed to grok on launch
+COMMS_GROK_ARGS - Default args passed to grok on launch
 
-Example: hcom config grok_args \"--always-approve\"
-Clear:   hcom config grok_args \"\"
+Example: comms config grok_args \"--always-approve\"
+Clear:   comms config grok_args \"\"
 
 Prepended to launch-time cli args.",
         ),
 
-        "HCOM_KIMI_ARGS" => Some(
+        "COMMS_KIMI_ARGS" => Some(
             "\
-HCOM_KIMI_ARGS - Default args passed to kimi on launch
+COMMS_KIMI_ARGS - Default args passed to kimi on launch
 
-Example: hcom config kimi_args \"--yolo\"
-Clear:   hcom config kimi_args \"\"
+Example: comms config kimi_args \"--yolo\"
+Clear:   comms config kimi_args \"\"
 
 Prepended to launch-time cli args.",
         ),
 
-        "HCOM_RELAY_ENABLED" => Some(
+        "COMMS_RELAY_ENABLED" => Some(
             "\
-HCOM_RELAY_ENABLED - Enable or disable relay sync
+COMMS_RELAY_ENABLED - Enable or disable relay sync
 
 Default: true (when relay is configured)
 Stored in [relay] in config.toml. Environment overrides are ignored for relay fields.
 
 Usage:
-  hcom config relay_enabled false    Disable relay sync
-  hcom config relay_enabled true     Re-enable relay sync
+  comms config relay_enabled false    Disable relay sync
+  comms config relay_enabled true     Re-enable relay sync
 
 Temporarily disables MQTT sync without removing relay configuration.",
         ),
@@ -1642,7 +1642,7 @@ pub fn terminal_help_text(show_current: bool) -> String {
     };
 
     // Managed parents and their variants. A preset is "managed" when it
-    // defines `close` — hcom can shut its agent window down on kill. The
+    // defines `close` — comms can shut its agent window down on kill. The
     // built-in list is hand-curated here for ordering and human-readable
     // descriptions, but `is_managed_preset` below is the source of truth for
     // section bucketing so a new managed preset never gets mis-listed under
@@ -1714,11 +1714,11 @@ pub fn terminal_help_text(show_current: bool) -> String {
     };
 
     let mut lines = Vec::new();
-    lines.push("HCOM_TERMINAL — where hcom opens new agent windows".to_string());
+    lines.push("COMMS_TERMINAL — where comms opens new agent windows".to_string());
     lines.push(String::new());
 
     if show_current {
-        let (current, source) = config_get("HCOM_TERMINAL");
+        let (current, source) = config_get("COMMS_TERMINAL");
         if current.is_empty() || current == "default" {
             // "default" is a sentinel meaning auto-detect; it isn't a preset,
             // so don't run it through close-presence inference.
@@ -1828,9 +1828,9 @@ pub fn terminal_help_text(show_current: bool) -> String {
 
     lines.push(String::new());
     lines.push("Custom command (open only):".to_string());
-    lines.push("  hcom config terminal \"my-terminal -e bash {script}\"".to_string());
+    lines.push("  comms config terminal \"my-terminal -e bash {script}\"".to_string());
     lines.push(String::new());
-    lines.push("Custom preset with close (~/.hcom/config.toml):".to_string());
+    lines.push("Custom preset with close (~/.comms/config.toml):".to_string());
     lines.push("  [terminal.presets.myterm]".to_string());
     lines.push("  open = \"myterm spawn -- bash {script}\"".to_string());
     lines.push("  close = \"myterm kill --id {pane_id}\"".to_string());
@@ -1838,12 +1838,12 @@ pub fn terminal_help_text(show_current: bool) -> String {
     lines.push("  pane_id_env = \"MYTERM_PANE_ID\"".to_string());
     lines.push(String::new());
     lines.push("Placeholders:".to_string());
-    lines.push("  {script}     = hcom-generated launch wrapper script path".to_string());
+    lines.push("  {script}     = comms-generated launch wrapper script path".to_string());
     lines.push(
         "  {pane_id}    = pane/window/workspace ID from pane_id_env; falls back to {id}"
             .to_string(),
     );
-    lines.push("  {process_id} = HCOM_PROCESS_ID for the launched agent".to_string());
+    lines.push("  {process_id} = COMMS_PROCESS_ID for the launched agent".to_string());
     lines.push("  {pid}        = launched terminal process ID".to_string());
     lines.push("  {id}         = first line of stdout captured from the open command".to_string());
     lines.push(
@@ -1851,7 +1851,7 @@ pub fn terminal_help_text(show_current: bool) -> String {
             .to_string(),
     );
     lines.push("  {cwd}        = working directory the agent will start in".to_string());
-    lines.push("  {instance_name} = hcom instance name (e.g. \"luna\")".to_string());
+    lines.push("  {instance_name} = comms instance name (e.g. \"luna\")".to_string());
     lines.push("  {tool}          = tool label (e.g. \"claude\", \"codex\")".to_string());
     lines.push(
         "  {pane_title}    = pre-formatted label (\"\u{25c9} luna [claude]\"); falls back to"
@@ -1859,8 +1859,8 @@ pub fn terminal_help_text(show_current: bool) -> String {
     );
     lines.push("                 {instance_name} when not set".to_string());
     lines.push(String::new());
-    lines.push("Set:    hcom config terminal kitty".to_string());
-    lines.push("Reset:  hcom config terminal default".to_string());
+    lines.push("Set:    comms config terminal kitty".to_string());
+    lines.push("Reset:  comms config terminal default".to_string());
 
     lines.join("\n")
 }
@@ -1871,8 +1871,8 @@ fn print_terminal_info() {
 
 fn show_key_info(key: &str) -> i32 {
     if CONFIG_KEYS.iter().any(|(k, _, _)| *k == key) {
-        // HCOM_TERMINAL: dynamic help from TERMINAL_PRESETS
-        if key == "HCOM_TERMINAL" {
+        // COMMS_TERMINAL: dynamic help from TERMINAL_PRESETS
+        if key == "COMMS_TERMINAL" {
             print_terminal_info();
             return 0;
         }
@@ -1899,7 +1899,7 @@ fn show_key_info(key: &str) -> i32 {
         } else {
             println!("  Value: {value} [{source}]");
         }
-        println!("  Set via: hcom config {key} <value>");
+        println!("  Set via: comms config {key} <value>");
         println!("  Or env: export {key}=<value>");
         0
     } else {
@@ -1922,7 +1922,7 @@ fn config_terminal(argv: &[String], setup_mode: bool) -> i32 {
 
     if argv.is_empty() {
         // Show terminal status
-        let (current, source) = config_get("HCOM_TERMINAL");
+        let (current, source) = config_get("COMMS_TERMINAL");
         if current.is_empty() {
             println!("Terminal: (auto-detect)");
         } else {
@@ -1952,7 +1952,7 @@ fn config_terminal(argv: &[String], setup_mode: bool) -> i32 {
                 }
             }
         }
-        println!("\nSet: hcom config terminal <preset>");
+        println!("\nSet: comms config terminal <preset>");
         return 0;
     }
 
@@ -1964,7 +1964,7 @@ fn config_terminal(argv: &[String], setup_mode: bool) -> i32 {
     }
 
     if preset_name == "default" || preset_name == "auto" {
-        match config_set("HCOM_TERMINAL", "") {
+        match config_set("COMMS_TERMINAL", "") {
             Ok(()) => {
                 println!("Terminal reset to auto-detect");
                 return 0;
@@ -1982,7 +1982,7 @@ fn config_terminal(argv: &[String], setup_mode: bool) -> i32 {
             eprintln!("Error: Custom terminal command must contain {{script}}");
             return 1;
         }
-        return match config_set("HCOM_TERMINAL", &command) {
+        return match config_set("COMMS_TERMINAL", &command) {
             Ok(()) => {
                 println!("Terminal set to custom command");
                 0
@@ -2022,7 +2022,7 @@ fn config_terminal(argv: &[String], setup_mode: bool) -> i32 {
         return 1;
     }
 
-    match config_set("HCOM_TERMINAL", preset_name) {
+    match config_set("COMMS_TERMINAL", preset_name) {
         Ok(()) => {
             println!("Terminal set to: {preset_name}");
             if preset_name.starts_with("kitty") {
@@ -2059,7 +2059,7 @@ fn show_kitty_status(preset_name: &str) {
         Some(c) => c,
         None => {
             println!("  No kitty.conf found");
-            println!("  Run: hcom config terminal kitty --setup");
+            println!("  Run: comms config terminal kitty --setup");
             return;
         }
     };
@@ -2077,7 +2077,7 @@ fn show_kitty_status(preset_name: &str) {
         }
         _ => {
             println!("  Remote control not configured");
-            println!("  Run: hcom config terminal kitty --setup");
+            println!("  Run: comms config terminal kitty --setup");
         }
     }
 }
@@ -2169,7 +2169,7 @@ fn kitty_setup() -> i32 {
     match std::fs::OpenOptions::new().append(true).open(&conf) {
         Ok(mut file) => {
             use std::io::Write;
-            let _ = writeln!(file, "\n# Added by hcom for remote control (splits/tabs)");
+            let _ = writeln!(file, "\n# Added by comms for remote control (splits/tabs)");
             for line in &lines_to_add {
                 let _ = writeln!(file, "{line}");
             }
@@ -2196,10 +2196,10 @@ fn update_auto_approve_permissions(value: &str) -> bool {
 
     if enabled {
         println!(
-            "Auto-approve enabled for safe hcom commands in Claude/Gemini/Codex/OpenCode/Kilo/Pi/OMP/Antigravity/Cursor/Kimi/Copilot/Grok"
+            "Auto-approve enabled for safe comms commands in Claude/Gemini/Codex/OpenCode/Kilo/Pi/OMP/Antigravity/Cursor/Kimi/Copilot/Grok"
         );
     } else {
-        println!("Auto-approve disabled - safe hcom commands will require approval");
+        println!("Auto-approve disabled - safe comms commands will require approval");
     }
     for (tool, error) in &failures {
         eprintln!("Failed to update {tool} auto-approve permissions: {error}");
@@ -2222,17 +2222,17 @@ mod tests {
             assert_eq!(
                 toml_path_for_key(field),
                 Some(*path),
-                "`hcom config {field}` must write {path}"
+                "`comms config {field}` must write {path}"
             );
         }
     }
 
     #[test]
     fn test_normalize_key() {
-        assert_eq!(normalize_key("tag"), "HCOM_TAG");
-        assert_eq!(normalize_key("HCOM_TAG"), "HCOM_TAG");
-        assert_eq!(normalize_key("terminal"), "HCOM_TERMINAL");
-        assert_eq!(normalize_key("hcom_timeout"), "HCOM_TIMEOUT");
+        assert_eq!(normalize_key("tag"), "COMMS_TAG");
+        assert_eq!(normalize_key("COMMS_TAG"), "COMMS_TAG");
+        assert_eq!(normalize_key("terminal"), "COMMS_TERMINAL");
+        assert_eq!(normalize_key("comms_timeout"), "COMMS_TIMEOUT");
     }
 
     #[test]
@@ -2246,7 +2246,7 @@ mod tests {
     #[test]
     fn test_config_args_info_not_swallowed() {
         use clap::Parser;
-        // "hcom config tag --info" should set info=true, not treat --info as value
+        // "comms config tag --info" should set info=true, not treat --info as value
         let args = ConfigArgs::try_parse_from(["config", "tag", "--info"]).unwrap();
         assert!(args.info);
         assert_eq!(args.key, Some("tag".to_string()));
@@ -2282,7 +2282,7 @@ mod tests {
     #[test]
     fn test_config_args_hyphen_value() {
         use clap::Parser;
-        // "hcom config codex_args '--model o3'" — quoted so shell passes as one token
+        // "comms config codex_args '--model o3'" — quoted so shell passes as one token
         let args = ConfigArgs::try_parse_from(["config", "codex_args", "--model o3"]).unwrap();
         assert_eq!(args.key, Some("codex_args".to_string()));
         assert_eq!(args.value.as_deref(), Some("--model o3"));
@@ -2291,7 +2291,7 @@ mod tests {
     #[test]
     fn test_config_args_flags_after_value_not_swallowed() {
         use clap::Parser;
-        // "hcom config tag myval --json" should NOT swallow --json as value
+        // "comms config tag myval --json" should NOT swallow --json as value
         let args = ConfigArgs::try_parse_from(["config", "tag", "myval", "--json"]).unwrap();
         assert_eq!(args.key, Some("tag".to_string()));
         assert_eq!(args.value.as_deref(), Some("myval"));
@@ -2322,7 +2322,7 @@ mod tests {
         use clap::Parser;
 
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
 
         let set_args = ConfigArgs::try_parse_from(["config", "dev_root", "/tmp/worktree"]).unwrap();
         assert_eq!(cmd_config(&db, &set_args, None), 0);
@@ -2345,7 +2345,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[launch.claude]\nargs = \"--model keep\"\n").unwrap();
 
-        config_set_at_path(&path, "HCOM_CLAUDE_ARGS", "--future-upstream-flag").unwrap();
+        config_set_at_path(&path, "COMMS_CLAUDE_ARGS", "--future-upstream-flag").unwrap();
         assert!(
             std::fs::read_to_string(&path)
                 .unwrap()
@@ -2358,7 +2358,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
 
-        config_set_at_path(&path, "HCOM_PI_ARGS", "--model safe-model").unwrap();
+        config_set_at_path(&path, "COMMS_PI_ARGS", "--model safe-model").unwrap();
 
         let parsed: toml::Table = std::fs::read_to_string(path).unwrap().parse().unwrap();
         assert_eq!(
@@ -2401,7 +2401,7 @@ mod tests {
     #[test]
     fn test_config_instance_set_timeout_default_resets() {
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, created_at, wait_timeout) VALUES (?1, ?2, ?3)",
@@ -2424,7 +2424,7 @@ mod tests {
     #[test]
     fn test_config_instance_set_empty_hints_clears() {
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, created_at, hints) VALUES (?1, ?2, ?3)",
@@ -2447,7 +2447,7 @@ mod tests {
     #[test]
     fn test_config_instance_set_subagent_timeout_default_clears() {
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, created_at, subagent_timeout) VALUES (?1, ?2, ?3)",
@@ -2537,7 +2537,7 @@ mod tests {
     #[test]
     fn test_config_instance_get_full_output_uses_display_name() {
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, created_at, tag) VALUES (?1, ?2, ?3)",
@@ -2554,7 +2554,7 @@ mod tests {
     #[test]
     fn test_config_instance_get_timeout_uses_default_value() {
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, created_at) VALUES (?1, ?2)",
@@ -2568,17 +2568,17 @@ mod tests {
 
     #[test]
     fn test_config_instance_get_full_output_schema() {
-        // Stable JSON contract for `hcom config -i <name> --json`. Keep the
+        // Stable JSON contract for `comms config -i <name> --json`. Keep the
         // local and remote (RPC) paths emitting identical shapes:
         //   - name: base name (no tag prefix)
         //   - full_name: tag-prefixed display name
         //   - tag / hints: null when empty or unset (not "")
         //   - timeout: null when the row has no explicit value (registration
-        //     paths write the resolved HCOM_TIMEOUT explicitly; a bare INSERT
+        //     paths write the resolved COMMS_TIMEOUT explicitly; a bare INSERT
         //     that skips the column, as here, has nothing to fall back on)
         //   - subagent_timeout: null when unset
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, created_at, tag) VALUES (?1, ?2, ?3)",
@@ -2611,7 +2611,7 @@ mod tests {
         // where wait_timeout was explicitly NULL before the schema default
         // existed.
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, created_at, tag, hints, wait_timeout) \
@@ -2635,7 +2635,7 @@ mod tests {
     #[test]
     fn test_config_instance_get_subagent_timeout_unset_returns_null_value() {
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, created_at) VALUES (?1, ?2)",

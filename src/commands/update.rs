@@ -1,10 +1,10 @@
-//! `hcom update` command — check and apply updates.
+//! `comms update` command — check and apply updates.
 //!
 //! Uses the shared `fetch_update_info()` function from update.rs to get current,
 //! latest, and availability in one call. Applies immediately when an update is
 //! available; `--check` reports availability without applying.
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::shared::CommandContext;
 
 #[derive(clap::Parser, Debug)]
@@ -15,16 +15,16 @@ pub struct UpdateArgs {
     pub check: bool,
 }
 
-fn print_dev_root_notice(db: &HcomDb) {
+fn print_dev_root_notice(db: &CommsDb) {
     if let Some((path, source)) = crate::router::resolve_effective_dev_root(db.path()) {
         println!("Using local build: {} [{}]", path.display(), source);
-        println!("`hcom update` bypasses dev_root and updates the binary you invoked.");
+        println!("`comms update` bypasses dev_root and updates the binary you invoked.");
         println!("The local checkout is not changed.");
         println!();
     }
 }
 
-pub fn cmd_update(_db: &HcomDb, args: &UpdateArgs, _ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_update(_db: &CommsDb, args: &UpdateArgs, _ctx: Option<&CommandContext>) -> i32 {
     println!("Checking for updates...");
     print_dev_root_notice(_db);
 
@@ -37,7 +37,7 @@ pub fn cmd_update(_db: &HcomDb, args: &UpdateArgs, _ctx: Option<&CommandContext>
     };
 
     if !info.available {
-        println!("hcom v{} is up to date", info.current);
+        println!("comms v{} is up to date", info.current);
         // Clear stale "update available" cache if it existed
         let _ = crate::paths::atomic_write(&crate::update::flag_path(), "");
         return 0;
@@ -46,7 +46,7 @@ pub fn cmd_update(_db: &HcomDb, args: &UpdateArgs, _ctx: Option<&CommandContext>
     println!("Update available: v{} → v{}", info.current, info.latest);
 
     if args.check {
-        println!("Run `hcom update` to apply.");
+        println!("Run `comms update` to apply.");
         return 0;
     }
 
@@ -54,7 +54,7 @@ pub fn cmd_update(_db: &HcomDb, args: &UpdateArgs, _ctx: Option<&CommandContext>
         if crate::update::is_powershell_installer_command(info.cmd) {
             let program = crate::update::windows_installer_program();
             println!(
-                "Running: {program} -NoProfile -ExecutionPolicy Bypass -Command \"irm https://github.com/aannoo/hcom/releases/latest/download/hcom-installer.ps1 | iex\""
+                "Running: {program} -NoProfile -ExecutionPolicy Bypass -Command \"irm https://github.com/jinomee/comms/releases/latest/download/comms-installer.ps1 | iex\""
             );
             std::process::Command::new(program)
                 .args([
@@ -62,7 +62,7 @@ pub fn cmd_update(_db: &HcomDb, args: &UpdateArgs, _ctx: Option<&CommandContext>
                     "-ExecutionPolicy",
                     "Bypass",
                     "-Command",
-                    "irm https://github.com/aannoo/hcom/releases/latest/download/hcom-installer.ps1 | iex",
+                    "irm https://github.com/jinomee/comms/releases/latest/download/comms-installer.ps1 | iex",
                 ])
                 .status()
         } else if crate::update::is_shell_pipe_command(info.cmd) {
@@ -87,7 +87,7 @@ pub fn cmd_update(_db: &HcomDb, args: &UpdateArgs, _ctx: Option<&CommandContext>
         Ok(s) if s.success() => {
             // Clear the cached "update available" notice
             let _ = crate::paths::atomic_write(&crate::update::flag_path(), "");
-            println!("Done. Run 'hcom --version' to confirm.");
+            println!("Done. Run 'comms --version' to confirm.");
             0
         }
         Ok(s) => {
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn print_dev_root_notice_is_safe_when_unset() {
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
         print_dev_root_notice(&db);
     }
 }

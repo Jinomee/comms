@@ -5,10 +5,10 @@
 //!   v0x02: private broker, plaintext  — 0x02 + 16 UUID bytes + URL bytes → variable length base64url
 //!   v0x04: compact bearer token       — 0x04 + 16 UUID bytes + 32 PSK + (1 broker idx | URL bytes)
 //!
-//! v0x01/v0x02 still parse so that `hcom relay connect` can give a useful error
+//! v0x01/v0x02 still parse so that `comms relay connect` can give a useful error
 //! to a user pasting an old token. Connecting with a legacy token refuses to
 //! write the local config because those formats do not carry the relay PSK;
-//! the source device must run `hcom relay new` on a current build to mint a
+//! the source device must run `comms relay new` on a current build to mint a
 //! v0x04 token.
 
 use base64::Engine;

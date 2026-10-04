@@ -15,7 +15,7 @@
 //! - Tool environment detection (owned by `shared::tool_detection`, including
 //!   precedence and child-env clearing).
 //! - Transcript parser implementations (owned by `transcript::TranscriptBackend`; canonical identity stays `Tool`).
-//! - System-prompt env var keys (typed fields on `HcomConfig`; lookup goes
+//! - System-prompt env var keys (typed fields on `CommsConfig`; lookup goes
 //!   through `config.rs::FIELD_TO_ENV`).
 
 use crate::tool::Tool;
@@ -23,7 +23,7 @@ use crate::tool::Tool;
 /// Help entry: `(usage, description)`. Mirrors `commands/help.rs::HelpEntry`.
 pub type HelpEntry = (&'static str, &'static str);
 
-/// How the external tool invokes hcom hook commands.
+/// How the external tool invokes comms hook commands.
 ///
 /// This is descriptive metadata for compatibility/spec auditing. Runtime hook
 /// dispatch is driven by hook command names and per-tool handlers.
@@ -84,7 +84,7 @@ pub struct GatesSpec {
 ///   runner; the live TUI keeps running there. gemini, codex, opencode, agy.
 /// - `NativePrint`: background launches a detached process in the tool's own
 ///   print mode (Claude `-p --output-format stream-json --verbose`), opt-in via
-///   an explicit `-p`/`--print` and kept alive across turns by hcom's stop-hook
+///   an explicit `-p`/`--print` and kept alive across turns by comms's stop-hook
 ///   loop. Default Claude `--headless` routes through `HeadlessPty` (live PTY
 ///   session) instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +94,7 @@ pub enum BackgroundMode {
     NativePrint,
 }
 
-/// How `--hcom-prompt` becomes tool-side CLI args.
+/// How `--comms-prompt` becomes tool-side CLI args.
 #[derive(Debug, Clone, Copy)]
 pub enum InitialPromptShape {
     /// The tool cannot accept an interactive initial prompt at launch.
@@ -117,7 +117,7 @@ pub struct PtySpec {
 
 #[derive(Debug, Clone, Copy)]
 pub struct LaunchSpec {
-    /// Env var holding default CLI args (e.g. `HCOM_CLAUDE_ARGS`).
+    /// Env var holding default CLI args (e.g. `COMMS_CLAUDE_ARGS`).
     pub args_env: Option<&'static str>,
     /// Env var holding the tool's config directory (e.g. `CLAUDE_CONFIG_DIR`).
     pub config_dir_env: Option<&'static str>,
@@ -125,7 +125,7 @@ pub struct LaunchSpec {
     /// PTY-by-default. `false` only for `claude` (which has a `claude-pty`
     /// alias for the PTY path).
     pub uses_pty_default: bool,
-    /// Max agents per `hcom [N] <tool>` invocation. Claude gets a larger budget
+    /// Max agents per `comms [N] <tool>` invocation. Claude gets a larger budget
     /// because of background bulk-launch (`-p` mode); others are capped at 10.
     pub max_launch_count: usize,
     /// Background-launch capability (see [`BackgroundMode`]).
@@ -326,84 +326,87 @@ const GROK_HOOKS: &[&str] = &[];
 // ── Help examples / extra-env tables ────────────────────────────────────
 
 const CLAUDE_HELP_EXAMPLES: &[HelpEntry] = &[(
-    "hcom claude --model fable|opus|sonnet|haiku",
+    "comms claude --model fable|opus|sonnet|haiku",
     "Flags forwarded to claude",
 )];
 const CLAUDE_HELP_EXTRA_ENV: &[HelpEntry] = &[(
-    "HCOM_SUBAGENT_TIMEOUT",
+    "COMMS_SUBAGENT_TIMEOUT",
     "Seconds subagents keep-alive after task",
 )];
 
 const GEMINI_HELP_EXAMPLES: &[HelpEntry] = &[
-    ("hcom N gemini --yolo", "Flags forwarded to gemini"),
+    ("comms N gemini --yolo", "Flags forwarded to gemini"),
     (
-        "hcom gemini --model pro|flash|flash-lite",
+        "comms gemini --model pro|flash|flash-lite",
         "Use a specific model",
     ),
 ];
 const GEMINI_HELP_EXTRA_ENV: &[HelpEntry] =
-    &[("HCOM_GEMINI_SYSTEM_PROMPT", "System prompt (env var)")];
+    &[("COMMS_GEMINI_SYSTEM_PROMPT", "System prompt (env var)")];
 
 const CODEX_HELP_EXAMPLES: &[HelpEntry] = &[(
-    "hcom codex --sandbox danger-full-access",
+    "comms codex --sandbox danger-full-access",
     "Flags forwarded to codex",
 )];
 const CODEX_HELP_EXTRA_ENV: &[HelpEntry] = &[(
-    "HCOM_CODEX_SYSTEM_PROMPT",
+    "COMMS_CODEX_SYSTEM_PROMPT",
     "System prompt (env var or config)",
 )];
 
 const OPENCODE_HELP_EXAMPLES: &[HelpEntry] =
-    &[("hcom opencode --agent plan", "Flags forwarded to opencode")];
+    &[("comms opencode --agent plan", "Flags forwarded to opencode")];
 
 const KILO_HELP_EXAMPLES: &[HelpEntry] = &[(
-    "hcom kilo --model kilo/kilo-auto/free",
+    "comms kilo --model kilo/kilo-auto/free",
     "Flags forwarded to kilo",
 )];
 
-const PI_HELP_EXAMPLES: &[HelpEntry] = &[("hcom pi --thinking high", "Flags forwarded to pi")];
+const PI_HELP_EXAMPLES: &[HelpEntry] = &[("comms pi --thinking high", "Flags forwarded to pi")];
 
-const OMP_HELP_EXAMPLES: &[HelpEntry] = &[("hcom omp --thinking high", "Flags forwarded to omp")];
+const OMP_HELP_EXAMPLES: &[HelpEntry] = &[("comms omp --thinking high", "Flags forwarded to omp")];
 
 const AGY_HELP_EXAMPLES: &[HelpEntry] = &[
-    ("hcom antigravity", "Long-form alias"),
-    ("hcom agy --sandbox", "Flags forwarded to agy"),
-    ("hcom r <name>", "Resume a stopped agy session"),
+    ("comms antigravity", "Long-form alias"),
+    ("comms agy --sandbox", "Flags forwarded to agy"),
+    ("comms r <name>", "Resume a stopped agy session"),
 ];
 
 const CURSOR_HELP_EXAMPLES: &[HelpEntry] = &[
-    ("hcom cursor-agent --model auto", "Use a specific model"),
+    ("comms cursor-agent --model auto", "Use a specific model"),
     (
-        "hcom cursor-agent --force",
+        "comms cursor-agent --force",
         "Allow commands unless explicitly denied",
     ),
     (
-        "hcom cursor-agent --plan",
+        "comms cursor-agent --plan",
         "Flags forwarded to cursor-agent",
     ),
 ];
 
 const KIMI_HELP_EXAMPLES: &[HelpEntry] = &[
     (
-        "hcom kimi --yolo",
+        "comms kimi --yolo",
         "Auto-run routine actions; risky ones still ask",
     ),
-    ("hcom kimi --auto", "Never ask for approval"),
-    ("hcom kimi --plan", "Flags forwarded to kimi"),
+    ("comms kimi --auto", "Never ask for approval"),
+    ("comms kimi --plan", "Flags forwarded to kimi"),
 ];
 
 const GROK_HELP_EXAMPLES: &[HelpEntry] = &[
     (
-        "hcom grok --reasoning-effort high",
+        "comms grok --reasoning-effort high",
         "Flags forwarded to grok",
     ),
-    ("hcom grok --always-approve", "Auto-approve tool executions"),
+    (
+        "comms grok --always-approve",
+        "Auto-approve tool executions",
+    ),
 ];
 
 const COPILOT_HELP_EXAMPLES: &[HelpEntry] = &[
-    ("hcom copilot --model auto", "Use a specific model"),
+    ("comms copilot --model auto", "Use a specific model"),
     (
-        "hcom copilot --allow-tool 'shell(hcom:*)'",
+        "comms copilot --allow-tool 'shell(comms:*)'",
         "Flags forwarded to copilot",
     ),
 ];
@@ -446,7 +449,7 @@ pub static CLAUDE: IntegrationSpec = IntegrationSpec {
         launch_ready_on_plugin_bind: false,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_CLAUDE_ARGS"),
+        args_env: Some("COMMS_CLAUDE_ARGS"),
         config_dir_env: Some("CLAUDE_CONFIG_DIR"),
         initial_prompt: InitialPromptShape::DashDashPositional,
         uses_pty_default: false,
@@ -499,7 +502,7 @@ pub static GEMINI: IntegrationSpec = IntegrationSpec {
         launch_ready_on_plugin_bind: false,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_GEMINI_ARGS"),
+        args_env: Some("COMMS_GEMINI_ARGS"),
         config_dir_env: Some("GEMINI_CLI_HOME"),
         initial_prompt: InitialPromptShape::Positional,
         uses_pty_default: true,
@@ -553,7 +556,7 @@ pub static CODEX: IntegrationSpec = IntegrationSpec {
         launch_ready_on_plugin_bind: false,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_CODEX_ARGS"),
+        args_env: Some("COMMS_CODEX_ARGS"),
         config_dir_env: Some("CODEX_HOME"),
         initial_prompt: InitialPromptShape::Positional,
         uses_pty_default: true,
@@ -607,7 +610,7 @@ pub static OPENCODE: IntegrationSpec = IntegrationSpec {
         launch_ready_on_plugin_bind: false,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_OPENCODE_ARGS"),
+        args_env: Some("COMMS_OPENCODE_ARGS"),
         // OPENCODE_CONFIG_DIR is read by the plugin install/verify/remove path
         // in hooks/opencode.rs; surface it for the launch diagnostic dump.
         config_dir_env: Some("OPENCODE_CONFIG_DIR"),
@@ -670,7 +673,7 @@ pub static KILO: IntegrationSpec = IntegrationSpec {
         launch_ready_on_plugin_bind: false,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_KILO_ARGS"),
+        args_env: Some("COMMS_KILO_ARGS"),
         config_dir_env: Some("KILO_CONFIG_DIR"),
         initial_prompt: InitialPromptShape::Flag("--prompt"),
         uses_pty_default: true,
@@ -784,7 +787,7 @@ pub static CURSOR: IntegrationSpec = IntegrationSpec {
         launch_ready_on_plugin_bind: false,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_CURSOR_ARGS"),
+        args_env: Some("COMMS_CURSOR_ARGS"),
         config_dir_env: Some("CURSOR_CONFIG_DIR"),
         initial_prompt: InitialPromptShape::Positional,
         uses_pty_default: true,
@@ -843,12 +846,12 @@ pub static KIMI: IntegrationSpec = IntegrationSpec {
         launch_ready_on_plugin_bind: false,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_KIMI_ARGS"),
+        args_env: Some("COMMS_KIMI_ARGS"),
         // Kimi's data root (config + sessions + credentials) is overridden via
         // KIMI_CODE_HOME; it does not honor a separate config-dir variable.
         config_dir_env: Some("KIMI_CODE_HOME"),
         initial_prompt: InitialPromptShape::Unsupported {
-            reason: "kimi does not support an initial prompt at launch. Launch `hcom kimi` without a prompt, then send the task with `hcom send @<name> -- \"…\"`.",
+            reason: "kimi does not support an initial prompt at launch. Launch `comms kimi` without a prompt, then send the task with `comms send @<name> -- \"…\"`.",
         },
         uses_pty_default: true,
         max_launch_count: 10,
@@ -864,7 +867,7 @@ pub static KIMI: IntegrationSpec = IntegrationSpec {
     }),
     help: HelpSpec {
         unique_examples: KIMI_HELP_EXAMPLES,
-        // No HCOM_KIMI_SYSTEM_PROMPT: kimi has no system-prompt config field or
+        // No COMMS_KIMI_SYSTEM_PROMPT: kimi has no system-prompt config field or
         // injection path (see hooks/kimi.rs — it's a future kimi feature), so
         // advertising it here was a ghost.
         extra_env: &[],
@@ -888,7 +891,7 @@ pub static PI: IntegrationSpec = IntegrationSpec {
     tui_prefix: "pi  ",
     adhoc_icon: None,
     released: true,
-    // Readiness comes from the hcom extension's bind, not on-screen text.
+    // Readiness comes from the comms extension's bind, not on-screen text.
     // Pi's header hint differs between the compact ("/ commands"), expanded
     // ("/ for commands") and quiet-startup (none) headers, and it is drawn
     // before Pi enables its key/submit handlers. Pi fires session_start (our
@@ -915,7 +918,7 @@ pub static PI: IntegrationSpec = IntegrationSpec {
         launch_ready_on_plugin_bind: true,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_PI_ARGS"),
+        args_env: Some("COMMS_PI_ARGS"),
         config_dir_env: Some("PI_CODING_AGENT_DIR"),
         initial_prompt: InitialPromptShape::Positional,
         uses_pty_default: true,
@@ -960,7 +963,7 @@ pub static OMP: IntegrationSpec = IntegrationSpec {
     // theme-configurable: the minimal/compact/ascii/custom presets omit the pi
     // segment entirely and `icon.pi` is theme-selectable, so anchoring on `π `
     // still falsely blocks established configs. Readiness is instead proven by
-    // the hcom extension's bind (`launch_ready_on_plugin_bind`), which is
+    // the comms extension's bind (`launch_ready_on_plugin_bind`), which is
     // rendering-independent. Empty pattern => is_ready() is always true, so it
     // never gates launch on scraped chrome; the plugin bind is authoritative.
     ready_patterns: &[],
@@ -982,13 +985,13 @@ pub static OMP: IntegrationSpec = IntegrationSpec {
         launch_requires_ready: true,
         // OMP has no reliable on-screen ready marker (all candidates live in the
         // preset/theme-configurable status line), so launch readiness is proven
-        // by the hcom extension's bind (kind='plugin' notify endpoint) instead —
+        // by the comms extension's bind (kind='plugin' notify endpoint) instead —
         // rendering-independent, and a dead extension correctly fails to bind and
         // blocks. `ready_patterns` is empty; this is the authoritative signal.
         launch_ready_on_plugin_bind: true,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_OMP_ARGS"),
+        args_env: Some("COMMS_OMP_ARGS"),
         config_dir_env: Some("PI_CODING_AGENT_DIR"),
         initial_prompt: InitialPromptShape::Positional,
         uses_pty_default: true,
@@ -1004,7 +1007,7 @@ pub static OMP: IntegrationSpec = IntegrationSpec {
         // session persistence (`omp --fork x --no-session` -> "--fork requires
         // session persistence"). Same shape as Pi: Subcommand emits
         // `["--fork", <id>]` (replacing `--resume`), not `["--resume", <id>,
-        // "--fork"]`. Must not degrade `hcom f` into a plain `--resume`.
+        // "--fork"]`. Must not degrade `comms f` into a plain `--resume`.
         fork: Some(ForkArgs::Subcommand("--fork")),
     }),
     help: HelpSpec {
@@ -1053,7 +1056,7 @@ pub static COPILOT: IntegrationSpec = IntegrationSpec {
         launch_ready_on_plugin_bind: false,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_COPILOT_ARGS"),
+        args_env: Some("COMMS_COPILOT_ARGS"),
         config_dir_env: Some("COPILOT_HOME"),
         initial_prompt: InitialPromptShape::Flag("-i"),
         uses_pty_default: true,
@@ -1108,7 +1111,7 @@ pub static GROK: IntegrationSpec = IntegrationSpec {
         launch_ready_on_plugin_bind: false,
     },
     launch: LaunchSpec {
-        args_env: Some("HCOM_GROK_ARGS"),
+        args_env: Some("COMMS_GROK_ARGS"),
         config_dir_env: Some("GROK_HOME"),
         initial_prompt: InitialPromptShape::DashDashPositional,
         uses_pty_default: true,
@@ -1149,7 +1152,7 @@ pub static ADHOC: IntegrationSpec = IntegrationSpec {
         shared_hooks_with: None,
         invocation: HookInvocation::None,
     },
-    // Adhoc delivery is manual via `hcom listen` / hookless CLI unread, so
+    // Adhoc delivery is manual via `comms listen` / hookless CLI unread, so
     // these conservative gates are documented but mostly unused.
     gates: GatesSpec {
         require_idle: true,
@@ -1455,14 +1458,14 @@ mod tests {
     //
     // Every released tool must clear each gate below or document an explicit
     // opt-out in its spec (e.g. Antigravity's `args_env: None` opts out of
-    // HCOM_*_ARGS config; Gemini/Antigravity's `resume.fork = None` opts out
-    // of `hcom f`). Adding a new released tool means filling these surfaces
+    // COMMS_*_ARGS config; Gemini/Antigravity's `resume.fork = None` opts out
+    // of `comms f`). Adding a new released tool means filling these surfaces
     // or pinning the opt-out here next to the existing carve-outs.
 
     #[test]
     fn drift_released_tools_resolve_via_launch_tool() {
         // Adding a released tool must wire it into LaunchTool::from_str so
-        // `hcom <tool>` reaches the launcher. Each canonical name AND each
+        // `comms <tool>` reaches the launcher. Each canonical name AND each
         // alias must parse and resolve back to the owning Tool variant.
         use crate::launcher::LaunchTool;
         for spec in ALL {
@@ -1562,7 +1565,7 @@ mod tests {
     #[test]
     fn drift_released_tools_args_env_documented_in_config() {
         // args_env opt-out is allowed (Antigravity is None today); when set,
-        // the env-var name must point at a real HcomConfig field. The mapping
+        // the env-var name must point at a real CommsConfig field. The mapping
         // table lives in config.rs and is asserted in
         // `args_env_keys_match_integration_specs` — this gate just pins the
         // expectation that each released spec either sets args_env to a
@@ -1573,8 +1576,8 @@ mod tests {
             }
             if let Some(env_var) = spec.launch.args_env {
                 assert!(
-                    env_var.starts_with("HCOM_") && env_var.ends_with("_ARGS"),
-                    "{}: args_env '{}' must follow HCOM_*_ARGS naming",
+                    env_var.starts_with("COMMS_") && env_var.ends_with("_ARGS"),
+                    "{}: args_env '{}' must follow COMMS_*_ARGS naming",
                     spec.name,
                     env_var
                 );
@@ -1585,7 +1588,7 @@ mod tests {
     #[test]
     fn drift_released_tools_with_args_env_merge_their_config_field() {
         use crate::commands::launch::merge_tool_args;
-        use crate::config::HcomConfig;
+        use crate::config::CommsConfig;
         use crate::launcher::LaunchTool;
 
         for spec in ALL {
@@ -1597,10 +1600,10 @@ mod tests {
             }
 
             let field = args_env
-                .strip_prefix("HCOM_")
-                .expect("args env uses HCOM_ prefix")
+                .strip_prefix("COMMS_")
+                .expect("args env uses COMMS_ prefix")
                 .to_ascii_lowercase();
-            let mut config = HcomConfig::default();
+            let mut config = CommsConfig::default();
             config
                 .set_field(&field, "--model config-model")
                 .unwrap_or_else(|e| panic!("{} config field {field}: {e}", spec.name));
@@ -1619,7 +1622,7 @@ mod tests {
     fn drift_released_tools_have_background_mode() {
         // Every released tool must declare a background mode other than
         // Unsupported. Unsupported is reserved for Adhoc, which is never
-        // launched through `hcom [N] <tool>`.
+        // launched through `comms [N] <tool>`.
         for spec in ALL {
             if spec.released {
                 assert_ne!(

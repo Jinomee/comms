@@ -1,7 +1,7 @@
-//! hcom — inter-agent communication for AI coding tools.
+//! comms — inter-agent communication for AI coding tools.
 //!
-//! Humans usually launch agents with `hcom <tool>` and talk to them through
-//! each tool's own UI. Agents use `hcom` CLI commands (learnt through bootstrap.rs)
+//! Humans usually launch agents with `comms <tool>` and talk to them through
+//! each tool's own UI. Agents use `comms` CLI commands (learnt through bootstrap.rs)
 //! as a side-channel for messaging and coordination with other agents.
 
 mod bootstrap;
@@ -47,7 +47,7 @@ use std::panic;
 use std::str::FromStr;
 
 fn main() -> Result<()> {
-    // Hooks of an agent nested under an hcom-launched one must not act as it.
+    // Hooks of an agent nested under an comms-launched one must not act as it.
     // Runs first: every later env reader should see only the child's view.
     let nested = std::env::args()
         .nth(1)
@@ -62,7 +62,7 @@ fn main() -> Result<()> {
             "identity",
             "nested_agent.scrubbed",
             &format!(
-                "child={} parent={}: ignoring inherited hcom identity",
+                "child={} parent={}: ignoring inherited comms identity",
                 nested.child, nested.parent
             ),
         );
@@ -94,9 +94,9 @@ fn main() -> Result<()> {
 /// Windows; the proxy backend is selected inside `pty::Proxy`.
 pub fn run_pty(args: &[String]) -> Result<()> {
     if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
-        eprintln!("hcom pty - PTY wrapper for hcom");
+        eprintln!("comms pty - PTY wrapper for comms");
         eprintln!();
-        eprintln!("Usage: hcom pty <tool> [args...]");
+        eprintln!("Usage: comms pty <tool> [args...]");
         eprintln!();
         let tools = integration_spec::ALL
             .iter()
@@ -118,8 +118,8 @@ pub fn run_pty(args: &[String]) -> Result<()> {
         eprintln!("  - Ready detection for tool startup");
         eprintln!();
         eprintln!("Environment:");
-        eprintln!("  HCOM_INSTANCE_NAME    Instance name for logging");
-        eprintln!("  HCOM_DIR              Custom hcom directory");
+        eprintln!("  COMMS_INSTANCE_NAME    Instance name for logging");
+        eprintln!("  COMMS_DIR              Custom comms directory");
         if args.is_empty() {
             bail!("Tool name required");
         }
@@ -133,9 +133,9 @@ pub fn run_pty(args: &[String]) -> Result<()> {
     // pass tool args via a JSON sidecar because the PowerShell → native-exe
     // boundary corrupts arguments with embedded double quotes.
     let mut arg_index = 1;
-    let tool_path = if args.get(arg_index).map(String::as_str) == Some("--hcom-tool-path") {
+    let tool_path = if args.get(arg_index).map(String::as_str) == Some("--comms-tool-path") {
         let Some(path) = args.get(arg_index + 1) else {
-            bail!("--hcom-tool-path requires a path");
+            bail!("--comms-tool-path requires a path");
         };
         arg_index += 2;
         Some(path.as_str())
@@ -145,9 +145,9 @@ pub fn run_pty(args: &[String]) -> Result<()> {
 
     let sidecar_args: Vec<String>;
     let tool_args: Vec<&str> =
-        if args.get(arg_index).map(String::as_str) == Some("--hcom-args-file") {
+        if args.get(arg_index).map(String::as_str) == Some("--comms-args-file") {
             let Some(path) = args.get(arg_index + 1) else {
-                bail!("--hcom-args-file requires a path");
+                bail!("--comms-args-file requires a path");
             };
             let content = std::fs::read_to_string(path)
                 .with_context(|| format!("Failed to read args file {path}"))?;
@@ -237,11 +237,11 @@ pub fn run_pty(args: &[String]) -> Result<()> {
             let err = e.context("Failed to spawn PTY");
             // The launched terminal window may close on process exit before
             // anyone can read stderr (depends on the terminal's own
-            // exit/profile behavior, which hcom doesn't control), so stderr
+            // exit/profile behavior, which comms doesn't control), so stderr
             // alone can't be relied on. Log so the failure survives, and —
             // same path used for a child that exits before binding — push it
             // through the launch-failure event so the launcher (human or the
-            // agent that ran `hcom N <tool>`) is notified immediately instead
+            // agent that ran `comms N <tool>`) is notified immediately instead
             // of waiting on the generic stale-placeholder timeout.
             log::log_error("pty", "spawn_failed", &format!("{err:#}"));
             // Grok may have started its persistent leader before the failure.
@@ -249,7 +249,7 @@ pub fn run_pty(args: &[String]) -> Result<()> {
                 launch.stop_leader();
             }
             if let Some(name) = instance_name_for_failure.as_deref()
-                && let Ok(db) = db::HcomDb::open()
+                && let Ok(db) = db::CommsDb::open()
                 && let Ok(Some(instance)) = db.get_instance_full(name)
             {
                 let fallback = format!("{err:#}");
@@ -285,7 +285,7 @@ pub fn run_pty(args: &[String]) -> Result<()> {
 }
 
 fn pty_child_env() -> Vec<(String, String)> {
-    vec![("HCOM_LAUNCHED".to_string(), "1".to_string())]
+    vec![("COMMS_LAUNCHED".to_string(), "1".to_string())]
 }
 
 #[cfg(test)]
@@ -341,7 +341,7 @@ mod tests {
     fn test_pty_child_env_marks_launched() {
         assert_eq!(
             super::pty_child_env(),
-            vec![("HCOM_LAUNCHED".to_string(), "1".to_string())]
+            vec![("COMMS_LAUNCHED".to_string(), "1".to_string())]
         );
     }
 }

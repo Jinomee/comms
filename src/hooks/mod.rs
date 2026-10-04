@@ -22,7 +22,7 @@ pub mod test_helpers {
     use std::path::PathBuf;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    // Process-global serialization for tests that mutate HCOM_DIR/HOME.
+    // Process-global serialization for tests that mutate COMMS_DIR/HOME.
     // Env vars are process-wide; without this, parallel tests trample each
     // other (e.g. one test's config write lands in another's tempdir).
     // Recover from poison so a panic in one test doesn't cascade-fail the
@@ -36,9 +36,9 @@ pub mod test_helpers {
             .unwrap_or_else(|e| e.into_inner())
     }
 
-    /// RAII guard that saves/restores HCOM_DIR and HOME env vars, and resets Config.
+    /// RAII guard that saves/restores COMMS_DIR and HOME env vars, and resets Config.
     pub struct EnvGuard {
-        saved_hcom: Option<String>,
+        saved_comms: Option<String>,
         saved_home: Option<String>,
         saved_cursor_config_dir: Option<String>,
         saved_xdg_config_home: Option<String>,
@@ -69,7 +69,7 @@ pub mod test_helpers {
         pub fn new() -> Self {
             let lock = acquire_env_lock();
             Self {
-                saved_hcom: std::env::var("HCOM_DIR").ok(),
+                saved_comms: std::env::var("COMMS_DIR").ok(),
                 saved_home: std::env::var("HOME").ok(),
                 saved_cursor_config_dir: std::env::var("CURSOR_CONFIG_DIR").ok(),
                 saved_xdg_config_home: std::env::var("XDG_CONFIG_HOME").ok(),
@@ -79,7 +79,7 @@ pub mod test_helpers {
                 saved_kilo_config_dir: std::env::var("KILO_CONFIG_DIR").ok(),
                 saved_kimi_code_home: std::env::var("KIMI_CODE_HOME").ok(),
                 saved_copilot_home: std::env::var("COPILOT_HOME").ok(),
-                saved_test_codex_cli_version: std::env::var("HCOM_TEST_CODEX_CLI_VERSION").ok(),
+                saved_test_codex_cli_version: std::env::var("COMMS_TEST_CODEX_CLI_VERSION").ok(),
                 saved_pi_coding_agent_dir: std::env::var("PI_CODING_AGENT_DIR").ok(),
                 saved_pi_coding_agent_session_dir: std::env::var("PI_CODING_AGENT_SESSION_DIR")
                     .ok(),
@@ -94,9 +94,9 @@ pub mod test_helpers {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             unsafe {
-                match &self.saved_hcom {
-                    Some(v) => std::env::set_var("HCOM_DIR", v),
-                    None => std::env::remove_var("HCOM_DIR"),
+                match &self.saved_comms {
+                    Some(v) => std::env::set_var("COMMS_DIR", v),
+                    None => std::env::remove_var("COMMS_DIR"),
                 }
                 match &self.saved_home {
                     Some(v) => std::env::set_var("HOME", v),
@@ -135,8 +135,8 @@ pub mod test_helpers {
                     None => std::env::remove_var("COPILOT_HOME"),
                 }
                 match &self.saved_test_codex_cli_version {
-                    Some(v) => std::env::set_var("HCOM_TEST_CODEX_CLI_VERSION", v),
-                    None => std::env::remove_var("HCOM_TEST_CODEX_CLI_VERSION"),
+                    Some(v) => std::env::set_var("COMMS_TEST_CODEX_CLI_VERSION", v),
+                    None => std::env::remove_var("COMMS_TEST_CODEX_CLI_VERSION"),
                 }
                 match &self.saved_pi_coding_agent_dir {
                     Some(v) => std::env::set_var("PI_CODING_AGENT_DIR", v),
@@ -164,28 +164,28 @@ pub mod test_helpers {
         }
     }
 
-    /// Create an isolated test env: tempdir with .hcom dir, env vars set.
-    /// Returns (tempdir, hcom_dir, test_home, guard).
+    /// Create an isolated test env: tempdir with .comms dir, env vars set.
+    /// Returns (tempdir, comms_dir, test_home, guard).
     pub fn isolated_test_env() -> (tempfile::TempDir, PathBuf, PathBuf, EnvGuard) {
         let guard = EnvGuard::new();
         let dir = tempfile::tempdir().unwrap();
         let test_home = dir.path().to_path_buf();
-        let hcom_dir = test_home.join(".hcom");
-        std::fs::create_dir_all(&hcom_dir).unwrap();
+        let comms_dir = test_home.join(".comms");
+        std::fs::create_dir_all(&comms_dir).unwrap();
         // Claim this tempdir as a disposable root so Config trusts it (temp-tree
         // geography alone is not enough — see paths::test_roots).
         crate::paths::test_roots::register(&test_home);
         unsafe {
-            std::env::set_var("HCOM_DIR", &hcom_dir);
+            std::env::set_var("COMMS_DIR", &comms_dir);
             std::env::set_var("HOME", &test_home);
             // CODEX_HOME overrides HOME; inheriting it would write test hooks
             // into the user's real Codex configuration.
             std::env::remove_var("CODEX_HOME");
-            std::env::set_var("HCOM_TEST_CODEX_CLI_VERSION", "codex-cli 0.129.0");
+            std::env::set_var("COMMS_TEST_CODEX_CLI_VERSION", "codex-cli 0.129.0");
         }
         crate::config::Config::reset();
         crate::config::Config::init();
-        (dir, hcom_dir, test_home, guard)
+        (dir, comms_dir, test_home, guard)
     }
 }
 
@@ -759,7 +759,7 @@ mod tests {
     #[test]
     fn test_hook_result_block() {
         let result = HookResult::Block {
-            reason: "<hcom>message here</hcom>".into(),
+            reason: "<comms>message here</comms>".into(),
             delivery_ack: None,
         };
         assert_eq!(result.exit_code(), 2);
@@ -768,7 +768,7 @@ mod tests {
                 reason,
                 delivery_ack,
             } => {
-                assert_eq!(reason, "<hcom>message here</hcom>");
+                assert_eq!(reason, "<comms>message here</comms>");
                 assert!(delivery_ack.is_none());
             }
             _ => panic!("expected Block"),

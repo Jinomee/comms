@@ -1,14 +1,14 @@
 use super::*;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::instances;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 use crate::shared::{ST_ACTIVE, ST_LISTENING};
 use std::io::ErrorKind;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-fn setup_test_db() -> (HcomDb, PathBuf) {
+fn setup_test_db() -> (CommsDb, PathBuf) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -20,7 +20,7 @@ fn setup_test_db() -> (HcomDb, PathBuf) {
         test_id
     ));
 
-    let db = HcomDb::open_at(&db_path).unwrap();
+    let db = CommsDb::open_at(&db_path).unwrap();
     (db, db_path)
 }
 
@@ -30,7 +30,7 @@ fn cleanup(path: PathBuf) {
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
 
-fn save_test_instance(db: &HcomDb, name: &str, status: &str) {
+fn save_test_instance(db: &CommsDb, name: &str, status: &str) {
     let mut row = serde_json::Map::new();
     row.insert("name".into(), serde_json::json!(name));
     row.insert("tool".into(), serde_json::json!("omp"));
@@ -65,7 +65,7 @@ fn await_connect(listener: &TcpListener, timeout: Duration) -> bool {
 
 #[test]
 #[serial_test::serial]
-fn strip_managed_extension_removes_only_hcom_entry() {
+fn strip_managed_extension_removes_only_comms_entry() {
     with_isolated_omp_env(|_| {
         let current = get_omp_plugin_path().to_string_lossy().to_string();
 
@@ -93,32 +93,32 @@ fn strip_managed_extension_removes_only_hcom_entry() {
         assert_eq!(args, once);
 
         // Legacy/moved managed path (missing file) via lexical fallback:
-        // basename hcom.ts under an `extensions` dir, incl. the `=` form.
+        // basename comms.ts under an `extensions` dir, incl. the `=` form.
         let mut legacy = vec![
-            "--extension=/old/place/.omp/agent/extensions/hcom.ts".into(),
+            "--extension=/old/place/.omp/agent/extensions/comms.ts".into(),
             "--extension".into(),
-            "/old/place/extensions/hcom.ts".into(),
+            "/old/place/extensions/comms.ts".into(),
             "--extension=/home/u/other.ts".into(),
         ];
         strip_managed_extension_args(&mut legacy);
         assert_eq!(legacy, vec!["--extension=/home/u/other.ts".to_string()]);
 
-        // A user extension merely named hcom.ts but NOT under `extensions/` is
+        // A user extension merely named comms.ts but NOT under `extensions/` is
         // preserved (narrow matcher).
-        let mut keep = vec!["-e".into(), "/home/u/project/hcom.ts".into()];
+        let mut keep = vec!["-e".into(), "/home/u/project/comms.ts".into()];
         strip_managed_extension_args(&mut keep);
         assert_eq!(
             keep,
-            vec!["-e".to_string(), "/home/u/project/hcom.ts".to_string()]
+            vec!["-e".to_string(), "/home/u/project/comms.ts".to_string()]
         );
 
-        // An EXISTING non-hcom file at extensions/hcom.ts must survive: the
+        // An EXISTING non-comms file at extensions/comms.ts must survive: the
         // lexical fallback applies only to moved/missing files.
         let dir = tempfile::tempdir().unwrap();
         let ext_dir = dir.path().join("extensions");
         std::fs::create_dir_all(&ext_dir).unwrap();
-        let user_file = ext_dir.join("hcom.ts");
-        std::fs::write(&user_file, "export default () => {}; // not hcom").unwrap();
+        let user_file = ext_dir.join("comms.ts");
+        std::fs::write(&user_file, "export default () => {}; // not comms").unwrap();
         let user_arg = user_file.to_string_lossy().to_string();
         let mut existing = vec!["-e".into(), user_arg.clone()];
         strip_managed_extension_args(&mut existing);
@@ -129,7 +129,7 @@ fn strip_managed_extension_removes_only_hcom_entry() {
 #[test]
 fn plugin_bootstraps_via_hidden_message() {
     assert!(PLUGIN_SOURCE.contains("before_agent_start"));
-    assert!(PLUGIN_SOURCE.contains("customType: \"hcom-bootstrap\""));
+    assert!(PLUGIN_SOURCE.contains("customType: \"comms-bootstrap\""));
     assert!(PLUGIN_SOURCE.contains("display: false"));
     assert!(!PLUGIN_SOURCE.contains("text: `${bootstrapText}\\n\\n${event.text}`"));
 }
@@ -190,7 +190,7 @@ fn plugin_keeps_ack_gate_until_command_succeeds() {
         .find("async function ackPending")
         .expect("ackPending present");
     let ack = &PLUGIN_SOURCE[idx..];
-    let command = ack.find("await hcom([\"omp-read\"").expect("ack command");
+    let command = ack.find("await comms([\"omp-read\"").expect("ack command");
     let clear = ack.find("pendingAckId = null").expect("pending ack clear");
     assert!(
         command < clear,
@@ -231,11 +231,11 @@ fn start_handler_registering_plugin_notify_wakes_pty_delivery_loop() {
     let plugin_port = plugin_listener.local_addr().unwrap().port();
 
     let env = std::collections::HashMap::from([
-        ("HCOM_PROCESS_ID".to_string(), "pid-omp".to_string()),
-        ("HCOM_LAUNCHED".to_string(), "1".to_string()),
-        ("HCOM_TOOL".to_string(), "omp".to_string()),
+        ("COMMS_PROCESS_ID".to_string(), "pid-omp".to_string()),
+        ("COMMS_LAUNCHED".to_string(), "1".to_string()),
+        ("COMMS_TOOL".to_string(), "omp".to_string()),
     ]);
-    let ctx = HcomContext::from_env(&env, temp.path().to_path_buf());
+    let ctx = CommsContext::from_env(&env, temp.path().to_path_buf());
 
     let (code, output) = handle_start(
         &ctx,
@@ -375,11 +375,11 @@ fn start_handler_uses_central_binding_for_existing_session() {
     db.set_process_binding("pid-123", "", "temp").unwrap();
 
     let env = std::collections::HashMap::from([
-        ("HCOM_PROCESS_ID".to_string(), "pid-123".to_string()),
-        ("HCOM_LAUNCHED".to_string(), "1".to_string()),
-        ("HCOM_TOOL".to_string(), "omp".to_string()),
+        ("COMMS_PROCESS_ID".to_string(), "pid-123".to_string()),
+        ("COMMS_LAUNCHED".to_string(), "1".to_string()),
+        ("COMMS_TOOL".to_string(), "omp".to_string()),
     ]);
-    let ctx = HcomContext::from_env(&env, temp.path().to_path_buf());
+    let ctx = CommsContext::from_env(&env, temp.path().to_path_buf());
 
     let (code, output) = handle_start(
         &ctx,
@@ -481,11 +481,11 @@ fn start_rebinds_via_process_binding_after_soft_stop() {
     );
 
     let env = std::collections::HashMap::from([
-        ("HCOM_PROCESS_ID".to_string(), "pid-recover".to_string()),
-        ("HCOM_LAUNCHED".to_string(), "1".to_string()),
-        ("HCOM_TOOL".to_string(), "omp".to_string()),
+        ("COMMS_PROCESS_ID".to_string(), "pid-recover".to_string()),
+        ("COMMS_LAUNCHED".to_string(), "1".to_string()),
+        ("COMMS_TOOL".to_string(), "omp".to_string()),
     ]);
-    let ctx = HcomContext::from_env(&env, temp.path().to_path_buf());
+    let ctx = CommsContext::from_env(&env, temp.path().to_path_buf());
 
     let (code, output) = handle_start(
         &ctx,
@@ -530,12 +530,12 @@ fn start_recovers_binding_via_instance_name_when_process_binding_cleared() {
     db.rebind_session("sid-old", "miso").unwrap();
 
     let env = std::collections::HashMap::from([
-        ("HCOM_PROCESS_ID".to_string(), "pid-recover".to_string()),
-        ("HCOM_INSTANCE_NAME".to_string(), "miso".to_string()),
-        ("HCOM_LAUNCHED".to_string(), "1".to_string()),
-        ("HCOM_TOOL".to_string(), "omp".to_string()),
+        ("COMMS_PROCESS_ID".to_string(), "pid-recover".to_string()),
+        ("COMMS_INSTANCE_NAME".to_string(), "miso".to_string()),
+        ("COMMS_LAUNCHED".to_string(), "1".to_string()),
+        ("COMMS_TOOL".to_string(), "omp".to_string()),
     ]);
-    let ctx = HcomContext::from_env(&env, temp.path().to_path_buf());
+    let ctx = CommsContext::from_env(&env, temp.path().to_path_buf());
 
     let (code, output) = handle_start(
         &ctx,
@@ -601,10 +601,10 @@ fn recover_rejects_active_instance() {
 
 #[test]
 fn plugin_source_pins_soft_stop_polish_markers() {
-    assert!(PLUGIN_SOURCE.contains("Symbol.for(\"hcom.omp.identity\")"));
+    assert!(PLUGIN_SOURCE.contains("Symbol.for(\"comms.omp.identity\")"));
     assert!(PLUGIN_SOURCE.contains("stopReconcileTimer"));
     assert!(PLUGIN_SOURCE.contains("tearingDown"));
-    assert!(PLUGIN_SOURCE.contains("HCOM_TIMEOUT_MS"));
+    assert!(PLUGIN_SOURCE.contains("COMMS_TIMEOUT_MS"));
     assert!(PLUGIN_SOURCE.contains("1800"));
     let shutdown_idx = PLUGIN_SOURCE
         .find("pi.on(\"session_shutdown\"")
@@ -630,17 +630,17 @@ fn plugin_source_pins_soft_stop_polish_markers() {
 #[test]
 #[ignore = "requires live OMP nested task; run manually"]
 fn omp_nested_task_identity_survives_soft_stop() {
-    // Launch OMP via hcom, soft-stop parent turn, spawn nested task extension,
+    // Launch OMP via comms, soft-stop parent turn, spawn nested task extension,
     // verify child does not bind and parent recovers on next turn.
 }
 
 // ── Plugin install/remove safety ──────────────────────────────────
 
-/// Helper: run a closure with a temp HOME + HCOM_DIR (via isolated_test_env),
-/// Runs a test with isolated HCOM_DIR and HOME, Config reset,
+/// Helper: run a closure with a temp HOME + COMMS_DIR (via isolated_test_env),
+/// Runs a test with isolated COMMS_DIR and HOME, Config reset,
 /// and PI_CODING_AGENT_DIR explicitly unset so the default ~/.omp path is used.
 fn with_isolated_omp_env(f: impl FnOnce(&std::path::Path)) {
-    let (_dir, _hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+    let (_dir, _comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
     unsafe {
         std::env::remove_var("PI_CODING_AGENT_DIR");
     }
@@ -649,20 +649,20 @@ fn with_isolated_omp_env(f: impl FnOnce(&std::path::Path)) {
 #[test]
 #[serial_test::serial]
 fn plugin_dir_respects_pi_coding_agent_dir() {
-    let (_dir, _hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+    let (_dir, _comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
     let custom = home.join("custom-omp");
     unsafe {
         std::env::set_var("PI_CODING_AGENT_DIR", &custom);
     }
 
     let path = get_omp_plugin_path();
-    assert_eq!(path, custom.join("extensions").join("hcom.ts"));
+    assert_eq!(path, custom.join("extensions").join("comms.ts"));
 }
 
 #[test]
 #[serial_test::serial]
 fn per_run_injection_uses_runtime_extension_before_separator() {
-    let (_dir, hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+    let (_dir, comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
     let ctx = crate::hooks::runtime::LaunchCtx {
         tool: crate::tool::Tool::Omp,
         env: [("HOME".to_string(), home.to_string_lossy().into_owned())]
@@ -676,8 +676,8 @@ fn per_run_injection_uses_runtime_extension_before_separator() {
     assert_eq!(injection.args[0], "--foo");
     assert_eq!(injection.args[1], "-e");
     let path = std::path::Path::new(&injection.args[2]);
-    assert!(path.starts_with(hcom.join("integrations").join("omp")));
-    assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("hcom.ts"));
+    assert!(path.starts_with(comms.join("integrations").join("omp")));
+    assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("comms.ts"));
     assert_eq!(&injection.args[3..], &["--", "prompt"]);
 }
 
@@ -710,7 +710,7 @@ fn plugin_source_handles_omp_session_switch_and_shutdown_shape() {
     assert!(PLUGIN_SOURCE.contains("\"--soft\""));
     assert!(PLUGIN_SOURCE.contains("plugin.session_shutdown_skipped"));
     assert!(PLUGIN_SOURCE.contains("nested_session"));
-    assert!(PLUGIN_SOURCE.contains("HCOM_OMP_IDENTITY_OWNER"));
+    assert!(PLUGIN_SOURCE.contains("COMMS_OMP_IDENTITY_OWNER"));
     assert!(PLUGIN_SOURCE.contains("plugin.bind_skipped_nested"));
     assert!(PLUGIN_SOURCE.contains("ownsIdentity"));
     assert!(PLUGIN_SOURCE.contains("keepOwner: true"));
@@ -749,8 +749,8 @@ fn per_run_cleanup_uses_profile_and_preserves_other_effective_dirs() {
         .join("review")
         .join("agent")
         .join("extensions")
-        .join("hcom.ts");
-    let coding_agent_plugin = coding_agent_dir.join("extensions").join("hcom.ts");
+        .join("comms.ts");
+    let coding_agent_plugin = coding_agent_dir.join("extensions").join("comms.ts");
     std::fs::create_dir_all(profile_plugin.parent().unwrap()).unwrap();
     std::fs::create_dir_all(coding_agent_plugin.parent().unwrap()).unwrap();
     std::fs::create_dir_all(&cwd).unwrap();
@@ -779,7 +779,7 @@ fn per_run_cleanup_uses_profile_and_preserves_other_effective_dirs() {
 }
 
 #[test]
-fn remove_deletes_hcom_plugin() {
+fn remove_deletes_comms_plugin() {
     with_isolated_omp_env(|_| {
         let path = get_omp_plugin_path();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -792,25 +792,25 @@ fn remove_deletes_hcom_plugin() {
 }
 
 #[test]
-fn remove_preserves_non_hcom_file() {
+fn remove_preserves_non_comms_file() {
     with_isolated_omp_env(|_| {
         let path = get_omp_plugin_path();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "// user's custom plugin").unwrap();
 
         remove_omp_plugin().unwrap();
-        assert!(path.exists(), "non-hcom file must not be removed");
+        assert!(path.exists(), "non-comms file must not be removed");
     });
 }
 
 #[test]
 fn replayed_legacy_extension_arg_is_stripped_before_injection() {
     with_isolated_omp_env(|_| {
-        // Older hcom baked `-e ~/.omp/agent/extensions/hcom.ts` into stored
+        // Older comms baked `-e ~/.omp/agent/extensions/comms.ts` into stored
         // args; legacy cleanup deletes that file, so replaying it would fail.
         let mut args: Vec<String> = vec![
             "-e".into(),
-            "/old/home/.omp/agent/extensions/hcom.ts".into(),
+            "/old/home/.omp/agent/extensions/comms.ts".into(),
             "-e".into(),
             "/home/u/mine.ts".into(),
         ];
@@ -822,13 +822,13 @@ fn replayed_legacy_extension_arg_is_stripped_before_injection() {
 #[test]
 #[serial_test::serial]
 fn remove_and_cleanup_cover_project_local_legacy_install() {
-    let (_dir, _hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+    let (_dir, _comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
     let project = home.join("project");
     unsafe {
         std::env::remove_var("PI_CODING_AGENT_DIR");
-        std::env::set_var("HCOM_DIR", project.join(".hcom"));
+        std::env::set_var("COMMS_DIR", project.join(".comms"));
     }
-    let legacy = project.join(".omp").join("extensions").join("hcom.ts");
+    let legacy = project.join(".omp").join("extensions").join("comms.ts");
     std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
     std::fs::write(&legacy, PLUGIN_SOURCE).unwrap();
 
@@ -846,13 +846,13 @@ fn strip_leaves_prompt_text_after_separator() {
     with_isolated_omp_env(|_| {
         let mut args: Vec<String> = vec![
             "-e".into(),
-            "/old/extensions/hcom.ts".into(),
+            "/old/extensions/comms.ts".into(),
             "--".into(),
             "-e".into(),
-            "/old/extensions/hcom.ts".into(),
+            "/old/extensions/comms.ts".into(),
         ];
         strip_managed_extension_args(&mut args);
-        assert_eq!(args, vec!["--", "-e", "/old/extensions/hcom.ts"]);
+        assert_eq!(args, vec!["--", "-e", "/old/extensions/comms.ts"]);
     });
 }
 

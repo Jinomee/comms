@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::paths;
-use crate::shared::constants::HCOM_IDENTITY_VARS;
+use crate::shared::constants::COMMS_IDENTITY_VARS;
 use crate::shared::platform;
 use crate::shared::terminal_presets::{ArgvTemplate, TERMINAL_ENV_MAP};
 use crate::shared::tool_detection::tool_marker_vars;
@@ -666,8 +666,8 @@ fn proot_termux_launch_error() -> &'static str {
      the generated command uses PRoot paths and Linux/glibc binaries that cannot run\n\
      in host Termux.\n\n\
      Use one of:\n\
-       hcom <tool> --headless\n\
-       hcom <tool> --terminal tmux"
+       comms <tool> --headless\n\
+       comms <tool> --terminal tmux"
 }
 
 fn validate_termux_dispatch_status(status: std::process::ExitStatus) -> Result<()> {
@@ -964,14 +964,14 @@ fn shell_quote(s: &str) -> String {
 }
 
 /// Resolve a human-readable tool name for the launch script title/banner
-/// from the internal tool id (e.g. "cursor", "kilo"). Falls back to "hcom"
-/// when there's no tool id (plain `hcom` TUI launches) or it doesn't
+/// from the internal tool id (e.g. "cursor", "kilo"). Falls back to "comms"
+/// when there's no tool id (plain `comms` TUI launches) or it doesn't
 /// resolve to a known tool.
 fn launch_display_name(tool_id: Option<&str>) -> &'static str {
     tool_id
         .and_then(|id| id.parse::<crate::tool::Tool>().ok())
         .map(|t| t.spec().label)
-        .unwrap_or("hcom")
+        .unwrap_or("comms")
 }
 
 /// Create a bash script for terminal launch.
@@ -991,12 +991,16 @@ pub fn create_bash_script(
     let mut f = fs::File::create(script_file).context("Failed to create script file")?;
 
     writeln!(f, "#!/bin/bash")?;
-    writeln!(f, "printf \"\\033]0;hcom: starting {}...\\007\"", tool_name)?;
+    writeln!(
+        f,
+        "printf \"\\033]0;comms: starting {}...\\007\"",
+        tool_name
+    )?;
     writeln!(f, "echo \"Starting {}...\"", tool_name)?;
 
     // Unset tool markers and identity vars to prevent inheritance
     writeln!(f, "unset {}", tool_marker_vars().join(" "))?;
-    writeln!(f, "unset {}", HCOM_IDENTITY_VARS.join(" "))?;
+    writeln!(f, "unset {}", COMMS_IDENTITY_VARS.join(" "))?;
 
     // Discover paths for minimal environments (kitty splits, etc.)
     let mut paths_to_add: Vec<String> = Vec::new();
@@ -1012,8 +1016,8 @@ pub fn create_bash_script(
         }
     }
 
-    // Always add hcom's own directory
-    add_path(&mut paths_to_add, which_bin("hcom"));
+    // Always add comms's own directory
+    add_path(&mut paths_to_add, which_bin("comms"));
     // Add python3 to PATH for agents that need it
     add_path(&mut paths_to_add, which_bin("python3"));
     // Detect tool from command and add its path
@@ -1064,29 +1068,29 @@ pub fn create_bash_script(
     }
 
     if background {
-        // Startup timeline marker for the background log; hcom.log carries the
+        // Startup timeline marker for the background log; comms.log carries the
         // rest (startup.* events). macOS date has no sub-second format.
         writeln!(
             f,
-            "echo \"[hcom runner] starting PTY wrapper $(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+            "echo \"[comms runner] starting PTY wrapper $(date -u +%Y-%m-%dT%H:%M:%SZ)\""
         )?;
     }
     writeln!(f, "{}", final_command)?;
 
     if opens_new_window {
-        // Clear hcom state from the interactive shell left open after the tool
-        // exits. Derive from HCOM_IDENTITY_VARS (so new identity/batch vars are
+        // Clear comms state from the interactive shell left open after the tool
+        // exits. Derive from COMMS_IDENTITY_VARS (so new identity/batch vars are
         // covered automatically) plus the non-identity per-launch vars exported
         // above that aren't in that list.
-        let mut leftover_vars: Vec<&str> = HCOM_IDENTITY_VARS.to_vec();
-        leftover_vars.push("HCOM_TAG");
+        let mut leftover_vars: Vec<&str> = COMMS_IDENTITY_VARS.to_vec();
+        leftover_vars.push("COMMS_TAG");
         writeln!(f, "unset {}", leftover_vars.join(" "))?;
         writeln!(f, "rm -f {}", shell_quote(&script_file.to_string_lossy()))?;
         writeln!(f, "exec bash -l")?;
     } else if !background {
-        writeln!(f, "hcom_status=$?")?;
+        writeln!(f, "comms_status=$?")?;
         writeln!(f, "rm -f {}", shell_quote(&script_file.to_string_lossy()))?;
-        writeln!(f, "exit $hcom_status")?;
+        writeln!(f, "exit $comms_status")?;
     }
 
     // Make executable
@@ -1095,7 +1099,7 @@ pub fn create_bash_script(
     Ok(())
 }
 
-/// Flags for every PowerShell process hcom starts to run a generated script.
+/// Flags for every PowerShell process comms starts to run a generated script.
 ///
 /// `-NoProfile` is the Windows counterpart of running the Unix launcher with
 /// plain `bash script.sh` — a non-interactive, non-login shell that reads no
@@ -1156,7 +1160,7 @@ pub fn create_powershell_script(
 
     writeln!(
         f,
-        "$Host.UI.RawUI.WindowTitle = \"hcom: starting {}...\"",
+        "$Host.UI.RawUI.WindowTitle = \"comms: starting {}...\"",
         tool_name
     )?;
     writeln!(f, "Write-Host \"Starting {}...\"", tool_name)?;
@@ -1165,7 +1169,7 @@ pub fn create_powershell_script(
     // them (PowerShell ignores Env: entries that don't exist).
     let scrub: Vec<String> = tool_marker_vars()
         .iter()
-        .chain(HCOM_IDENTITY_VARS.iter())
+        .chain(COMMS_IDENTITY_VARS.iter())
         .map(|v| format!("Env:{v}"))
         .collect();
     writeln!(
@@ -1188,7 +1192,7 @@ pub fn create_powershell_script(
         }
     }
 
-    add_path(&mut paths_to_add, which_bin("hcom"));
+    add_path(&mut paths_to_add, which_bin("comms"));
     add_path(&mut paths_to_add, which_bin("python3"));
     let cmd_stripped = command_str.trim_start();
     let tool_cmd = cmd_stripped.split_whitespace().next().unwrap_or("");
@@ -1235,10 +1239,10 @@ pub fn create_powershell_script(
     writeln!(f, "{final_command}")?;
 
     if opens_new_window {
-        // Clear hcom state from the interactive shell left open after the tool
+        // Clear comms state from the interactive shell left open after the tool
         // exits (window persists via `powershell -NoExit`).
-        let mut leftover_vars: Vec<&str> = HCOM_IDENTITY_VARS.to_vec();
-        leftover_vars.push("HCOM_TAG");
+        let mut leftover_vars: Vec<&str> = COMMS_IDENTITY_VARS.to_vec();
+        leftover_vars.push("COMMS_TAG");
         let leftover: Vec<String> = leftover_vars.iter().map(|v| format!("Env:{v}")).collect();
         writeln!(
             f,
@@ -1251,13 +1255,13 @@ pub fn create_powershell_script(
             ps_quote(&script_file.to_string_lossy())
         )?;
     } else if !background {
-        writeln!(f, "$hcom_status = $LASTEXITCODE")?;
+        writeln!(f, "$comms_status = $LASTEXITCODE")?;
         writeln!(
             f,
             "Remove-Item -Force -ErrorAction SilentlyContinue {}",
             ps_quote(&script_file.to_string_lossy())
         )?;
-        writeln!(f, "exit $hcom_status")?;
+        writeln!(f, "exit $comms_status")?;
     }
 
     Ok(())
@@ -1265,7 +1269,7 @@ pub fn create_powershell_script(
 
 /// Build clean env for terminal launcher subprocesses.
 ///
-/// Strips AI tool markers, hcom identity vars, and terminal context vars.
+/// Strips AI tool markers, comms identity vars, and terminal context vars.
 fn get_launcher_env() -> HashMap<String, String> {
     get_launcher_env_from(std::env::vars())
 }
@@ -1278,13 +1282,13 @@ where
     for v in tool_marker_vars() {
         strip.insert(v);
     }
-    for v in HCOM_IDENTITY_VARS {
+    for v in COMMS_IDENTITY_VARS {
         strip.insert(v);
     }
     for v in TERMINAL_CONTEXT_VARS {
         strip.insert(v);
     }
-    strip.insert("HCOM_LAUNCHED_PRESET");
+    strip.insert("COMMS_LAUNCHED_PRESET");
 
     vars.into_iter()
         .filter(|(k, _)| !strip.contains(k.as_str()))
@@ -1469,7 +1473,7 @@ fn resolve_warp_cwd(cwd: Option<&str>, home: &Path) -> String {
         .unwrap_or_else(|_| home.to_string_lossy().to_string())
 }
 
-/// Delete hcom-*.yaml files older than `older_than` from a channel dir.
+/// Delete comms-*.yaml files older than `older_than` from a channel dir.
 ///
 /// Sweep-on-write avoids races with Warp cold start (where `open warp://...`
 /// returns before Warp boots and reads the URL). Older configs should no
@@ -1486,7 +1490,7 @@ fn sweep_stale_warp_configs(dir: &Path, older_than: std::time::Duration) {
         let Some(name_str) = name.to_str() else {
             continue;
         };
-        if !name_str.starts_with("hcom-") || !name_str.ends_with(".yaml") {
+        if !name_str.starts_with("comms-") || !name_str.ends_with(".yaml") {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -1517,7 +1521,7 @@ fn write_warp_launch_config_at(
     fs::create_dir_all(&dir).context("Failed to create Warp launch_configurations dir")?;
     sweep_stale_warp_configs(&dir, WARP_STALE_AFTER);
 
-    let config_name = format!("hcom-{}", process_id);
+    let config_name = format!("comms-{}", process_id);
     let resolved_cwd = resolve_warp_cwd(cwd, home);
     let yaml = build_warp_launch_yaml(&config_name, &resolved_cwd, script);
     let yaml_path = dir.join(format!("{}.yaml", config_name));
@@ -1695,7 +1699,7 @@ fn maybe_append_ai_tool_launch_hint(
     }
 
     let hint = if argv.first().map(|s| s.as_str()) == Some("tmux") {
-        "Hint: Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s hcom-external`), then retry."
+        "Hint: Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s comms-external`), then retry."
     } else {
         "Hint: This launch was attempted from inside a managed AI tool session, where terminal or session creation may be restricted. Rerun it with approval/escalation."
     };
@@ -1802,7 +1806,7 @@ fn spawn_terminal_process(argv: &[String], inside_ai_tool: bool) -> Result<(bool
 
     if inside_ai_tool {
         // Fully detach: don't let AI tool's PTY capture our output
-        let launch_dir = paths::hcom_path(&[paths::LAUNCH_DIR]);
+        let launch_dir = paths::comms_path(&[paths::LAUNCH_DIR]);
         fs::create_dir_all(&launch_dir).ok();
 
         let child = Command::new(&argv[0])
@@ -1860,11 +1864,11 @@ fn write_terminal_id(env: &HashMap<String, String>, captured_id: &str) {
     if captured_id.is_empty() {
         return;
     }
-    let process_id = match env.get("HCOM_PROCESS_ID") {
+    let process_id = match env.get("COMMS_PROCESS_ID") {
         Some(pid) if !pid.is_empty() => pid,
         _ => return,
     };
-    let ids_dir = paths::hcom_path(&[".tmp", "terminal_ids"]);
+    let ids_dir = paths::comms_path(&[".tmp", "terminal_ids"]);
     fs::create_dir_all(&ids_dir).ok();
     fs::write(ids_dir.join(process_id), captured_id).ok();
 }
@@ -1891,7 +1895,7 @@ fn normalize_captured_terminal_id(captured_id: &str) -> String {
 
 /// Parse a herdr CLI JSON response and extract the launched pane's id.
 ///
-/// Handles the envelopes hcom launches through:
+/// Handles the envelopes comms launches through:
 /// - `cli:tab:create` (the default herdr preset) → `result.root_pane.pane_id`
 /// - `cli:pane:split` → `result.root_pane.pane_id`
 /// - `cli:agent:start` (legacy) → `result.agent.pane_id`
@@ -1917,7 +1921,7 @@ fn parse_herdr_pane_id(captured: &str) -> Option<String> {
 }
 
 /// Launch a herdr pane in two steps: `tab create` (whose stdout JSON carries
-/// the new pane id) then `pane run <pane_id> "bash <script>"` to start hcom's
+/// the new pane id) then `pane run <pane_id> "bash <script>"` to start comms's
 /// normal runner inside it. Returns `(success, captured_stdout)` where the
 /// captured stdout is the `tab create` envelope — `write_terminal_id` re-parses
 /// the pane id out of it exactly like every other terminal's captured id.
@@ -1939,10 +1943,10 @@ fn launch_herdr_two_step(
         return Ok((false, captured));
     };
 
-    // Step 2: run hcom's generated runner script in the new pane. `pane run`
+    // Step 2: run comms's generated runner script in the new pane. `pane run`
     // sends the text and presses Enter, so `bash <script>` is the whole line.
     // The script path is shell-quoted: herdr types it into the pane's shell,
-    // and hcom's launch dir lives under $HOME, which can contain spaces.
+    // and comms's launch dir lives under $HOME, which can contain spaces.
     let run_argv = vec![
         "herdr".to_string(),
         "pane".to_string(),
@@ -2040,7 +2044,7 @@ pub fn launch_terminal(
     }
 
     if terminal_mode != "default" && terminal_mode != "print" {
-        final_env.insert("HCOM_LAUNCHED_PRESET".to_string(), terminal_mode.clone());
+        final_env.insert("COMMS_LAUNCHED_PRESET".to_string(), terminal_mode.clone());
     }
 
     // Determine script extension after terminal mode resolution so explicit
@@ -2052,10 +2056,10 @@ pub fn launch_terminal(
     } else {
         ".sh"
     };
-    let script_file = paths::hcom_path(&[
+    let script_file = paths::comms_path(&[
         paths::LAUNCH_DIR,
         &format!(
-            "hcom_{}_{}{}",
+            "comms_{}_{}{}",
             std::process::id(),
             rand::random::<u16>() % 9000 + 1000,
             extension
@@ -2092,9 +2096,9 @@ pub fn launch_terminal(
 
     // Background mode
     if background {
-        let logs_dir = paths::hcom_path(&[paths::LOGS_DIR]);
+        let logs_dir = paths::comms_path(&[paths::LOGS_DIR]);
         fs::create_dir_all(&logs_dir).ok();
-        let log_name = env.get("HCOM_BACKGROUND").cloned().unwrap_or_default();
+        let log_name = env.get("COMMS_BACKGROUND").cloned().unwrap_or_default();
         let log_file = logs_dir.join(&log_name);
 
         let log_handle = fs::File::create(&log_file).context("Failed to create log file")?;
@@ -2161,7 +2165,7 @@ pub fn launch_terminal(
         None
     } else if crate::config::get_merged_preset(&terminal_mode).is_some() {
         // Built-in presets not available on this platform are rejected here too
-        // (not just at config-validation time) so HCOM_TERMINAL can't bypass the
+        // (not just at config-validation time) so COMMS_TERMINAL can't bypass the
         // check. User-defined TOML presets declare no platform and are exempt.
         if crate::config::is_known_terminal_preset_pub(&terminal_mode)
             && !crate::config::is_user_defined_preset(&terminal_mode)
@@ -2209,13 +2213,13 @@ pub fn launch_terminal(
         }
         Some(argv)
     } else {
-        // Custom command template string (HCOM_TERMINAL / config custom command).
+        // Custom command template string (COMMS_TERMINAL / config custom command).
         // Tokenize once via the double-quote-aware splitter; the array-form TOML
         // preset path never reaches here (those are known presets).
         //
         // `shell_split` itself treats an unquoted `\` as a literal character on
         // Windows (instead of a POSIX escape), so Windows paths like
-        // `C:\Tools\term.exe` supplied via HCOM_TERMINAL survive intact without
+        // `C:\Tools\term.exe` supplied via COMMS_TERMINAL survive intact without
         // any pre-processing here.
         let argv = match crate::tools::args_common::shell_split(&terminal_mode, cfg!(windows)) {
             Ok(argv) if !argv.is_empty() => argv,
@@ -2228,14 +2232,17 @@ pub fn launch_terminal(
     let script_str = script_file.to_string_lossy().to_string();
 
     if terminal_mode == "warp" {
-        let process_id = env.get("HCOM_PROCESS_ID").map(|s| s.as_str()).unwrap_or("");
+        let process_id = env
+            .get("COMMS_PROCESS_ID")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         if process_id.is_empty() {
-            bail!("warp preset requires HCOM_PROCESS_ID to name the launch config");
+            bail!("warp preset requires COMMS_PROCESS_ID to name the launch config");
         }
         write_warp_launch_config(process_id, cwd, &script_str)?;
         let final_argv = vec![
             "open".to_string(),
-            format!("warp://launch/hcom-{}", process_id),
+            format!("warp://launch/comms-{}", process_id),
         ];
         let (success, captured_id) = spawn_terminal_process(&final_argv, inside_ai_tool)?;
         write_terminal_id(env, &captured_id);
@@ -2253,9 +2260,12 @@ pub fn launch_terminal(
         // {instance_name} falls back to process_id so presets that label panes
         // (e.g. herdr) never produce an empty `[tool]-` suffix when invoked
         // outside the normal launch flow.
-        let process_id = env.get("HCOM_PROCESS_ID").map(|s| s.as_str()).unwrap_or("");
+        let process_id = env
+            .get("COMMS_PROCESS_ID")
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let instance_name = env
-            .get("HCOM_INSTANCE_NAME")
+            .get("COMMS_INSTANCE_NAME")
             .map(|s| s.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or(process_id);
@@ -2265,13 +2275,13 @@ pub fn launch_terminal(
             cwd: cwd.unwrap_or(""),
             instance_name,
             tool: env
-                .get("HCOM_TOOL")
+                .get("COMMS_TOOL")
                 .map(|s| s.as_str())
                 .filter(|s| !s.is_empty())
-                .unwrap_or("hcom"),
+                .unwrap_or("comms"),
             // launcher::launch pre-formats the title; here we only read it.
             pane_title: env
-                .get("HCOM_PANE_TITLE")
+                .get("COMMS_PANE_TITLE")
                 .map(|s| s.as_str())
                 .filter(|s| !s.is_empty()),
         };
@@ -2332,13 +2342,16 @@ pub fn launch_terminal(
                 &get_macos_terminal_argv(),
                 TerminalCommandContext {
                     script: &script_str,
-                    process_id: env.get("HCOM_PROCESS_ID").map(|s| s.as_str()).unwrap_or(""),
-                    cwd: cwd.unwrap_or(""),
-                    instance_name: env
-                        .get("HCOM_INSTANCE_NAME")
+                    process_id: env
+                        .get("COMMS_PROCESS_ID")
                         .map(|s| s.as_str())
                         .unwrap_or(""),
-                    tool: env.get("HCOM_TOOL").map(|s| s.as_str()).unwrap_or(""),
+                    cwd: cwd.unwrap_or(""),
+                    instance_name: env
+                        .get("COMMS_INSTANCE_NAME")
+                        .map(|s| s.as_str())
+                        .unwrap_or(""),
+                    tool: env.get("COMMS_TOOL").map(|s| s.as_str()).unwrap_or(""),
                     pane_title: None,
                 },
             )?,
@@ -2376,10 +2389,10 @@ fn build_full_env(config_env: &HashMap<String, String>) -> HashMap<String, Strin
         if tool_marker_vars().contains(&k.as_str()) {
             continue;
         }
-        if k == "HCOM_TERMINAL" {
+        if k == "COMMS_TERMINAL" {
             continue;
         }
-        // Config env takes precedence for HCOM_ vars
+        // Config env takes precedence for COMMS_ vars
         full.entry(k).or_insert(v);
     }
     full
@@ -2877,7 +2890,7 @@ mod tests {
                 "wise-kangaroo".to_string(),
             ),
             ("ZELLIJ_PANE_ID".to_string(), "18".to_string()),
-            ("HCOM_LAUNCHED_PRESET".to_string(), "zellij".to_string()),
+            ("COMMS_LAUNCHED_PRESET".to_string(), "zellij".to_string()),
             ("PATH".to_string(), "/bin".to_string()),
         ]);
 
@@ -2886,7 +2899,7 @@ mod tests {
             Some("wise-kangaroo")
         );
         assert!(!env.contains_key("ZELLIJ_PANE_ID"));
-        assert!(!env.contains_key("HCOM_LAUNCHED_PRESET"));
+        assert!(!env.contains_key("COMMS_LAUNCHED_PRESET"));
         assert_eq!(env.get("PATH").map(String::as_str), Some("/bin"));
     }
 
@@ -2954,8 +2967,8 @@ mod tests {
 
     #[test]
     fn test_build_warp_launch_yaml_shape() {
-        let yaml = build_warp_launch_yaml("hcom-pid", "/some/dir", "/tmp/script.sh");
-        assert!(yaml.contains("name: \"hcom-pid\""));
+        let yaml = build_warp_launch_yaml("comms-pid", "/some/dir", "/tmp/script.sh");
+        assert!(yaml.contains("name: \"comms-pid\""));
         assert!(yaml.contains("cwd: \"/some/dir\""));
         assert!(yaml.contains("exec: \"bash /tmp/script.sh\""));
     }
@@ -2978,9 +2991,9 @@ mod tests {
             "/tmp/script.sh",
         )
         .unwrap();
-        assert!(written.ends_with(".warp/launch_configurations/hcom-test-pid.yaml"));
+        assert!(written.ends_with(".warp/launch_configurations/comms-test-pid.yaml"));
         let content = std::fs::read_to_string(&written).unwrap();
-        assert!(content.contains("name: \"hcom-test-pid\""));
+        assert!(content.contains("name: \"comms-test-pid\""));
         assert!(content.contains("exec: \"bash /tmp/script.sh\""));
         assert!(content.contains("cwd: \"/some/dir\""));
     }
@@ -3013,7 +3026,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let script = tmp.path().join("launch.ps1");
         let mut env = HashMap::new();
-        env.insert("HCOM_TOOL".to_string(), "claude".to_string());
+        env.insert("COMMS_TOOL".to_string(), "claude".to_string());
         create_powershell_script(
             &script,
             &env,
@@ -3030,17 +3043,17 @@ mod tests {
                 .starts_with(&[0xEF, 0xBB, 0xBF])
         );
         let content = std::fs::read_to_string(&script).unwrap();
-        assert!(content.contains("$Host.UI.RawUI.WindowTitle = \"hcom: starting Claude...\""));
+        assert!(content.contains("$Host.UI.RawUI.WindowTitle = \"comms: starting Claude...\""));
         assert!(content.contains("Write-Host \"Starting Claude...\""));
         assert!(content.contains("Remove-Item Env:"));
-        assert!(content.contains("$env:HCOM_TOOL = 'claude'"));
+        assert!(content.contains("$env:COMMS_TOOL = 'claude'"));
         assert!(content.contains("Set-Location '/work/dir'"));
         // The command args survive whether or not the tool resolved to a full
         // path (bare `claude --foo` or call-operator `& '<path>' --foo`).
         assert!(content.contains("--foo"));
         // Window mode self-deletes but does not `exit` (window persists via -NoExit).
         assert!(content.contains("Remove-Item -Force -ErrorAction SilentlyContinue"));
-        assert!(!content.contains("exit $hcom_status"));
+        assert!(!content.contains("exit $comms_status"));
     }
 
     #[test]
@@ -3054,18 +3067,18 @@ mod tests {
         )
         .unwrap();
         let content = std::fs::read_to_string(&script).unwrap();
-        assert!(content.contains("$hcom_status = $LASTEXITCODE"));
-        assert!(content.contains("exit $hcom_status"));
+        assert!(content.contains("$comms_status = $LASTEXITCODE"));
+        assert!(content.contains("exit $comms_status"));
         assert!(!content.contains("Set-Location"));
     }
 
     #[test]
     fn test_build_env_string_powershell_format() {
         let mut env = HashMap::new();
-        env.insert("HCOM_A".to_string(), "x".to_string());
-        env.insert("HCOM_B".to_string(), "y'z".to_string());
+        env.insert("COMMS_A".to_string(), "x".to_string());
+        env.insert("COMMS_B".to_string(), "y'z".to_string());
         let out = build_env_string(&env, "powershell");
-        assert_eq!(out, "$env:HCOM_A = 'x'\n$env:HCOM_B = 'y''z'");
+        assert_eq!(out, "$env:COMMS_A = 'x'\n$env:COMMS_B = 'y''z'");
     }
 
     #[test]
@@ -3118,20 +3131,20 @@ mod tests {
     }
 
     #[test]
-    fn test_sweep_stale_warp_configs_only_removes_hcom_prefixed_yaml() {
+    fn test_sweep_stale_warp_configs_only_removes_comms_prefixed_yaml() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        let target = dir.join("hcom-old.yaml");
+        let target = dir.join("comms-old.yaml");
         let other = dir.join("user-config.yaml");
-        let unrelated = dir.join("hcom-old.txt");
+        let unrelated = dir.join("comms-old.txt");
         std::fs::write(&target, "x").unwrap();
         std::fs::write(&other, "x").unwrap();
         std::fs::write(&unrelated, "x").unwrap();
 
         sweep_stale_warp_configs(dir, std::time::Duration::from_secs(0));
 
-        assert!(!target.exists(), "hcom-*.yaml should be swept");
-        assert!(other.exists(), "non-hcom-prefixed yaml should remain");
+        assert!(!target.exists(), "comms-*.yaml should be swept");
+        assert!(other.exists(), "non-comms-prefixed yaml should remain");
         assert!(unrelated.exists(), "non-yaml extension should remain");
     }
 
@@ -3139,7 +3152,7 @@ mod tests {
     fn test_sweep_stale_warp_configs_keeps_fresh_files() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        let fresh = dir.join("hcom-new.yaml");
+        let fresh = dir.join("comms-new.yaml");
         std::fs::write(&fresh, "x").unwrap();
 
         sweep_stale_warp_configs(dir, std::time::Duration::from_secs(3600));
@@ -3153,7 +3166,7 @@ mod tests {
         assert_eq!(preset.app_name, Some("Warp"));
         assert_eq!(preset.binary, None);
         let open = preset.open.select(false).unwrap();
-        assert!(open.contains(&"warp://launch/hcom-{process_id}"));
+        assert!(open.contains(&"warp://launch/comms-{process_id}"));
         assert_eq!(preset.platforms, &["Darwin"]);
     }
 
@@ -3397,10 +3410,15 @@ mod tests {
 
     #[test]
     fn test_substitute_open_argv_process_id_element() {
-        // `HCOM_PROCESS_ID={process_id}` is one element; the placeholder is
+        // `COMMS_PROCESS_ID={process_id}` is one element; the placeholder is
         // replaced inside it without needing quoting.
         let out = substitute_open_argv(
-            &argv(&["kitty", "--env", "HCOM_PROCESS_ID={process_id}", "{script}"]),
+            &argv(&[
+                "kitty",
+                "--env",
+                "COMMS_PROCESS_ID={process_id}",
+                "{script}",
+            ]),
             TerminalCommandContext {
                 script: "/tmp/test.sh",
                 process_id: "abc-123",
@@ -3410,7 +3428,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             out,
-            vec!["kitty", "--env", "HCOM_PROCESS_ID=abc-123", "/tmp/test.sh"]
+            vec!["kitty", "--env", "COMMS_PROCESS_ID=abc-123", "/tmp/test.sh"]
         );
     }
 
@@ -3487,7 +3505,7 @@ mod tests {
             true,
         );
         assert!(message.contains("tmux kill-server"));
-        assert!(message.contains("tmux new-session -d -s hcom-external"));
+        assert!(message.contains("tmux new-session -d -s comms-external"));
     }
 
     #[test]
@@ -3565,7 +3583,7 @@ mod tests {
 
     #[test]
     fn test_normalize_herdr_agent_start_json() {
-        let json = r#"{"id":"cli:agent:start","result":{"agent":{"agent_status":"unknown","cwd":"/tmp","focused":false,"name":"hcom-abc123","pane_id":"w123abc-3","revision":0,"tab_id":"w123abc:2","terminal_id":"term_abc","workspace_id":"w123abc"},"argv":["bash","/tmp/script.sh"],"type":"agent_started"}}"#;
+        let json = r#"{"id":"cli:agent:start","result":{"agent":{"agent_status":"unknown","cwd":"/tmp","focused":false,"name":"comms-abc123","pane_id":"w123abc-3","revision":0,"tab_id":"w123abc:2","terminal_id":"term_abc","workspace_id":"w123abc"},"argv":["bash","/tmp/script.sh"],"type":"agent_started"}}"#;
         assert_eq!(normalize_captured_terminal_id(json), "w123abc-3");
     }
 
@@ -3991,14 +4009,14 @@ mod tests {
     #[test]
     fn windows_cmd_fallback_leaves_spaced_script_unquoted() {
         let tmpl = windows_default_terminal_template(false);
-        let script = r"C:\Users\a b\hcom\s.ps1";
+        let script = r"C:\Users\a b\comms\s.ps1";
         let out: Vec<String> = tmpl.iter().map(|a| a.replace("{script}", script)).collect();
         assert_eq!(out.last().unwrap(), script);
         assert!(!out.last().unwrap().contains('"'));
         assert_eq!(out[3], "");
     }
 
-    // Finding 19: `hcom status`'s default-terminal display name must track the
+    // Finding 19: `comms status`'s default-terminal display name must track the
     // same has_wt branch as the launch planner, instead of falling through to
     // "unknown" on Windows.
     #[test]

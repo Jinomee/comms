@@ -28,18 +28,18 @@ pub(crate) fn cursor_project_slug(workspace: &Path) -> String {
         .join("-")
 }
 
-/// Print/headless flags that would break hcom's PTY delivery model.
+/// Print/headless flags that would break comms's PTY delivery model.
 ///
-/// hcom always runs cursor-agent inside a PTY (interactive, or HeadlessPty for
+/// comms always runs cursor-agent inside a PTY (interactive, or HeadlessPty for
 /// background) — never `--print`. The `beforeSubmitPrompt`/`stop` hooks that
 /// carry message delivery do **not** fire in `--print` mode, so a stray
-/// `-p`/`--print` leaking in from `HCOM_CURSOR_ARGS` or a resumed instance's
+/// `-p`/`--print` leaking in from `COMMS_CURSOR_ARGS` or a resumed instance's
 /// baked `launch_args` would silently break delivery unless rejected.
 /// `--stream-partial-output` only works with `--print` + stream-json, so reject
 /// that companion flag as well.
 const CURSOR_PRINT_FLAGS: &[&str] = &["-p", "--print", "--stream-partial-output"];
 
-/// Reject print/headless flags that would break hcom's PTY delivery model.
+/// Reject print/headless flags that would break comms's PTY delivery model.
 pub(crate) fn validate_cursor_args(tokens: &[String]) -> Vec<String> {
     let found: Vec<&str> = CURSOR_PRINT_FLAGS
         .iter()
@@ -54,7 +54,7 @@ pub(crate) fn validate_cursor_args(tokens: &[String]) -> Vec<String> {
         return Vec::new();
     }
     vec![format!(
-        "Cursor print mode is not supported by `hcom cursor-agent`: {} would disable the PTY hooks used for message delivery. Remove the print flag and launch the interactive or `--headless` PTY session instead.",
+        "Cursor print mode is not supported by `comms cursor-agent`: {} would disable the PTY hooks used for message delivery. Remove the print flag and launch the interactive or `--headless` PTY session instead.",
         found.join(", ")
     )]
 }
@@ -108,7 +108,7 @@ fn validate_existing_cursor_trust_marker(marker: &Path, workspace: &Path) -> any
 
 /// Pre-seed Cursor's workspace trust marker for PTY launches.
 ///
-/// Cursor's `--trust` flag only works in print mode. hcom keeps Cursor
+/// Cursor's `--trust` flag only works in print mode. comms keeps Cursor
 /// interactive inside a PTY, so the marker must exist before process startup.
 pub(crate) fn ensure_cursor_workspace_trusted(workspace: &Path) -> anyhow::Result<()> {
     let normalized = workspace
@@ -122,7 +122,7 @@ pub(crate) fn ensure_cursor_workspace_trusted(workspace: &Path) -> anyhow::Resul
         std::fs::create_dir_all(parent)?;
     }
     eprintln!(
-        "[hcom] Auto-approving Cursor Agent folder trust prompt for {} (marker: {})",
+        "[comms] Auto-approving Cursor Agent folder trust prompt for {} (marker: {})",
         normalized.display(),
         marker.display()
     );
@@ -130,7 +130,7 @@ pub(crate) fn ensure_cursor_workspace_trusted(workspace: &Path) -> anyhow::Resul
     let content = serde_json::to_string_pretty(&serde_json::json!({
         "trustedAt": trusted_at,
         "workspacePath": normalized.to_string_lossy(),
-        "trustMethod": "hcom-launch",
+        "trustMethod": "comms-launch",
     }))?;
     crate::paths::atomic_write_io(&marker, &content)?;
     Ok(())

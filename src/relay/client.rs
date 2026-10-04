@@ -14,8 +14,8 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::HcomConfig;
-use crate::db::HcomDb;
+use crate::config::CommsConfig;
+use crate::db::CommsDb;
 use crate::log;
 use serde_json::json;
 
@@ -126,7 +126,7 @@ impl MqttRelay {
     /// polled in a loop (its iterator drives the network I/O). The command_sender
     /// lets external code trigger pushes or shutdown.
     pub fn connect(
-        config: &HcomConfig,
+        config: &CommsConfig,
     ) -> Result<(Self, Connection, mpsc::Sender<RelayCommand>), String> {
         if !is_relay_enabled(config) {
             return Err("relay not configured or disabled".into());
@@ -139,7 +139,7 @@ impl MqttRelay {
         let relay_id = config.relay_id.clone();
         let device_uuid =
             read_device_uuid().ok_or_else(|| "failed to create device_id file".to_string())?;
-        let client_id = format!("hcom-{}", super::device_id_prefix(&device_uuid));
+        let client_id = format!("comms-{}", super::device_id_prefix(&device_uuid));
 
         let mut mqttoptions = MqttOptions::new(&client_id, &host, port);
         mqttoptions.set_keep_alive(Duration::from_secs(30));
@@ -153,7 +153,7 @@ impl MqttRelay {
 
         // Auth
         if !config.relay_token.is_empty() {
-            mqttoptions.set_credentials("hcom", &config.relay_token);
+            mqttoptions.set_credentials("comms", &config.relay_token);
         }
 
         // An LWT cannot be freshly sealed when the broker emits it. Use an
@@ -253,7 +253,7 @@ impl MqttRelay {
         // on each tick if the previous open failed — otherwise a transient DB
         // open failure at startup would leave the worker forever heartbeat-less,
         // which derive_relay_health would (correctly) report as Starting.
-        let mut hb_db: Option<HcomDb> = HcomDb::open().ok();
+        let mut hb_db: Option<CommsDb> = CommsDb::open().ok();
         let mut last_heartbeat: Option<Instant> = None;
 
         // Initial subscribe
@@ -264,10 +264,10 @@ impl MqttRelay {
         loop {
             if last_heartbeat.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
                 if hb_db.is_none() {
-                    hb_db = HcomDb::open().ok();
+                    hb_db = CommsDb::open().ok();
                 }
                 let heartbeat_ok = if let Some(ref mut db) = hb_db {
-                    // A reset or schema recovery can atomically replace hcom.db while the
+                    // A reset or schema recovery can atomically replace comms.db while the
                     // long-lived relay worker still owns this connection.  Without this
                     // check heartbeat writes continue against the unlinked database and
                     // the live worker is reported stale forever.
@@ -351,7 +351,7 @@ impl MqttRelay {
                         last_event_from_conn.elapsed().as_secs()
                     ),
                 );
-                if let Ok(db) = HcomDb::open() {
+                if let Ok(db) = CommsDb::open() {
                     set_relay_status(&db, "error", Some("liveness timeout"), true);
                 }
                 self.shutdown_graceful(&event_rx);
@@ -403,7 +403,7 @@ impl MqttRelay {
 
                         if connected {
                             connected = false;
-                            if let Ok(db) = HcomDb::open() {
+                            if let Ok(db) = CommsDb::open() {
                                 set_relay_status(&db, "error", Some(&err_msg), true);
                             }
                         }
@@ -471,7 +471,7 @@ impl MqttRelay {
 
                         if connected {
                             connected = false;
-                            if let Ok(db) = HcomDb::open() {
+                            if let Ok(db) = CommsDb::open() {
                                 set_relay_status(&db, "error", Some(&err_msg), true);
                             }
                         }
@@ -498,7 +498,7 @@ impl MqttRelay {
                 Packet::ConnAck(_connack) => {
                     *connected = true;
                     log::log_info("relay", "relay.connected", "MQTT connected");
-                    if let Ok(db) = HcomDb::open() {
+                    if let Ok(db) = CommsDb::open() {
                         set_relay_status(&db, "ok", None, true);
                     }
                     // Re-subscribe after reconnect
@@ -549,7 +549,7 @@ impl MqttRelay {
         }
         let suffix = &topic[prefix.len()..];
 
-        let db = match HcomDb::open() {
+        let db = match CommsDb::open() {
             Ok(db) => db,
             Err(e) => {
                 log::log_error("relay", "relay.db_err", &format!("{}", e));
@@ -607,7 +607,7 @@ impl MqttRelay {
     /// Re-read the active PSK from disk. This is a best-effort escape hatch for
     /// same-namespace config changes; full relay resets still restart the worker.
     fn reload_psk_if_changed(&self) {
-        let cfg = match HcomConfig::load(None) {
+        let cfg = match CommsConfig::load(None) {
             Ok(c) => c,
             Err(_) => return,
         };
@@ -635,7 +635,7 @@ impl MqttRelay {
 
     /// Execute a push cycle: build state + events, publish to MQTT.
     fn do_push_cycle(&self, mqtt_connected: bool) {
-        let db = match HcomDb::open() {
+        let db = match CommsDb::open() {
             Ok(db) => db,
             Err(e) => {
                 log::log_error("relay", "relay.db_err", &format!("{}", e));
@@ -673,7 +673,7 @@ impl MqttRelay {
                 Ok((false, _)) => break,
                 Err(e) => {
                     log::log_warn("relay", "relay.push_err", &e);
-                    if let Ok(db) = HcomDb::open() {
+                    if let Ok(db) = CommsDb::open() {
                         set_relay_status(&db, "error", Some(&e), true);
                     }
                     break;
@@ -684,7 +684,7 @@ impl MqttRelay {
 
     /// Advance catch-up backfill for skipped event ranges (see relay::backfill).
     fn do_backfill_cycle(&self) {
-        let db = match HcomDb::open() {
+        let db = match CommsDb::open() {
             Ok(db) => db,
             Err(e) => {
                 log::log_error("relay", "relay.db_err", &format!("{}", e));
@@ -694,7 +694,7 @@ impl MqttRelay {
         if super::backfill::devices_with_gaps(&db).is_empty() {
             return;
         }
-        let config = HcomConfig::load(None).unwrap_or_default();
+        let config = CommsConfig::load(None).unwrap_or_default();
         let own_short_id = super::device_short_id_for_db(&db, &self.device_uuid);
         let now = crate::shared::time::now_epoch_f64();
         let summary =
@@ -774,7 +774,7 @@ impl MqttRelay {
         }
 
         // Update status in DB
-        if let Ok(db) = HcomDb::open() {
+        if let Ok(db) = CommsDb::open() {
             set_relay_status(&db, "disconnected", None, true);
         }
     }
@@ -790,7 +790,7 @@ impl MqttRelay {
     }
 }
 
-fn ignore_unauthenticated_empty_state(_db: &HcomDb, device_id: &str) {
+fn ignore_unauthenticated_empty_state(_db: &CommsDb, device_id: &str) {
     log::log_warn(
         "relay",
         "relay.empty_state_ignored",
@@ -873,9 +873,9 @@ impl EphemeralClient {
 /// Create an ephemeral MQTT client for one-shot publishes (CLI callers like stop/kill).
 /// Connects, waits for CONNACK (up to 5s), disconnects on failure. Returns None on failure.
 /// The returned EphemeralClient tracks PUBACK so callers can wait for delivery confirmation.
-pub fn create_ephemeral_client(config: &HcomConfig) -> Option<EphemeralClient> {
+pub fn create_ephemeral_client(config: &CommsConfig) -> Option<EphemeralClient> {
     let (host, port, use_tls) = super::get_broker_from_config(config)?;
-    let client_id = format!("hcom-ephemeral-{}", std::process::id());
+    let client_id = format!("comms-ephemeral-{}", std::process::id());
     let mut mqttoptions = MqttOptions::new(&client_id, &host, port);
     mqttoptions.set_keep_alive(Duration::from_secs(10));
     mqttoptions.set_clean_start(true);
@@ -885,7 +885,7 @@ pub fn create_ephemeral_client(config: &HcomConfig) -> Option<EphemeralClient> {
     }
 
     if !config.relay_token.is_empty() {
-        mqttoptions.set_credentials("hcom", &config.relay_token);
+        mqttoptions.set_credentials("comms", &config.relay_token);
     }
 
     let (client, connection) = Client::new(mqttoptions, 10);
@@ -952,7 +952,7 @@ pub fn create_ephemeral_client(config: &HcomConfig) -> Option<EphemeralClient> {
 
 /// Publish an authenticated retained tombstone to clear device state and
 /// disconnect an ephemeral client. Literal empty MQTT payloads are ignored.
-pub fn clear_retained_state(config: &HcomConfig) -> bool {
+pub fn clear_retained_state(config: &CommsConfig) -> bool {
     if config.relay_id.is_empty() {
         return false;
     }
@@ -998,8 +998,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_ignore_unauthenticated_empty_state_does_not_delete_peer_instances() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, origin_device_id, created_at) VALUES (?1, ?2, ?3)",

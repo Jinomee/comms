@@ -1,4 +1,4 @@
-//! Tool enum for type-safe tool identification across hcom.
+//! Tool enum for type-safe tool identification across comms.
 //!
 //! Per-tool data (hook names, ready pattern, delivery gates, help, status
 //! mappings, etc.) lives in [`crate::integration_spec`]. This module just

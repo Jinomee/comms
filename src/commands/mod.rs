@@ -1,4 +1,4 @@
-//! CLI commands for hcom.
+//! CLI commands for comms.
 //!
 
 // Messaging
@@ -11,6 +11,7 @@ pub mod send;
 pub mod ask;
 pub mod daemon;
 pub mod fork;
+pub mod init;
 pub mod kill;
 pub mod launch;
 pub mod read_only;

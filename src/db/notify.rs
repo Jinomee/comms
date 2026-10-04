@@ -14,10 +14,10 @@
 use anyhow::Result;
 use rusqlite::params;
 
-use super::HcomDb;
+use super::CommsDb;
 use crate::shared::time::now_epoch_f64;
 
-impl HcomDb {
+impl CommsDb {
     /// Register notify endpoint for PTY wake-ups
     ///
     /// Inserts or updates notify_endpoints table with (instance, kind='pty', port)

@@ -1,7 +1,7 @@
-//! Error type hierarchy for hcom.
+//! Error type hierarchy for comms.
 //!
 //! Three error types for different contexts:
-//! - `HcomError`: User-facing operation failures (shown to humans)
+//! - `CommsError`: User-facing operation failures (shown to humans)
 //! - `HookError`: Hook handler returns (exit codes + JSON output)
 //! - `CLIError`: Argument validation (printed to stderr, exit 1)
 //!
@@ -10,11 +10,11 @@
 
 use thiserror::Error;
 
-/// User-facing hcom operation error.
+/// User-facing comms operation error.
 ///
 /// Displayed directly to the user (e.g., "instance not found", "send failed").
 #[derive(Debug, Error)]
-pub enum HcomError {
+pub enum CommsError {
     #[error("{0}")]
     NotFound(String),
 
@@ -95,8 +95,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hcom_error_display() {
-        let e = HcomError::NotFound("instance 'luna' not found".into());
+    fn test_comms_error_display() {
+        let e = CommsError::NotFound("instance 'luna' not found".into());
         assert_eq!(e.to_string(), "instance 'luna' not found");
     }
 
@@ -124,9 +124,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hcom_error_is_send_sync() {
+    fn test_comms_error_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<HcomError>();
+        assert_send_sync::<CommsError>();
         assert_send_sync::<HookError>();
         assert_send_sync::<CLIError>();
     }

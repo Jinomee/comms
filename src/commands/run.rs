@@ -1,7 +1,7 @@
-//! `hcom run` command — execute scripts from embedded bundled scripts and ~/.hcom/scripts/.
+//! `comms run` command — execute scripts from embedded bundled scripts and ~/.comms/scripts/.
 //!
 //! Bundled scripts are compiled into the binary via `scripts::SCRIPTS`.
-//! User scripts in `~/.hcom/scripts/` still discovered from disk and shadow bundled.
+//! User scripts in `~/.comms/scripts/` still discovered from disk and shadow bundled.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ use std::process::Command;
 
 use crate::commands::config::{CONFIG_KEYS, config_help};
 use crate::commands::help;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::paths::scripts_dir;
 use crate::scripts;
 use crate::shared::CommandContext;
@@ -268,7 +268,7 @@ fn list_scripts() -> i32 {
         println!();
         println!("  No custom scripts yet.");
         println!();
-        println!("  Run 'hcom run docs' to create a custom script:");
+        println!("  Run 'comms run docs' to create a custom script:");
         println!("    - Multi-agent workflows");
         println!("    - Background watchers");
         println!("    - Task automation");
@@ -277,10 +277,10 @@ fn list_scripts() -> i32 {
     }
 
     println!("Commands:");
-    println!("  hcom run <script>           Run workflow script");
-    println!("  hcom run <script> --source  View script source");
-    println!("  hcom run <script> --help    Script help");
-    println!("  hcom run docs               CLI reference + config + script guide");
+    println!("  comms run <script>           Run workflow script");
+    println!("  comms run <script> --source  View script source");
+    println!("  comms run <script> --help    Script help");
+    println!("  comms run docs               CLI reference + config + script guide");
     println!("    --cli                     CLI reference only");
     println!("    --config                  Config settings only");
     println!("    --scripts                 Script creation guide");
@@ -291,7 +291,7 @@ fn list_scripts() -> i32 {
 /// Write embedded script content to a temp file and return the path.
 fn write_embedded_to_temp(name: &str, content: &str) -> std::io::Result<tempfile::NamedTempFile> {
     let mut tmp = tempfile::Builder::new()
-        .prefix(&format!("hcom-{name}-"))
+        .prefix(&format!("comms-{name}-"))
         .suffix(".sh")
         .tempfile()?;
     tmp.write_all(content.as_bytes())?;
@@ -308,7 +308,7 @@ fn write_embedded_to_temp(name: &str, content: &str) -> std::io::Result<tempfile
     Ok(tmp)
 }
 
-pub fn cmd_run(db: &HcomDb, args: &RunArgs, ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_run(db: &CommsDb, args: &RunArgs, ctx: Option<&CommandContext>) -> i32 {
     // Re-inject --name for scripts that parse it themselves
     let mut argv = args.args.clone();
     if let Some(ctx) = ctx
@@ -366,7 +366,7 @@ pub fn cmd_run(db: &HcomDb, args: &RunArgs, ctx: Option<&CommandContext>) -> i32
         Some(s) => s,
         None => {
             println!("Unknown script: {name}");
-            println!("Run 'hcom run' to list available scripts");
+            println!("Run 'comms run' to list available scripts");
             return 1;
         }
     };
@@ -486,7 +486,7 @@ const SCRIPT_GUIDE: &str = r#"# Creating Custom Scripts
 
 ## Location
 
-  User scripts:    ~/.hcom/scripts/
+  User scripts:    ~/.comms/scripts/
   File types:      *.sh (bash), *.py (Python 3)
 
 *.sh scripts (including the bundled confess/debate/fatcow workflows) run via
@@ -496,19 +496,19 @@ Python scripts use `PYTHON` when set; otherwise Windows tries `python`, then
 the Python launcher (`py -3`).
 
 User scripts shadow bundled scripts with the same name.
-Scripts are discovered automatically — drop a file and run `hcom run <name>`.
-Add a description comment on line 2 (after shebang) — it shows in `hcom run` listings.
+Scripts are discovered automatically — drop a file and run `comms run <name>`.
+Add a description comment on line 2 (after shebang) — it shows in `comms run` listings.
 
 ## Shell Script Template
 
   #!/usr/bin/env bash
-  # Brief description shown in hcom run list.
+  # Brief description shown in comms run list.
   set -euo pipefail
 
   name_flag=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -h|--help) echo "Usage: hcom run myscript [OPTIONS]"; exit 0 ;;
+      -h|--help) echo "Usage: comms run myscript [OPTIONS]"; exit 0 ;;
       --name) name_flag="$2"; shift 2 ;;
       --target) target="$2"; shift 2 ;;
       *) shift ;;
@@ -519,16 +519,16 @@ Add a description comment on line 2 (after shebang) — it shows in `hcom run` l
   [[ -n "$name_flag" ]] && name_arg="--name $name_flag"
 
   # Your logic here
-  hcom send "@${target}" $name_arg --intent request -- "Do the task"
+  comms send "@${target}" $name_arg --intent request -- "Do the task"
 
 ## Identity Handling
 
-hcom passes --name to scripts automatically. Always parse and forward it:
+comms passes --name to scripts automatically. Always parse and forward it:
 
   name_arg=""
   [[ -n "$name_flag" ]] && name_arg="--name $name_flag"
-  hcom send @target $name_arg -- "message"
-  hcom list self --json $name_arg
+  comms send @target $name_arg -- "message"
+  comms list self --json $name_arg
 
 ## Launching & Cleaning Up Agents
 
@@ -543,28 +543,28 @@ Launch output includes "Names: <name>" — parse to track spawned agents:
   }
   cleanup() {
     for name in "${LAUNCHED_NAMES[@]}"; do
-      hcom kill "$name" --go 2>/dev/null || true
+      comms kill "$name" --go 2>/dev/null || true
     done
   }
   trap cleanup ERR INT TERM
 
-  launch_out=$(hcom 1 claude --tag worker --go --headless 2>&1)
+  launch_out=$(comms 1 claude --tag worker --go --headless 2>&1)
   track_launch "$launch_out"
 
 ## Reference Examples
 
 View source of any bundled or user script:
 
-  hcom run <name> --source
+  comms run <name> --source
 
-See `hcom run docs --cli` for full CLI command reference.
+See `comms run docs --cli` for full CLI command reference.
 "#;
 
 fn print_docs(show_cli: bool, show_config: bool, show_api: bool) -> i32 {
     let show_all = !show_cli && !show_config && !show_api;
 
     if show_all {
-        println!("# hcom Documentation\n");
+        println!("# comms Documentation\n");
         println!("Sections:");
         println!("  1. CLI Reference");
         println!("  2. Config Settings");
@@ -587,16 +587,16 @@ fn print_docs(show_cli: bool, show_config: bool, show_api: bool) -> i32 {
         println!("# Config Settings\n");
         println!(
             "File: {}",
-            crate::paths::hcom_dir().join("config.toml").display()
+            crate::paths::comms_dir().join("config.toml").display()
         );
         println!("Precedence: defaults < config.toml < env vars\n");
         println!("Commands:");
-        println!("  hcom config                 Show all values");
-        println!("  hcom config <key> <val>     Set value");
-        println!("  hcom config <key> --info    Detailed help for a setting");
-        println!("  hcom config --edit          Open in $EDITOR\n");
+        println!("  comms config                 Show all values");
+        println!("  comms config <key> <val>     Set value");
+        println!("  comms config <key> --info    Detailed help for a setting");
+        println!("  comms config --edit          Open in $EDITOR\n");
         for (key, desc, typ) in CONFIG_KEYS {
-            if *key == "HCOM_TERMINAL" {
+            if *key == "COMMS_TERMINAL" {
                 print_terminal_help();
                 println!();
             } else if let Some(help_text) = config_help(key) {
@@ -605,7 +605,7 @@ fn print_docs(show_cli: bool, show_config: bool, show_api: bool) -> i32 {
                 println!("{key} - {desc} ({typ})\n");
             }
         }
-        println!("Per-instance config: hcom config -i <name> <key> [value]");
+        println!("Per-instance config: comms config -i <name> <key> [value]");
         println!("  Keys: tag, timeout, hints, subagent_timeout");
         if show_all {
             println!("\n---\n");
@@ -624,7 +624,7 @@ fn print_docs(show_cli: bool, show_config: bool, show_api: bool) -> i32 {
         if !bundled_scripts.is_empty() {
             println!("Available scripts:");
             for s in &bundled_scripts {
-                println!("  hcom run {} --source", s.name);
+                println!("  comms run {} --source", s.name);
             }
             println!();
         }

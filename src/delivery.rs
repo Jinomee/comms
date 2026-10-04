@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::log::{log_error, log_info, log_warn};
 use crate::notify::NotifyServer;
 use crate::shared::{ST_ACTIVE, ST_BLOCKED, ST_INACTIVE, ST_LISTENING};
@@ -23,7 +23,7 @@ use crate::tool::Tool;
 /// interrupts its I/O poll so it can serialize the new OSC title promptly.
 pub type TitleWake = Arc<dyn Fn() + Send + Sync>;
 
-/// Whether the wrapped child exited because hcom killed it (vs. closed on its
+/// Whether the wrapped child exited because comms killed it (vs. closed on its
 /// own). Set by the PTY proxy (Unix) and read here during delivery cleanup to
 /// choose the exit status context. Lives here rather than in `pty` so the
 /// delivery loop compiles on platforms without the PTY wrapper.
@@ -36,7 +36,7 @@ pub(crate) fn truncate_chars(s: &str, max_chars: usize) -> String {
 }
 
 /// Build full display name: "{tag}-{name}" if tag exists, else "{name}".
-fn full_display_name(db: &HcomDb, name: &str) -> String {
+fn full_display_name(db: &CommsDb, name: &str) -> String {
     match db.get_instance_tag(name) {
         Some(tag) => format!("{}-{}", tag, name),
         None => name.to_string(),
@@ -46,7 +46,7 @@ fn full_display_name(db: &HcomDb, name: &str) -> String {
 /// Check process binding and update current_name if it changed.
 /// Returns true if the name changed.
 pub(crate) fn refresh_binding(
-    db: &HcomDb,
+    db: &CommsDb,
     process_id: &str,
     current_name: &mut String,
     shared_name: &Option<Arc<std::sync::RwLock<String>>>,
@@ -91,7 +91,7 @@ pub(crate) fn refresh_binding(
 
 /// Refresh both delivery-local and PTY-shared status from the database.
 pub(crate) fn refresh_status(
-    db: &HcomDb,
+    db: &CommsDb,
     current_name: &str,
     current_status: &mut String,
     shared_status: &Option<Arc<std::sync::RwLock<String>>>,
@@ -123,7 +123,7 @@ pub(crate) fn refresh_status(
 }
 
 fn refresh_status_and_wake(
-    db: &HcomDb,
+    db: &CommsDb,
     current_name: &str,
     current_status: &mut String,
     shared_status: &Option<Arc<std::sync::RwLock<String>>>,
@@ -138,7 +138,7 @@ fn refresh_status_and_wake(
 
 /// Refresh shared display name (picks up tag changes at runtime).
 pub(crate) fn refresh_display_name(
-    db: &HcomDb,
+    db: &CommsDb,
     current_name: &str,
     shared_name: &Option<Arc<std::sync::RwLock<String>>>,
 ) {
@@ -157,7 +157,7 @@ pub(crate) fn refresh_display_name(
 /// Bundling these lets `refresh_title_state` stay one call inside an already
 /// hot loop without exploding the function signature.
 struct TitleRefresh<'a> {
-    db: &'a HcomDb,
+    db: &'a CommsDb,
     process_id: &'a str,
     current_name: &'a mut String,
     current_status: &'a mut String,
@@ -195,7 +195,7 @@ mod host_label {
     #[cfg(unix)]
     use std::time::Duration;
 
-    use crate::db::HcomDb;
+    use crate::db::CommsDb;
     use crate::identity;
     use crate::shared::format_pane_title;
 
@@ -252,7 +252,7 @@ mod host_label {
             // the pane via `tab create --label {instance_name}`, so herdr's
             // initial label is the bare instance name; the styled
             // `◉ luna [claude]` label only appears once we push it. Seeding
-            // from HCOM_PANE_TITLE (which a custom template might or might
+            // from COMMS_PANE_TITLE (which a custom template might or might
             // not have applied) would silently skip that first push and leave
             // the pane stuck on the bare name until a later status change.
             Self {
@@ -265,7 +265,7 @@ mod host_label {
             }
         }
 
-        pub(super) fn sync(&mut self, db: &HcomDb, name: &str, status: &str, tool: &str) {
+        pub(super) fn sync(&mut self, db: &CommsDb, name: &str, status: &str, tool: &str) {
             if self.backend.is_none() {
                 return;
             }
@@ -285,7 +285,7 @@ mod host_label {
             }
 
             // 2. Agent state via `pane.report_agent` so herdr classifies the
-            //    pane as an agent (its foreground process is `hcom pty`, not the
+            //    pane as an agent (its foreground process is `comms pty`, not the
             //    tool). Best-effort and deduped on the mapped state. Skipped
             //    when the tool name is unknown — herdr needs a real agent label.
             if !tool.is_empty() {
@@ -304,7 +304,7 @@ mod host_label {
             //    pane to already be a classified agent terminal; that classifier
             //    is EITHER our `report_agent` above OR herdr's own installed
             //    integration for the tool (which shadows ours — issue #102, F2).
-            //    We can't tell which from hcom's side, and an ignored
+            //    We can't tell which from comms's side, and an ignored
             //    `report_agent` still returns a success envelope, so we don't
             //    try to. Instead we attempt the rename each tick once we've
             //    entered the agent regime and let it self-heal: `name_set` flips
@@ -402,7 +402,7 @@ mod host_label {
         }
     }
 
-    /// Map an hcom status constant to a herdr `pane_agent_state` value.
+    /// Map an comms status constant to a herdr `pane_agent_state` value.
     ///
     /// listening → idle, active → working, blocked → blocked; everything else
     /// (inactive/launching/error) → unknown.
@@ -450,7 +450,7 @@ mod host_label {
                     pane_id,
                 } => {
                     let request = serde_json::json!({
-                        "id": "hcom:pane:rename",
+                        "id": "comms:pane:rename",
                         "method": "pane.rename",
                         "params": { "pane_id": pane_id, "label": label },
                     });
@@ -460,15 +460,15 @@ mod host_label {
         }
 
         /// Report the agent and its state via `pane.report_agent`. When no other
-        /// source owns the pane, this establishes hcom as the `hook_authority`,
+        /// source owns the pane, this establishes comms as the `hook_authority`,
         /// making `is_agent_terminal()` true independent of the foreground
-        /// process — so herdr tracks the pane as an agent even though `hcom pty`
+        /// process — so herdr tracks the pane as an agent even though `comms pty`
         /// is what's actually running.
         ///
         /// Caveat (issue #102, F2): if herdr has its *own* integration installed
         /// for this tool (pi, omp, claude, codex, opencode, …), that
         /// `herdr:<tool>` source owns lifecycle authority and our `source:
-        /// "hcom"` report is accepted-and-ignored — herdr still returns a
+        /// "comms"` report is accepted-and-ignored — herdr still returns a
         /// success envelope, so we can't detect the shadowing from here. That's
         /// fine: herdr's own integration is then tracking state, and the report
         /// still pays off for tools herdr doesn't integrate. herdr accepts any
@@ -481,11 +481,11 @@ mod host_label {
                     pane_id,
                 } => {
                     let request = serde_json::json!({
-                        "id": "hcom:pane:report_agent",
+                        "id": "comms:pane:report_agent",
                         "method": "pane.report_agent",
                         "params": {
                             "pane_id": pane_id,
-                            "source": "hcom",
+                            "source": "comms",
                             "agent": agent,
                             "state": state,
                             "seq": seq,
@@ -509,7 +509,7 @@ mod host_label {
                     pane_id,
                 } => {
                     let request = serde_json::json!({
-                        "id": "hcom:agent:rename",
+                        "id": "comms:agent:rename",
                         "method": "agent.rename",
                         "params": { "target": pane_id, "name": name },
                     });
@@ -519,8 +519,8 @@ mod host_label {
         }
     }
 
-    /// Build the same label hcom writes into OSC 1/2 (`◉ tag-luna [claude]`).
-    fn pane_title_label(db: &HcomDb, name: &str, status: &str, tool: &str) -> String {
+    /// Build the same label comms writes into OSC 1/2 (`◉ tag-luna [claude]`).
+    fn pane_title_label(db: &CommsDb, name: &str, status: &str, tool: &str) -> String {
         let display = identity::get_display_name(db, name);
         format_pane_title(status, &display, tool)
     }
@@ -625,7 +625,7 @@ mod host_label {
         use serial_test::serial;
 
         #[test]
-        fn map_report_state_covers_hcom_statuses() {
+        fn map_report_state_covers_comms_statuses() {
             assert_eq!(map_report_state(ST_LISTENING), "idle");
             assert_eq!(map_report_state(ST_ACTIVE), "working");
             assert_eq!(map_report_state(ST_BLOCKED), "blocked");
@@ -636,8 +636,8 @@ mod host_label {
         #[test]
         #[serial]
         fn pane_title_label_skips_when_tool_empty() {
-            let (_dir, _hcom_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
-            let db = crate::db::HcomDb::open().unwrap();
+            let (_dir, _comms_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+            let db = crate::db::CommsDb::open().unwrap();
 
             assert_eq!(pane_title_label(&db, "luna", ST_LISTENING, ""), "");
         }
@@ -647,17 +647,17 @@ mod host_label {
         fn resolve_does_not_seed_last_pushed_from_pane_title_env() {
             // The built-in herdr preset opens the pane via `tab create --label
             // {instance_name}`, so herdr's initial tab label is the bare name
-            // (e.g. `luna`). Seeding `last_pushed` from HCOM_PANE_TITLE would
+            // (e.g. `luna`). Seeding `last_pushed` from COMMS_PANE_TITLE would
             // silently swallow the first push and leave the pane stuck on
             // `luna` until the next status transition.
             // SAFETY: test is #[serial].
             unsafe {
-                std::env::set_var("HCOM_PANE_TITLE", "\u{25c9} luna [claude]");
+                std::env::set_var("COMMS_PANE_TITLE", "\u{25c9} luna [claude]");
             }
             let label = HostLabel::resolve();
             // SAFETY: clear before assert so a panic doesn't leak env.
             unsafe {
-                std::env::remove_var("HCOM_PANE_TITLE");
+                std::env::remove_var("COMMS_PANE_TITLE");
             }
             assert!(
                 label.last_pushed.is_none(),
@@ -671,19 +671,19 @@ mod host_label {
         fn classify_response_distinguishes_error_success_and_closed() {
             // A JSON `error` envelope is a semantic rejection (herdr alive but
             // said no) — keep the backend, retry the op (issue #102, F1/F2).
-            let err = r#"{"id":"hcom:agent:rename","error":{"code":"not_agent","message":"pane w1:p1 is not an agent"}}"#;
+            let err = r#"{"id":"comms:agent:rename","error":{"code":"not_agent","message":"pane w1:p1 is not an agent"}}"#;
             match classify_response(err) {
                 Err(SocketError::Rejected(msg)) => assert!(msg.contains("not an agent")),
                 _ => panic!("expected Rejected for an error envelope"),
             }
 
             // A `result` envelope is success — the op applied.
-            let ok = r#"{"id":"hcom:agent:rename","result":{"type":"agent_renamed"}}"#;
+            let ok = r#"{"id":"comms:agent:rename","result":{"type":"agent_renamed"}}"#;
             assert!(classify_response(ok).is_ok());
 
             // An ignored `report_agent` still comes back as a success envelope,
             // so it must classify as Ok (we can't detect the shadowing — F2).
-            let ignored = r#"{"id":"hcom:pane:report_agent","result":{"type":"agent_reported"}}"#;
+            let ignored = r#"{"id":"comms:pane:report_agent","result":{"type":"agent_reported"}}"#;
             assert!(classify_response(ignored).is_ok());
 
             // A non-empty but unparseable line: herdr answered, so treat as Ok
@@ -716,15 +716,15 @@ pub(crate) fn gate_block_detail(reason: &str) -> &'static str {
 
 /// Build PTY wake text for tools whose delivery path is not human-visible.
 ///
-/// Claude and Codex inject the plain `<hcom>` trigger because their hooks show
+/// Claude and Codex inject the plain `<comms>` trigger because their hooks show
 /// the full message in the TUI. Gemini, Antigravity, and OpenCode bootstrap
 /// need a human-visible prompt line, but it must stay prompt-safe: metadata only,
 /// no message body, no `@` autocomplete triggers, and no wrapping. If the compact
 /// preview will not fit the current input width, use the same minimal trigger.
-pub(crate) fn build_wake_inject_text(db: &HcomDb, recipient: &str, max_len: usize) -> String {
+pub(crate) fn build_wake_inject_text(db: &CommsDb, recipient: &str, max_len: usize) -> String {
     let messages = db.get_unread_messages(recipient);
     if messages.is_empty() {
-        return "<hcom>".to_string();
+        return "<comms>".to_string();
     }
 
     let recipient_display = sanitize_wake_preview_part(&full_display_name(db, recipient));
@@ -734,17 +734,17 @@ pub(crate) fn build_wake_inject_text(db: &HcomDb, recipient: &str, max_len: usiz
     } else {
         format!("[{} new messages] | {}", messages.len(), first_line)
     };
-    let preview = format!("<hcom>{inner}</hcom>");
+    let preview = format!("<comms>{inner}</comms>");
 
     if preview.chars().count() > max_len || preview.contains('@') {
-        "<hcom>".to_string()
+        "<comms>".to_string()
     } else {
         preview
     }
 }
 
 fn sanitize_wake_preview_part(text: &str) -> String {
-    let without_tags = strip_hcom_wrapper_tags(text);
+    let without_tags = strip_comms_wrapper_tags(text);
     without_tags
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -766,10 +766,10 @@ fn wake_message_prefix(msg: &crate::db::Message) -> String {
     format!("[{}{}]", prefix, id_ref)
 }
 
-/// Strip tag-like sequences that could break the PTY `<hcom>...</hcom>` wrapper.
-fn strip_hcom_wrapper_tags(text: &str) -> String {
+/// Strip tag-like sequences that could break the PTY `<comms>...</comms>` wrapper.
+fn strip_comms_wrapper_tags(text: &str) -> String {
     let mut s = text.to_string();
-    for tag in ["</hcom>", "<hcom>"] {
+    for tag in ["</comms>", "<comms>"] {
         loop {
             let lower = s.to_lowercase();
             if let Some(i) = lower.find(tag) {
@@ -783,7 +783,7 @@ fn strip_hcom_wrapper_tags(text: &str) -> String {
 }
 
 fn format_wake_message_line(
-    db: &HcomDb,
+    db: &CommsDb,
     msg: &crate::db::Message,
     recipient_display: &str,
 ) -> String {
@@ -905,7 +905,7 @@ pub struct GateResult {
 /// Shared state for delivery thread
 pub struct DeliveryState {
     pub screen: Arc<std::sync::RwLock<ScreenState>>,
-    /// Grok's native ACP transport; set for every hcom-launched Grok.
+    /// Grok's native ACP transport; set for every comms-launched Grok.
     pub grok_acp: Option<grok::Launch>,
     /// True while the launch outcome is still Pending. Cleared once any
     /// terminal outcome (ready/failed/blocked) fires, so the PTY proxy can
@@ -941,7 +941,7 @@ impl LaunchOutcome {
 ///   accepted agy's trust-folder prompt). Never re-block once cleared.
 /// - Ready/Failed: terminal, no-op.
 fn drive_launch_outcome(
-    db: &HcomDb,
+    db: &CommsDb,
     state: &DeliveryState,
     current_name: &str,
     current_status: &str,
@@ -1162,7 +1162,7 @@ pub(crate) fn evaluate_gate(
 }
 
 /// Build a diagnostic string for a `delivery.gate_pass` log line.
-fn gate_pass_diagnostics(db: &HcomDb, name: &str, state: &DeliveryState, is_idle: bool) -> String {
+fn gate_pass_diagnostics(db: &CommsDb, name: &str, state: &DeliveryState, is_idle: bool) -> String {
     let now = crate::shared::time::now_epoch_i64();
     let (status, context, status_age_s) = match db.get_instance_full(name) {
         Ok(Some(row)) => (
@@ -1208,7 +1208,7 @@ fn gate_pass_diagnostics(db: &HcomDb, name: &str, state: &DeliveryState, is_idle
 }
 
 fn launch_ready_observed(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     config: &ToolConfig,
     state: &DeliveryState,
@@ -1255,7 +1255,7 @@ fn mark_launch_phase_complete(
 }
 
 fn emit_launch_ready_once(
-    db: &HcomDb,
+    db: &CommsDb,
     state: &DeliveryState,
     current_name: &str,
     outcome: &mut LaunchOutcome,
@@ -1292,7 +1292,7 @@ fn emit_launch_ready_once(
 }
 
 fn emit_launch_failed_if_needed(
-    db: &HcomDb,
+    db: &CommsDb,
     state: &DeliveryState,
     current_name: &str,
     outcome: &mut LaunchOutcome,
@@ -1300,7 +1300,7 @@ fn emit_launch_failed_if_needed(
 ) {
     if !outcome.is_pending()
         || !state.launch_phase_active.load(Ordering::Acquire)
-        || std::env::var("HCOM_LAUNCHED").as_deref() != Ok("1")
+        || std::env::var("COMMS_LAUNCHED").as_deref() != Ok("1")
     {
         return;
     }
@@ -1318,13 +1318,13 @@ fn emit_launch_failed_if_needed(
 }
 
 fn emit_launch_blocked_once(
-    db: &HcomDb,
+    db: &CommsDb,
     state: &DeliveryState,
     current_name: &str,
     outcome: &mut LaunchOutcome,
     detail: &str,
 ) {
-    if !outcome.is_pending() || std::env::var("HCOM_LAUNCHED").as_deref() != Ok("1") {
+    if !outcome.is_pending() || std::env::var("COMMS_LAUNCHED").as_deref() != Ok("1") {
         return;
     }
 
@@ -1357,7 +1357,7 @@ fn emit_launch_blocked_once(
 }
 
 fn maybe_emit_launch_blocked(
-    db: &HcomDb,
+    db: &CommsDb,
     state: &DeliveryState,
     current_name: &str,
     current_status: &str,
@@ -1402,7 +1402,7 @@ fn maybe_emit_launch_blocked(
     };
 
     let detail = format!(
-        "launch blocked: screen settled before readiness; run `hcom term {}`\n{}",
+        "launch blocked: screen settled before readiness; run `comms term {}`\n{}",
         current_name, tail
     );
     drop(screen);
@@ -1534,13 +1534,13 @@ const MAX_ENTER_ATTEMPTS: u32 = 3;
 ///
 /// Two signals, same meaning ("this loop is alive and current"), different
 /// audiences: the instance heartbeat, and the wake beacon/window that
-/// short-lived processes read. A one-shot like `hcom list` reaps stale
+/// short-lived processes read. A one-shot like `comms list` reaps stale
 /// instances but cannot detect a sleep on its own — it has no earlier monotonic
 /// sample to compare against — so a poll path that heartbeats without
-/// publishing leaves a window where `hcom list` runs after wake, sees an
+/// publishing leaves a window where `comms list` runs after wake, sees an
 /// hours-old status clock, and unlinks a live agent. Keeping both writes in one
 /// place is what stops the paths from drifting apart again.
-fn refresh_liveness(db: &HcomDb, current_name: &str) {
+fn refresh_liveness(db: &CommsDb, current_name: &str) {
     crate::instance_lifecycle::is_in_wake_grace_publishing(db);
     if let Err(e) = db.update_heartbeat(current_name) {
         log_warn(
@@ -1575,7 +1575,7 @@ enum State {
     WakeUnacknowledged,
 }
 
-/// Run the delivery loop — surfaces out-of-band hcom messages into the tool's
+/// Run the delivery loop — surfaces out-of-band comms messages into the tool's
 /// conversation by injecting text at a safe prompt state.
 ///
 /// This is the main delivery thread function. It:
@@ -1589,7 +1589,7 @@ enum State {
 #[allow(clippy::too_many_arguments)] // Tracked: hook-comms-8vs (refactor delivery loop)
 pub fn run_delivery_loop(
     running: Arc<AtomicBool>,
-    db: &mut HcomDb,
+    db: &mut CommsDb,
     notify: &NotifyServer,
     state: &DeliveryState,
     instance_name: &str,
@@ -1774,7 +1774,7 @@ pub fn run_delivery_loop(
                 }
             }
 
-            // Detect DB file replacement (hcom reset / schema bump) and reconnect
+            // Detect DB file replacement (comms reset / schema bump) and reconnect
             db.reconnect_if_stale();
 
             // Heartbeat + port re-registration
@@ -1889,7 +1889,7 @@ pub fn run_delivery_loop(
                         );
                     }
 
-                    // Detect DB file replacement (hcom reset / schema bump) and reconnect
+                    // Detect DB file replacement (comms reset / schema bump) and reconnect
                     db.reconnect_if_stale();
 
                     // Heartbeat (also re-asserts tcp_mode=true) + wake state.
@@ -1982,7 +1982,7 @@ pub fn run_delivery_loop(
                         let text = match parsed_tool {
                             Some(Tool::Claude) | Some(Tool::Codex) | Some(Tool::Cursor)
                             | Some(Tool::Kimi) | Some(Tool::Copilot) | Some(Tool::Pi)
-                            | Some(Tool::Omp) => "<hcom>".to_string(),
+                            | Some(Tool::Omp) => "<comms>".to_string(),
                             _ => build_wake_inject_text(db, &current_name, input_box_width),
                         };
 
@@ -2587,7 +2587,7 @@ pub fn run_delivery_loop(
 
 /// True when this delivery thread's process_id still owns `current_name`.
 pub(crate) fn instance_owns_process_binding(
-    db: &HcomDb,
+    db: &CommsDb,
     process_id: &str,
     current_name: &str,
 ) -> bool {
@@ -2604,8 +2604,8 @@ pub(crate) fn instance_owns_process_binding(
 /// Hard PTY exit cleanup: inactive status, life event, delete instance row.
 ///
 /// Publishes through the same atomic delete gate as `stop_instance`, so a
-/// concurrent `hcom kill` and this cleanup produce exactly one stopped event.
-pub(crate) fn cleanup_deleted_instance(db: &mut HcomDb, current_name: &str) {
+/// concurrent `comms kill` and this cleanup produce exactly one stopped event.
+pub(crate) fn cleanup_deleted_instance(db: &mut CommsDb, current_name: &str) {
     let skip = |why: &str| {
         log_info(
             "native",
@@ -2627,7 +2627,7 @@ pub(crate) fn cleanup_deleted_instance(db: &mut HcomDb, current_name: &str) {
     };
     let snapshot = db.get_instance_snapshot(current_name).ok().flatten();
 
-    // `hcom kill` records exit:killed + its initiator before signalling.
+    // `comms kill` records exit:killed + its initiator before signalling.
     let kill_recorded = inst.status_context == "exit:killed";
     let was_killed = kill_recorded || EXIT_WAS_KILLED.load(std::sync::atomic::Ordering::Acquire);
     let (exit_context, exit_reason) = if was_killed {
@@ -2677,7 +2677,7 @@ pub(crate) fn cleanup_deleted_instance(db: &mut HcomDb, current_name: &str) {
 }
 
 /// Log why PTY exit cleanup was skipped when this thread no longer owns the instance.
-pub(crate) fn log_pty_cleanup_skipped(db: &HcomDb, current_name: &str) {
+pub(crate) fn log_pty_cleanup_skipped(db: &CommsDb, current_name: &str) {
     let reason = if db
         .get_status(current_name)
         .ok()
@@ -2696,7 +2696,7 @@ pub(crate) fn log_pty_cleanup_skipped(db: &HcomDb, current_name: &str) {
 }
 
 fn cleanup_pty_exit_default(
-    db: &mut HcomDb,
+    db: &mut CommsDb,
     current_name: &str,
     process_id: &str,
     owns_instance: bool,
@@ -2751,7 +2751,7 @@ mod tests {
     fn status_refresh_repairs_codex_approval_cache_divergence() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -2801,7 +2801,7 @@ mod tests {
     fn pty_cleanup_does_not_log_stop_after_instance_already_deleted() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let mut db = HcomDb::open_raw(&db_path).unwrap();
+        let mut db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -2841,7 +2841,7 @@ mod tests {
     fn pty_cleanup_keeps_kill_reason_and_initiator_with_single_stop_event() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let mut db = HcomDb::open_raw(&db_path).unwrap();
+        let mut db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -2850,7 +2850,7 @@ mod tests {
                 [],
             )
             .unwrap();
-        // `hcom kill` records the reason before signalling; the PTY cleanup
+        // `comms kill` records the reason before signalling; the PTY cleanup
         // can then win the race without having seen the signal itself.
         db.mark_killed("kiro", "samu").unwrap();
 
@@ -2878,7 +2878,7 @@ mod tests {
     fn soft_stopped_instance_survives_pty_exit_cleanup() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let mut db = HcomDb::open_raw(&db_path).unwrap();
+        let mut db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -2910,8 +2910,8 @@ mod tests {
     fn phase1_complete_render_wins_at_deadline() {
         assert_eq!(
             phase1_decision(
-                Some("<hcom>"),
-                "<hcom>",
+                Some("<comms>"),
+                "<comms>",
                 PHASE1_TIMEOUT + Duration::from_millis(1),
             ),
             Phase1Decision::Rendered,
@@ -2921,7 +2921,7 @@ mod tests {
     #[test]
     fn phase1_rejects_user_text_after_injected_text() {
         assert_eq!(
-            phase1_decision(Some("<hcom> user draft"), "<hcom>", Duration::ZERO),
+            phase1_decision(Some("<comms> user draft"), "<comms>", Duration::ZERO),
             Phase1Decision::MixedPrompt,
         );
     }
@@ -2929,7 +2929,7 @@ mod tests {
     #[test]
     fn phase1_rejects_user_text_before_injected_text() {
         assert_eq!(
-            phase1_decision(Some("user draft <hcom>"), "<hcom>", Duration::ZERO),
+            phase1_decision(Some("user draft <comms>"), "<comms>", Duration::ZERO),
             Phase1Decision::MixedPrompt,
         );
     }
@@ -2938,8 +2938,8 @@ mod tests {
     fn phase1_rejects_mixed_prompt_after_activity_cooldown() {
         assert_eq!(
             phase1_decision(
-                Some("<hcom> user draft"),
-                "<hcom>",
+                Some("<comms> user draft"),
+                "<comms>",
                 Duration::from_millis(501),
             ),
             Phase1Decision::MixedPrompt,
@@ -2979,7 +2979,7 @@ mod tests {
         assert_eq!(
             phase1_decision(
                 Some("user draft"),
-                "<hcom>",
+                "<comms>",
                 PHASE1_TIMEOUT + Duration::from_millis(1),
             ),
             Phase1Decision::TimedOut,
@@ -2989,15 +2989,15 @@ mod tests {
     #[test]
     fn submit_authority_requires_exact_prompt_ownership() {
         assert_eq!(
-            prompt_ownership(Some("<hcom>"), "<hcom>"),
+            prompt_ownership(Some("<comms>"), "<comms>"),
             PromptOwnership::Exclusive,
         );
         assert_eq!(
-            prompt_ownership(Some("<hcom> user draft"), "<hcom>"),
+            prompt_ownership(Some("<comms> user draft"), "<comms>"),
             PromptOwnership::Mixed,
         );
         assert_eq!(
-            prompt_ownership(Some("user draft"), "<hcom>"),
+            prompt_ownership(Some("user draft"), "<comms>"),
             PromptOwnership::Other,
         );
     }
@@ -3150,9 +3150,9 @@ mod tests {
         assert_eq!(result.reason, "prompt_has_text");
     }
 
-    fn open_ready_test_db() -> (tempfile::TempDir, HcomDb) {
+    fn open_ready_test_db() -> (tempfile::TempDir, CommsDb) {
         let dir = tempfile::tempdir().unwrap();
-        let db = HcomDb::open_raw(&dir.path().join("test.db")).unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("test.db")).unwrap();
         db.init_db().unwrap();
         (dir, db)
     }
@@ -3376,8 +3376,8 @@ mod tests {
     #[test]
     fn wake_inject_includes_prompt_safe_metadata_only() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("hcom.db");
-        let db = HcomDb::open_at(&db_path).unwrap();
+        let db_path = dir.path().join("comms.db");
+        let db = CommsDb::open_at(&db_path).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, status, status_context, created_at, last_event_id)
@@ -3391,7 +3391,7 @@ mod tests {
             "scope": "mentions",
             "mentions": ["keno"],
             "intent": "request",
-            "thread": "hcom-routing-test",
+            "thread": "comms-routing-test",
         });
         db.conn()
             .execute(
@@ -3402,8 +3402,8 @@ mod tests {
             .unwrap();
 
         let text = build_wake_inject_text(&db, "keno", 120);
-        assert!(text.starts_with("<hcom>"), "text={text}");
-        assert!(text.ends_with("</hcom>"), "text={text}");
+        assert!(text.starts_with("<comms>"), "text={text}");
+        assert!(text.ends_with("</comms>"), "text={text}");
         assert!(text.contains("life"), "text={text}");
         assert!(text.contains("request"), "text={text}");
         assert!(!text.contains('@'));
@@ -3413,8 +3413,8 @@ mod tests {
     #[test]
     fn wake_inject_falls_back_to_minimal_trigger_when_preview_would_wrap() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("hcom.db");
-        let db = HcomDb::open_at(&db_path).unwrap();
+        let db_path = dir.path().join("comms.db");
+        let db = CommsDb::open_at(&db_path).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO instances (name, status, status_context, created_at, last_event_id)
@@ -3438,6 +3438,6 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(build_wake_inject_text(&db, "keno", 24), "<hcom>");
+        assert_eq!(build_wake_inject_text(&db, "keno", 24), "<comms>");
     }
 }

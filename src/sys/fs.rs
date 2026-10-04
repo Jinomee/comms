@@ -8,7 +8,7 @@ use std::path::Path;
 /// Create a new file restricted to the owner (`0o600` on Unix), failing if it
 /// already exists. On Windows the file is created with default ACLs (no Unix
 /// mode); profile-local files are already private. This is a no-op gap if
-/// `HCOM_DIR`/`HOME` is redirected to a location shared with other accounts —
+/// `COMMS_DIR`/`HOME` is redirected to a location shared with other accounts —
 /// secrets written there won't be owner-restricted on Windows. Real ACL
 /// restriction (`SetNamedSecurityInfo`) is deferred to a later batch; this is
 /// a deliberate, tracked gap, not an oversight.
@@ -91,7 +91,7 @@ pub fn is_socket(path: &Path) -> bool {
 ///
 /// No-op on Windows, where Unix mode bits do not apply and files created under
 /// the user's profile are already private by default. Same caveat as
-/// `create_private_new`: a shared `HCOM_DIR`/`HOME` location isn't actually
+/// `create_private_new`: a shared `COMMS_DIR`/`HOME` location isn't actually
 /// locked down on Windows until real ACL restriction is implemented.
 pub fn set_private(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
@@ -109,7 +109,7 @@ pub fn set_private(path: &Path) -> io::Result<()> {
 /// Restrict a directory to owner-only access (`0o700` on Unix).
 ///
 /// No-op on Windows, where Unix mode bits do not apply. Same caveat as
-/// `set_private`: a shared `HCOM_DIR`/`HOME` location isn't actually locked
+/// `set_private`: a shared `COMMS_DIR`/`HOME` location isn't actually locked
 /// down on Windows until real ACL restriction is implemented.
 pub fn set_private_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]

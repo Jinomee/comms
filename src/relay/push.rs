@@ -8,7 +8,7 @@ use rumqttc::v5::mqttbytes::QoS;
 use serde_json::{Value, json};
 use std::time::Instant;
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::log;
 
 use super::crypto;
@@ -208,7 +208,7 @@ fn shrink_strings(value: &mut Value) {
             if chars > SHRINK_STRING_CHARS {
                 let kept: String = s.chars().take(SHRINK_STRING_CHARS).collect();
                 *s = format!(
-                    "{kept}\n[truncated by hcom relay: {chars} characters, too large to relay]"
+                    "{kept}\n[truncated by comms relay: {chars} characters, too large to relay]"
                 );
             }
         }
@@ -220,7 +220,7 @@ fn shrink_strings(value: &mut Value) {
 
 /// Build current instance state snapshot for publishing.
 /// Only includes local instances (no origin_device_id).
-pub fn build_state(db: &HcomDb, device_uuid: &str) -> Value {
+pub fn build_state(db: &CommsDb, device_uuid: &str) -> Value {
     let short_id = device_short_id_for_db(db, device_uuid);
 
     let instances = match db.conn().prepare(
@@ -313,7 +313,7 @@ pub fn build_state(db: &HcomDb, device_uuid: &str) -> Value {
 
 /// Build push payload: state + events, returning (state, events, max_event_id, has_more).
 /// Fetches 101 rows, sends first 100 — has_more=true if 101st exists.
-pub fn build_push_payload(db: &HcomDb, device_uuid: &str) -> (Value, Vec<Value>, i64, bool) {
+pub fn build_push_payload(db: &CommsDb, device_uuid: &str) -> (Value, Vec<Value>, i64, bool) {
     let state = build_state(db, device_uuid);
 
     let last_push_id: i64 = safe_kv_get(db, "relay_last_push_id")
@@ -399,7 +399,7 @@ fn more_to_send(
 /// reconnect) but the cursor is NOT advanced — events will be re-sent on the
 /// next push after the connection recovers, preventing silent event loss.
 pub fn push(
-    db: &HcomDb,
+    db: &CommsDb,
     client: &Client,
     relay_id: &str,
     device_uuid: &str,
@@ -482,7 +482,7 @@ fn parse_iso_timestamp_to_epoch(ts: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::HcomDb;
+    use crate::db::CommsDb;
     use serde_json::json;
 
     #[test]
@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn build_push_payload_includes_recent_retained_tail() {
         let dir = tempfile::tempdir().unwrap();
-        let db = HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
 
         let old_id = db
             .log_event("message", "old", &json!({"text": "old"}))
@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(only["id"].as_i64(), Some(71), "the new event is still sent");
         assert_eq!(only["data"]["from"], "luna");
         let text = only["data"]["text"].as_str().unwrap();
-        assert!(text.contains("truncated by hcom relay"), "marker present");
+        assert!(text.contains("truncated by comms relay"), "marker present");
         assert!(text.len() < 10_000);
         assert_eq!(only["data"]["_relay_truncated"]["level"], 1);
         assert_eq!(

@@ -137,19 +137,19 @@ pub fn shorten_path_max(path: &str, max_width: usize) -> String {
     format!("...{}", &shortened[start..])
 }
 
-/// Whether running inside any AI tool (env-var check, no HcomContext needed).
+/// Whether running inside any AI tool (env-var check, no CommsContext needed).
 ///
-/// Uses the same env vars as HcomContext::from_env() for tool detection.
-/// For code that already has an HcomContext, prefer `ctx.is_inside_ai_tool()`.
+/// Uses the same env vars as CommsContext::from_env() for tool detection.
+/// For code that already has an CommsContext, prefer `ctx.is_inside_ai_tool()`.
 pub fn is_inside_ai_tool() -> bool {
     let env = std::env::vars().collect();
     crate::shared::tool_detection::detect_tool(&env) != crate::tool::Tool::Adhoc
-        || std::env::var("HCOM_LAUNCHED").ok().as_deref() == Some("1")
+        || std::env::var("COMMS_LAUNCHED").ok().as_deref() == Some("1")
 }
 
-/// Detect current AI tool from environment (no HcomContext needed).
+/// Detect current AI tool from environment (no CommsContext needed).
 ///
-/// Uses the same env vars as HcomContext::from_env() for tool detection.
+/// Uses the same env vars as CommsContext::from_env() for tool detection.
 pub fn detect_current_tool_from_env() -> &'static str {
     let env = std::env::vars().collect();
     crate::shared::tool_detection::detect_tool(&env).as_str()
@@ -200,20 +200,20 @@ fn cargo_target_dir(dev_root: &Path) -> PathBuf {
         .unwrap_or_else(|| dev_root.join("target"))
 }
 
-/// Returns the best available hcom binary under `dev_root`'s cargo target dir.
+/// Returns the best available comms binary under `dev_root`'s cargo target dir.
 ///
 /// Target dir resolution order:
 /// 1. `CARGO_TARGET_DIR`
 /// 2. `.cargo/config.toml` or `.cargo/config` `build.target-dir`
 /// 3. `target/`
 ///
-/// Prefers whichever of `release/hcom` and `debug/hcom` was modified more
+/// Prefers whichever of `release/comms` and `debug/comms` was modified more
 /// recently, so both `cargo build` and `cargo build --release` do the right
 /// thing. Falls back to debug if mtimes are unavailable. Returns `None` if
 /// neither binary exists.
 pub fn dev_root_binary(dev_root: &Path) -> Option<PathBuf> {
     let target_dir = cargo_target_dir(dev_root);
-    let binary = format!("hcom{}", std::env::consts::EXE_SUFFIX);
+    let binary = format!("comms{}", std::env::consts::EXE_SUFFIX);
     let release = target_dir.join("release").join(&binary);
     let debug = target_dir.join("debug").join(&binary);
 
@@ -316,7 +316,7 @@ mod tests {
         let release = dir
             .path()
             .join("target/release")
-            .join(format!("hcom{}", std::env::consts::EXE_SUFFIX));
+            .join(format!("comms{}", std::env::consts::EXE_SUFFIX));
         touch_binary(&release);
 
         unsafe {
@@ -334,7 +334,7 @@ mod tests {
         let custom_target = dir.path().join(".cargo-target");
         let debug = custom_target
             .join("debug")
-            .join(format!("hcom{}", std::env::consts::EXE_SUFFIX));
+            .join(format!("comms{}", std::env::consts::EXE_SUFFIX));
         touch_binary(&debug);
 
         unsafe {
@@ -350,15 +350,15 @@ mod tests {
         let _target_guard = CargoTargetDirGuard::new();
         let dir = TempDir::new().unwrap();
         let cargo_dir = dir.path().join(".cargo");
-        let custom_target = dir.path().join(".hcom-build");
+        let custom_target = dir.path().join(".comms-build");
         let release = custom_target
             .join("release")
-            .join(format!("hcom{}", std::env::consts::EXE_SUFFIX));
+            .join(format!("comms{}", std::env::consts::EXE_SUFFIX));
         touch_binary(&release);
         std::fs::create_dir_all(&cargo_dir).unwrap();
         std::fs::write(
             cargo_dir.join("config.toml"),
-            "[build]\ntarget-dir = \".hcom-build\"\n",
+            "[build]\ntarget-dir = \".comms-build\"\n",
         )
         .unwrap();
 

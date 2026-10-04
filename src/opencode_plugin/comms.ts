@@ -1,17 +1,17 @@
-// hcom-managed-plugin: installed by hcom; removed automatically. Do not add this line to your own plugins.
+// comms-managed-plugin: installed by comms; removed automatically. Do not add this line to your own plugins.
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 import type { Event } from "@opencode-ai/sdk"
 import { appendFileSync } from "fs"
 import { homedir } from "os"
 
-const HCOM_DIR = process.env.HCOM_DIR || `${homedir()}/.hcom`
-const LOG_PATH = `${HCOM_DIR}/.tmp/logs/hcom.log`
+const COMMS_DIR = process.env.COMMS_DIR || `${homedir()}/.comms`
+const LOG_PATH = `${COMMS_DIR}/.tmp/logs/comms.log`
 
 function claimPluginHost(): boolean {
-  const owner = process.env.HCOM_PLUGIN_HOST_PID
+  const owner = process.env.COMMS_PLUGIN_HOST_PID
   const current = String(process.pid)
   if (owner && owner !== current) return false
-  process.env.HCOM_PLUGIN_HOST_PID = current
+  process.env.COMMS_PLUGIN_HOST_PID = current
   return true
 }
 
@@ -30,9 +30,9 @@ type PermissionAskedEvent = {
   }
 }
 
-type HcomEvent = Event | PermissionAskedEvent
+type CommsEvent = Event | PermissionAskedEvent
 
-function eventSessionID(event: HcomEvent): string | undefined {
+function eventSessionID(event: CommsEvent): string | undefined {
   if (!event.properties || typeof event.properties !== "object") return undefined
   const properties = event.properties as Record<string, unknown>
   if (typeof properties.sessionID === "string") return properties.sessionID
@@ -43,10 +43,10 @@ function eventSessionID(event: HcomEvent): string | undefined {
   return undefined
 }
 
-// Best-effort fallback for non-hcom/manual plugin runs.
-// Normal hcom launches seed launch agent/model through the `opencode-start`
+// Best-effort fallback for non-comms/manual plugin runs.
+// Normal comms launches seed launch agent/model through the `opencode-start`
 // response payload, since the plugin process does not inherit the outer
-// `hcom opencode --agent/--model` argv in PTY-launched OpenCode.
+// `comms opencode --agent/--model` argv in PTY-launched OpenCode.
 function parseCliArgValue(...flags: string[]): string | null {
   for (let i = 0; i < process.argv.length; i++) {
     const token = process.argv[i]
@@ -114,11 +114,11 @@ function log(
   try { appendFileSync(LOG_PATH, entry + "\n") } catch {}
 }
 
-export const HcomPlugin: Plugin = async ({ client, $ }) => {
+export const CommsPlugin: Plugin = async ({ client, $ }) => {
   if (!claimPluginHost()) return {}
 
-  let hcomChecked = false
-  let hcomAvailable = false
+  let commsChecked = false
+  let commsAvailable = false
   let instanceName: string | null = null      // IDEN-03: bound instance name
   let sessionId: string | null = null         // IDEN-02: tracked for messages.transform
   let bootstrapText: string | null = null     // BOOT-01: cached from opencode-start
@@ -139,15 +139,15 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
   let currentModel: PromptModel | null = launchedModel
 
   // SAFE-02: Lazy PATH detection on first hook callback
-  function checkHcom(): boolean {
-    if (!hcomChecked) {
-      hcomChecked = true
-      hcomAvailable = Bun.which("hcom") !== null
-      if (!hcomAvailable) {
-        log("WARN", "plugin.no_hcom")
+  function checkComms(): boolean {
+    if (!commsChecked) {
+      commsChecked = true
+      commsAvailable = Bun.which("comms") !== null
+      if (!commsAvailable) {
+        log("WARN", "plugin.no_comms")
       }
     }
-    return hcomAvailable
+    return commsAvailable
   }
 
   function isBoundSession(candidateSessionId?: string | null): boolean {
@@ -174,8 +174,8 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
           : `[new message #${m.event_id}]`
       return `${prefix} ${m.from} -> ${recipientName}: ${m.message}`
     })
-    if (messages.length === 1) return `<hcom>${parts[0]}</hcom>`
-    return `<hcom>[${messages.length} new messages] | ${parts.join(" | ")}</hcom>`
+    if (messages.length === 1) return `<comms>${parts[0]}</comms>`
+    return `<comms>[${messages.length} new messages] | ${parts.join(" | ")}</comms>`
   }
 
   function schedulePendingDelivery(sid: string, reason: string): void {
@@ -236,7 +236,7 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
     }
     deliveryInFlight = true
     try {
-      const msgResult = await $.nothrow()`hcom opencode-read --name ${instanceName}`.quiet()
+      const msgResult = await $.nothrow()`comms opencode-read --name ${instanceName}`.quiet()
       // Unacked messages stay unread, so the next plugin instance delivers them.
       if (disposed) return false
       if (msgResult.exitCode !== 0) {
@@ -324,11 +324,11 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
       if (!statusResult.data) return
       const current = statusResult.data[sessionId]
       const isIdle = !current || current.type === "idle"
-      const hcomStatus = isIdle ? "listening" : "active"
-      if (hcomStatus !== lastReportedStatus) {
-        lastReportedStatus = hcomStatus
-        await $.nothrow()`hcom opencode-status --name ${instanceName} --status ${hcomStatus}`.quiet()
-        log("INFO", "plugin.reconcile_status", instanceName, { status: hcomStatus })
+      const commsStatus = isIdle ? "listening" : "active"
+      if (commsStatus !== lastReportedStatus) {
+        lastReportedStatus = commsStatus
+        await $.nothrow()`comms opencode-status --name ${instanceName} --status ${commsStatus}`.quiet()
+        log("INFO", "plugin.reconcile_status", instanceName, { status: commsStatus })
       }
     } catch (e) {
       log("ERROR", "plugin.reconcile_error", instanceName, { error: String(e) })
@@ -346,7 +346,7 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
     if (reconcileTimer) { clearInterval(reconcileTimer); reconcileTimer = null }
   }
 
-  // TCP notify server: instant wake when hcom messages arrive.
+  // TCP notify server: instant wake when comms messages arrive.
   // `crate::notify::wake_all` TCP-connects to this port on every send.
   function startNotifyServer(): number | null {
     if (notifyServer) return notifyServer.port
@@ -382,15 +382,15 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
 
   async function bindIdentity(sid: string): Promise<void> {
     if (instanceName || bindingPromise) return
-    if (process.env.HCOM_LAUNCHED !== "1") return
+    if (process.env.COMMS_LAUNCHED !== "1") return
 
     bindingPromise = (async () => {
       try {
         // Start TCP notify server before binding so port is registered atomically
         const notifyPort = startNotifyServer()
         const result = notifyPort
-          ? await $.nothrow()`hcom opencode-start --session-id ${sid} --notify-port ${String(notifyPort)}`.quiet()
-          : await $.nothrow()`hcom opencode-start --session-id ${sid}`.quiet()
+          ? await $.nothrow()`comms opencode-start --session-id ${sid} --notify-port ${String(notifyPort)}`.quiet()
+          : await $.nothrow()`comms opencode-start --session-id ${sid}`.quiet()
         if (result.exitCode !== 0) { stopNotifyServer(); return }
         const json = JSON.parse(result.text())
         if (json.error) {
@@ -423,12 +423,12 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
     await bindingPromise
   }
 
-  // Resumed session (`hcom r`): OpenCode emits no session.created, and no
+  // Resumed session (`comms r`): OpenCode emits no session.created, and no
   // session.status until the first prompt, so bind now and deliver anything
   // already pending. Without this, messages waited for the user to type.
-  // Not awaited: plugin load must not wait on hcom.
-  const resumeSessionId = process.env.HCOM_RESUME_SESSION_ID
-  if (resumeSessionId && checkHcom()) {
+  // Not awaited: plugin load must not wait on comms.
+  const resumeSessionId = process.env.COMMS_RESUME_SESSION_ID
+  if (resumeSessionId && checkComms()) {
     void (async () => {
       await bindIdentity(resumeSessionId)
       if (disposed || !instanceName || sessionId !== resumeSessionId) return
@@ -440,9 +440,9 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
   }
 
   return {
-    event: async ({ event }: { event: HcomEvent }) => {
+    event: async ({ event }: { event: CommsEvent }) => {
       try {
-        if (!checkHcom()) return
+        if (!checkComms()) return
         const eventSessionId = eventSessionID(event)
         if (eventSessionId && !sessionId) {
           sessionId = eventSessionId as string
@@ -467,7 +467,7 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
             }
             if (instanceName) {
               lastReportedStatus = "blocked"
-              await $.nothrow()`hcom opencode-status --name ${instanceName} --status blocked --context ${"approval"} --detail ${String(event.properties.permission ?? "")}`.quiet()
+              await $.nothrow()`comms opencode-status --name ${instanceName} --status blocked --context ${"approval"} --detail ${String(event.properties.permission ?? "")}`.quiet()
               log("INFO", "plugin.permission_asked", instanceName, { permission: event.properties.permission, request_id: event.properties.id })
             }
             break
@@ -478,10 +478,10 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
             if (instanceName) {
               const statusResult = await client.session.status()
               const current = eventSessionId ? statusResult.data?.[eventSessionId] : null
-              const hcomStatus = !current || current.type === "idle" ? "listening" : "active"
-              lastReportedStatus = hcomStatus
-              await $.nothrow()`hcom opencode-status --name ${instanceName} --status ${hcomStatus}`.quiet()
-              if (hcomStatus === "listening" && eventSessionId) {
+              const commsStatus = !current || current.type === "idle" ? "listening" : "active"
+              lastReportedStatus = commsStatus
+              await $.nothrow()`comms opencode-status --name ${instanceName} --status ${commsStatus}`.quiet()
+              if (commsStatus === "listening" && eventSessionId) {
                 await deliverPendingToIdle(eventSessionId)
               }
             }
@@ -498,16 +498,16 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
               await bindIdentity(eventSessionId)
             }
 
-            // Report status to hcom daemon (skip if unchanged)
+            // Report status to comms daemon (skip if unchanged)
             if (permissionPending) {
               startReconcileTimer()
               break
             }
             if (instanceName) {
-              const hcomStatus = statusType === "idle" ? "listening" : "active"
-              if (hcomStatus !== lastReportedStatus) {
-                lastReportedStatus = hcomStatus
-                await $.nothrow()`hcom opencode-status --name ${instanceName} --status ${hcomStatus}`.quiet()
+              const commsStatus = statusType === "idle" ? "listening" : "active"
+              if (commsStatus !== lastReportedStatus) {
+                lastReportedStatus = commsStatus
+                await $.nothrow()`comms opencode-status --name ${instanceName} --status ${commsStatus}`.quiet()
               }
               // Ensure reconcile timer is running (catches missed idle events)
               startReconcileTimer()
@@ -524,7 +524,7 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
             stopNotifyServer()
             stopReconcileTimer()
             if (instanceName) {
-              await $.nothrow()`hcom opencode-stop --name ${instanceName} --reason closed`.quiet()
+              await $.nothrow()`comms opencode-stop --name ${instanceName} --reason closed`.quiet()
             }
             instanceName = null
             sessionId = null
@@ -547,7 +547,7 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
 
     "chat.message": async (input, output) => {
       try {
-        if (!checkHcom()) return
+        if (!checkComms()) return
         if (input.sessionID && !sessionId) {
           sessionId = input.sessionID
         }
@@ -573,19 +573,19 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
       }
     },
 
-    // Tool activity for status/`events --cmd`/`--file`. hcom derives the detail
+    // Tool activity for status/`events --cmd`/`--file`. comms derives the detail
     // from the tool's status_detail mapping; long strings (write content, patch
-    // bodies) are capped so argv stays small; the fields hcom reads come first.
+    // bodies) are capped so argv stays small; the fields comms reads come first.
     "tool.execute.before": async (input, output) => {
       try {
-        if (!checkHcom() || !instanceName || !isBoundSession(input.sessionID)) return
+        if (!checkComms() || !instanceName || !isBoundSession(input.sessionID)) return
         const args: Record<string, unknown> = {}
         for (const [key, value] of Object.entries(output.args ?? {})) {
           args[key] = typeof value === "string" && value.length > 2000 ? value.slice(0, 2000) : value
         }
         // Recorded so the next idle edge is not skipped as "unchanged".
         lastReportedStatus = "active"
-        await $.nothrow()`hcom opencode-status --name ${instanceName} --status active --tool ${input.tool} --input-json ${JSON.stringify(args)}`.quiet()
+        await $.nothrow()`comms opencode-status --name ${instanceName} --status active --tool ${input.tool} --input-json ${JSON.stringify(args)}`.quiet()
       } catch (e) {
         log("ERROR", "plugin.tool_status_error", instanceName, { error: String(e) })
       }
@@ -593,7 +593,7 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
 
     "experimental.chat.messages.transform": async (input, output) => {
       try {
-        if (!checkHcom()) return
+        if (!checkComms()) return
         if (bindingPromise) await bindingPromise
         if (!instanceName && sessionId) await bindIdentity(sessionId)
         if (!instanceName || !sessionId) return
@@ -622,7 +622,7 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
           log("DEBUG", "plugin.transform_no_bootstrap", instanceName, { msg_count: msgCount, user_msgs: userMsgCount })
         }
 
-        // Bootstrap body fill: the PTY bootstrap injects a bodyless <hcom> tag
+        // Bootstrap body fill: the PTY bootstrap injects a bodyless <comms> tag
         // (no message text, just envelope) because the TUI input box can't safely
         // hold arbitrary message bodies (@ triggers, width overflow). The transform
         // hook fires on the same loop iteration, so we fetch the real body here,
@@ -632,10 +632,10 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
         if (lastUserMsg && lastUserMsg.parts) {
           const textPart = lastUserMsg.parts.find((p: any) =>
             p.type === "text" && !p.synthetic && typeof p.text === "string" &&
-            p.text.startsWith("<hcom>") && p.text.endsWith("</hcom>") && !p.text.includes(": ")
+            p.text.startsWith("<comms>") && p.text.endsWith("</comms>") && !p.text.includes(": ")
           )
           if (textPart?.type === "text" && pendingAckId === null) {
-            const msgResult = await $.nothrow()`hcom opencode-read --name ${instanceName}`.quiet()
+            const msgResult = await $.nothrow()`comms opencode-read --name ${instanceName}`.quiet()
             if (msgResult.exitCode === 0) {
               let rawMessages: any[] = []
               try { rawMessages = JSON.parse(msgResult.text()) } catch {}
@@ -657,7 +657,7 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
         if (pendingAckId !== null) {
           const ackId = pendingAckId
           pendingAckId = null
-          await $.nothrow()`hcom opencode-read --name ${instanceName} --ack --up-to ${String(ackId)}`.quiet()
+          await $.nothrow()`comms opencode-read --name ${instanceName} --ack --up-to ${String(ackId)}`.quiet()
           log("INFO", "plugin.deferred_ack", instanceName, { acked_to: ackId })
           if (deliveryPending && sessionId) {
             drainPendingDelivery(sessionId, "post_ack_pending_wake")
@@ -670,12 +670,12 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
 
     "experimental.session.compacting": async (input, output) => {
       try {
-        if (!checkHcom()) return
+        if (!checkComms()) return
         if (!instanceName) return
 
         output.context.push(
-          `You are connected to hcom as "${instanceName}". ` +
-          `Use --name ${instanceName} for all hcom commands.`
+          `You are connected to comms as "${instanceName}". ` +
+          `Use --name ${instanceName} for all comms commands.`
         )
         log("INFO", "plugin.compaction_reset", instanceName)
       } catch (e) {
@@ -683,7 +683,7 @@ export const HcomPlugin: Plugin = async ({ client, $ }) => {
       }
     },
 
-    // Plugin unload, not session end: the hcom instance stays bound, since a
+    // Plugin unload, not session end: the comms instance stays bound, since a
     // reloaded plugin rebinds the same session.
     dispose: async () => {
       disposed = true
@@ -721,9 +721,9 @@ type V2Context = {
   }
 }
 
-// Reshapes v2 events into the v1 events HcomPlugin handles. Execution events
+// Reshapes v2 events into the v1 events CommsPlugin handles. Execution events
 // carry the busy/idle edge.
-function v1Event({ type, data }: V2Event): HcomEvent | null {
+function v1Event({ type, data }: V2Event): CommsEvent | null {
   switch (type) {
     case "session.created":
       return { type, properties: { info: { ...data, id: data.sessionID } } } as any
@@ -767,7 +767,7 @@ async function setupOpenCode2(ctx: V2Context) {
       status: async () => ({ data: statusBySession }),
     },
   }
-  const hooks: any = await HcomPlugin({ client, $: Bun.$ } as unknown as PluginInput)
+  const hooks: any = await CommsPlugin({ client, $: Bun.$ } as unknown as PluginInput)
 
   // The v1 transform reads user messages as { info, parts }. Sharing the part
   // objects lets its in-place text rewrite reach the request; parts it appends
@@ -792,12 +792,12 @@ async function setupOpenCode2(ctx: V2Context) {
       await hooks.dispose()
     }
   }
-  // `hcom opencode --agent/--model`, moved to env by the launcher: OpenCode 2's TUI
+  // `comms opencode --agent/--model`, moved to env by the launcher: OpenCode 2's TUI
   // has no such flags. The agent becomes the server default. The model is switched
   // on each session's first prompt, before its turn runs: agent files override any
   // default model set here, since OpenCode applies them after this plugin's setup.
-  const launchAgent = process.env.HCOM_OPENCODE_AGENT
-  const launchModel = parseLaunchModel(process.env.HCOM_OPENCODE_MODEL)
+  const launchAgent = process.env.COMMS_OPENCODE_AGENT
+  const launchModel = parseLaunchModel(process.env.COMMS_OPENCODE_MODEL)
   // One switch per session, shared by concurrent first prompts; a failed switch
   // is dropped so the next prompt retries it.
   const modelSwitches = new Map<string, Promise<unknown>>()
@@ -852,9 +852,9 @@ async function setupOpenCode2(ctx: V2Context) {
 }
 
 // OpenCode 1 rejects a default export without `server`; pointing it at
-// HcomPlugin keeps a single instance under both loaders.
+// CommsPlugin keeps a single instance under both loaders.
 export default {
-  id: "hcom",
-  server: HcomPlugin,
+  id: "comms",
+  server: CommsPlugin,
   setup: setupOpenCode2,
 }

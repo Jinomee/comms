@@ -5,13 +5,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$prefix = if ($env:HCOM_MOCK_TOOLS_PREFIX) {
-    $env:HCOM_MOCK_TOOLS_PREFIX
+$prefix = if ($env:COMMS_MOCK_TOOLS_PREFIX) {
+    $env:COMMS_MOCK_TOOLS_PREFIX
 } else {
     Join-Path $root "target/mock-tools"
 }
-$cache = if ($env:HCOM_MOCK_TOOLS_NPM_CACHE) {
-    $env:HCOM_MOCK_TOOLS_NPM_CACHE
+$cache = if ($env:COMMS_MOCK_TOOLS_NPM_CACHE) {
+    $env:COMMS_MOCK_TOOLS_NPM_CACHE
 } else {
     Join-Path $root "target/npm-cache"
 }
@@ -44,7 +44,7 @@ $Packages = if (-not $Packages -or $Packages.Count -eq 0) {
 New-Item -ItemType Directory -Force $prefix, $cache | Out-Null
 
 # Resolve a tool launcher exactly as Windows does — extension-major within the
-# directory, `.EXE` before `.CMD` — so this script, hcom's `which_bin`, and the
+# directory, `.EXE` before `.CMD` — so this script, comms's `which_bin`, and the
 # tests' pin check can never disagree about which file they mean.
 function Resolve-Launcher([string] $tool) {
     @(".com", ".exe", ".bat", ".cmd", "") |

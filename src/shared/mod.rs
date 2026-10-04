@@ -1,4 +1,4 @@
-//! Shared types, constants, and utilities for hcom.
+//! Shared types, constants, and utilities for comms.
 
 pub mod ansi;
 pub mod constants;
@@ -39,8 +39,8 @@ pub use constants::{
     status_fg,
     status_icon,
 };
-pub use context::HcomContext;
-pub use errors::{CLIError, HcomError, HookError};
+pub use context::CommsContext;
+pub use errors::{CLIError, CommsError, HookError};
 pub use identity::{CommandContext, SenderIdentity, SenderKind};
 pub use platform::{
     detect_current_tool_from_env, dev_root_binary, is_inside_ai_tool, is_termux, is_wsl,

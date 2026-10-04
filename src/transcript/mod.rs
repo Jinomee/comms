@@ -503,7 +503,7 @@ pub(crate) fn pi_exclusive_roots() -> Vec<PathBuf> {
 /// Pi-exclusive roots plus the shared `PI_CODING_AGENT_DIR/sessions` — the
 /// latter only when `PI_CODING_AGENT_SESSION_DIR` is absent, since Pi's
 /// session-dir override has precedence over `getAgentDir()/sessions` (pi
-/// `main.ts`). hcom-managed Pi sessions (launched with
+/// `main.ts`). comms-managed Pi sessions (launched with
 /// `PI_CODING_AGENT_DIR=<root>/.pi`) live under the shared root, so they must be
 /// searched here too; attribution of that root is by path marker / provenance.
 pub(crate) fn pi_session_roots() -> Vec<PathBuf> {
@@ -815,7 +815,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn omp_disk_roots_ignore_uninitialized_xdg_root() {
-        let (_dir, _hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_dir, _comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         let xdg = tempfile::tempdir().unwrap();
         unsafe {
             std::env::remove_var("OMP_PROFILE");
@@ -838,7 +838,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn omp_disk_roots_honor_pi_config_dir_and_default_profile_sentinels() {
-        let (_dir, _hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_dir, _comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         unsafe {
             std::env::remove_var("PI_CODING_AGENT_DIR");
             std::env::remove_var("XDG_DATA_HOME");
@@ -864,7 +864,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn omp_agent_override_disables_xdg_and_is_ignored_by_named_profiles() {
-        let (_dir, _hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_dir, _comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         let xdg = tempfile::tempdir().unwrap();
         let agent = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(xdg.path().join("omp")).unwrap();

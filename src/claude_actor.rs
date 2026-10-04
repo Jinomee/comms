@@ -1,17 +1,17 @@
 //! Verified Claude hook actor capabilities for CLI invocations.
 //!
 //! Claude's PreToolUse hook knows the exact actor for a shell call. The hook
-//! exports an opaque, database-backed token into that command; the hcom CLI
+//! exports an opaque, database-backed token into that command; the comms CLI
 //! validates it here and resolves the root or exact child row without relying
 //! on shared session/process state.
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::identity;
-use crate::shared::{HcomError, SenderIdentity};
+use crate::shared::{CommsError, SenderIdentity};
 use std::collections::HashMap;
 
-pub const ENV_VAR: &str = "HCOM_CLAUDE_ACTOR";
-pub const SESSION_ENV_VAR: &str = "HCOM_CLAUDE_ACTOR_SESSION";
+pub const ENV_VAR: &str = "COMMS_CLAUDE_ACTOR";
+pub const SESSION_ENV_VAR: &str = "COMMS_CLAUDE_ACTOR_SESSION";
 
 fn env_nonempty<'a>(env: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
     env.get(key)
@@ -25,18 +25,18 @@ fn env_nonempty<'a>(env: &'a HashMap<String, String>, key: &str) -> Option<&'a s
 /// pins the exact acting actor (root or a specific child), but any absent,
 /// malformed, expired, or revoked token yields `None` so the caller falls back
 /// to ordinary identity resolution. This must never hard-fail — plenty of
-/// legitimate hcom calls run in a participating Claude session with no injected
+/// legitimate comms calls run in a participating Claude session with no injected
 /// token (the human `! command` bash box bypasses PreToolUse entirely; so do
 /// manual shells and any tool whose hook didn't rewrite the command).
-pub fn resolve_env_actor(db: &HcomDb) -> Result<Option<SenderIdentity>, HcomError> {
+pub fn resolve_env_actor(db: &CommsDb) -> Result<Option<SenderIdentity>, CommsError> {
     let env: HashMap<String, String> = std::env::vars().collect();
     resolve_actor_from_env(db, &env)
 }
 
 fn resolve_actor_from_env(
-    db: &HcomDb,
+    db: &CommsDb,
     env: &HashMap<String, String>,
-) -> Result<Option<SenderIdentity>, HcomError> {
+) -> Result<Option<SenderIdentity>, CommsError> {
     let (Some(token), Some(session_id)) = (
         env_nonempty(env, ENV_VAR),
         env_nonempty(env, SESSION_ENV_VAR),
@@ -46,7 +46,7 @@ fn resolve_actor_from_env(
 
     let Some(actor_name) = db
         .resolve_claude_actor_capability(token, session_id)
-        .map_err(|error| HcomError::DatabaseError(error.to_string()))?
+        .map_err(|error| CommsError::DatabaseError(error.to_string()))?
     else {
         return Ok(None);
     };
@@ -56,16 +56,16 @@ fn resolve_actor_from_env(
 
 /// Reject an explicit identity that conflicts with the verified Claude actor.
 pub fn ensure_explicit_matches(
-    db: &HcomDb,
+    db: &CommsDb,
     actor: &SenderIdentity,
     explicit_name: &str,
-) -> Result<(), HcomError> {
+) -> Result<(), CommsError> {
     let explicit = identity::resolve_from_name(db, explicit_name)?;
     if explicit.name == actor.name {
         return Ok(());
     }
 
-    Err(HcomError::InvalidInput(format!(
+    Err(CommsError::InvalidInput(format!(
         "Explicit --name '{}' conflicts with verified Claude actor '{}'",
         explicit_name, actor.name
     )))
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn explicit_name_must_match_verified_actor() {
         let temp = TempDir::new().unwrap();
-        let db = HcomDb::open_raw(&temp.path().join("actor-match.db")).unwrap();
+        let db = CommsDb::open_raw(&temp.path().join("actor-match.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -121,7 +121,7 @@ mod tests {
         // bound Claude session with no injected token. That must NOT hard-fail:
         // it yields None so the caller falls back to ordinary resolution.
         let temp = TempDir::new().unwrap();
-        let db = HcomDb::open_raw(&temp.path().join("actor-fallback.db")).unwrap();
+        let db = CommsDb::open_raw(&temp.path().join("actor-fallback.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn valid_token_resolves_verified_actor() {
         let temp = TempDir::new().unwrap();
-        let db = HcomDb::open_raw(&temp.path().join("actor-valid.db")).unwrap();
+        let db = CommsDb::open_raw(&temp.path().join("actor-valid.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn invalid_or_expired_token_falls_back_to_none() {
         let temp = TempDir::new().unwrap();
-        let db = HcomDb::open_raw(&temp.path().join("actor-invalid.db")).unwrap();
+        let db = CommsDb::open_raw(&temp.path().join("actor-invalid.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -180,7 +180,7 @@ mod tests {
             resolve_actor_from_env(
                 &db,
                 &env(&[
-                    ("HCOM_CLAUDE_ACTOR", "tampered"),
+                    ("COMMS_CLAUDE_ACTOR", "tampered"),
                     (SESSION_ENV_VAR, "sess-1")
                 ]),
             )

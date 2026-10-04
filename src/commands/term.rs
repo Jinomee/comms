@@ -1,4 +1,4 @@
-//! `hcom term` command — terminal admin: screen queries, text injection, debug logging.
+//! `comms term` command — terminal admin: screen queries, text injection, debug logging.
 //!
 //!
 //! Talks to PTY instances via their TCP inject ports.
@@ -8,9 +8,9 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 
-/// Parsed arguments for `hcom term`.
+/// Parsed arguments for `comms term`.
 #[derive(clap::Parser, Debug)]
 #[command(
     name = "term",
@@ -22,12 +22,12 @@ pub struct TermArgs {
     pub args: Vec<String>,
 }
 use crate::identity::resolve_display_name;
-use crate::paths::hcom_dir;
+use crate::paths::comms_dir;
 use crate::shared::CommandContext;
 
 /// PTY debug flag file path.
 fn flag_path() -> PathBuf {
-    hcom_dir().join(".tmp").join("pty_debug_on")
+    comms_dir().join(".tmp").join("pty_debug_on")
 }
 
 /// Look up inject port for an instance.
@@ -35,7 +35,7 @@ fn flag_path() -> PathBuf {
 /// The inject port is a bidirectional RPC server (input bytes / `\x00SCREEN\n`
 /// query) — it shares the `notify_endpoints` table with wake endpoints but
 /// uses a different protocol. See `crate::notify::WakeKind` for the wake kinds.
-fn get_inject_port(db: &HcomDb, instance_name: &str) -> Option<i32> {
+fn get_inject_port(db: &CommsDb, instance_name: &str) -> Option<i32> {
     db.conn()
         .query_row(
             "SELECT port FROM notify_endpoints WHERE instance = ?1 AND kind = 'inject'",
@@ -49,8 +49,8 @@ fn get_inject_port(db: &HcomDb, instance_name: &str) -> Option<i32> {
 ///
 /// Returns `(instance_name, inject_port)` pairs. An inject port means the
 /// instance is running a PTY screen-query RPC server (registered by the PTY
-/// manager); having one is the queryable-via-`hcom term` signal.
-fn get_pty_instances(db: &HcomDb) -> Vec<(String, i32)> {
+/// manager); having one is the queryable-via-`comms term` signal.
+fn get_pty_instances(db: &CommsDb) -> Vec<(String, i32)> {
     let mut stmt = match db
         .conn()
         .prepare("SELECT instance, port FROM notify_endpoints WHERE kind = 'inject'")
@@ -68,15 +68,15 @@ fn get_pty_instances(db: &HcomDb) -> Vec<(String, i32)> {
 }
 
 /// Why `name` has no screen to read or inject into.
-fn no_terminal_error(db: &HcomDb, name: &str) -> String {
+fn no_terminal_error(db: &CommsDb, name: &str) -> String {
     match db.get_instance_full(name) {
         Ok(Some(inst)) if inst.background != 0 => {
             format!("'{name}' is headless, so it has no terminal screen")
         }
         // The row can exist before the PTY registers its port, in any status,
-        // so this can't distinguish "still starting" from "not hcom-launched".
+        // so this can't distinguish "still starting" from "not comms-launched".
         Ok(Some(_)) => format!(
-            "'{name}' has no terminal registered yet: it is still starting, or it runs outside an hcom-managed terminal (not launched via 'hcom <tool>')"
+            "'{name}' has no terminal registered yet: it is still starting, or it runs outside an comms-managed terminal (not launched via 'comms <tool>')"
         ),
         _ => crate::identity::describe_missing_agent(db, name),
     }
@@ -92,7 +92,7 @@ fn inject_raw(port: i32, data: &[u8]) -> Result<(), String> {
 }
 
 pub fn inject_text_remote_result(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     text: &str,
     enter: bool,
@@ -138,7 +138,7 @@ fn wait_for_text_rendered(port: i32, text: &str) {
 }
 
 /// Inject text into PTY via inject port (CLI wrapper).
-fn inject_text(db: &HcomDb, name: &str, text: &str, enter: bool) -> i32 {
+fn inject_text(db: &CommsDb, name: &str, text: &str, enter: bool) -> i32 {
     match inject_text_remote_result(db, name, text, enter) {
         Ok(msg) => {
             println!("{msg}");
@@ -168,7 +168,7 @@ fn query_screen(port: i32) -> Option<serde_json::Value> {
 }
 
 pub fn read_instance_screen(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     raw_json: bool,
     clean: bool,
@@ -242,7 +242,7 @@ fn format_screen(data: &serde_json::Value, clean: bool) -> String {
     out.join("\n")
 }
 
-/// Handle: hcom term debug on|off|logs
+/// Handle: comms term debug on|off|logs
 fn handle_debug(argv: &[String]) -> i32 {
     let sub = argv.first().map(|s| s.as_str());
 
@@ -264,7 +264,7 @@ fn handle_debug(argv: &[String]) -> i32 {
         Some("logs") => list_logs(),
         _ => {
             let status = if flag_path().exists() { "on" } else { "off" };
-            println!("PTY debug logging is {status}. Usage: hcom term debug on|off|logs");
+            println!("PTY debug logging is {status}. Usage: comms term debug on|off|logs");
             0
         }
     }
@@ -272,7 +272,7 @@ fn handle_debug(argv: &[String]) -> i32 {
 
 /// List PTY debug log files.
 fn list_logs() -> i32 {
-    let debug_dir = hcom_dir().join(".tmp").join("logs").join("pty_debug");
+    let debug_dir = comms_dir().join(".tmp").join("logs").join("pty_debug");
     if !debug_dir.exists() {
         println!("No PTY debug logs found.");
         return 0;
@@ -317,8 +317,8 @@ fn list_logs() -> i32 {
     0
 }
 
-/// Handle screen query: hcom term [name] [--json]
-fn handle_screen(db: &HcomDb, argv: &[String]) -> i32 {
+/// Handle screen query: comms term [name] [--json]
+fn handle_screen(db: &CommsDb, argv: &[String]) -> i32 {
     let raw_json = argv.iter().any(|a| a == "--json");
     let clean = argv.iter().any(|a| a == "--clean");
     let args: Vec<&str> = argv
@@ -385,7 +385,7 @@ fn handle_screen(db: &HcomDb, argv: &[String]) -> i32 {
     }
 }
 
-pub fn cmd_term(db: &HcomDb, args: &TermArgs, _ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_term(db: &CommsDb, args: &TermArgs, _ctx: Option<&CommandContext>) -> i32 {
     let argv = &args.args;
     let sub = argv.first().map(|s| s.as_str());
 
@@ -402,7 +402,7 @@ pub fn cmd_term(db: &HcomDb, args: &TermArgs, _ctx: Option<&CommandContext>) -> 
             .map(|s| s.as_str())
             .collect();
         if args.is_empty() {
-            println!("Usage: hcom term inject <name> [text] [--enter]");
+            println!("Usage: comms term inject <name> [text] [--enter]");
             return 1;
         }
         let name = resolve_display_name(db, args[0]).unwrap_or_else(|| args[0].to_string());
@@ -435,8 +435,8 @@ pub fn cmd_term(db: &HcomDb, args: &TermArgs, _ctx: Option<&CommandContext>) -> 
     }
 
     // Find the first non-flag positional to check for a `name:DEVICE` remote
-    // target. `hcom term --json luna:ABCD` must route through the RPC path
-    // just like `hcom term luna:ABCD --json`.
+    // target. `comms term --json luna:ABCD` must route through the RPC path
+    // just like `comms term luna:ABCD --json`.
     if let Some(name_arg) = argv.iter().find(|arg| !arg.starts_with('-')) {
         let name = resolve_display_name(db, name_arg).unwrap_or_else(|| name_arg.clone());
         if let Some((base_name, device)) = crate::relay::control::split_device_suffix(&name) {
@@ -466,10 +466,10 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
-    fn test_db() -> HcomDb {
+    fn test_db() -> CommsDb {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         std::mem::forget(dir);
         db

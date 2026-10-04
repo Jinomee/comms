@@ -1,6 +1,6 @@
 //! Broker discovery — parallel TLS handshake to find a working MQTT broker.
 //!
-//! Used by `hcom relay new` to pick the highest-priority reachable public broker.
+//! Used by `comms relay new` to pick the highest-priority reachable public broker.
 
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, mpsc};

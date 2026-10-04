@@ -3,18 +3,22 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use crate::db::{HcomDb, InstanceRow};
+use crate::db::{CommsDb, InstanceRow};
 use crate::hooks::{HookPayload, HookResult, common};
 use crate::instance_binding;
 use crate::instance_lifecycle as lifecycle;
 use crate::instances;
 use crate::log;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 use crate::shared::{ST_ACTIVE, ST_BLOCKED, ST_LISTENING};
 
 use super::config::kimi_config_dir;
 
-fn resolve_instance(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Option<InstanceRow> {
+fn resolve_instance(
+    db: &CommsDb,
+    ctx: &CommsContext,
+    payload: &HookPayload,
+) -> Option<InstanceRow> {
     instance_binding::resolve_instance_from_binding(
         db,
         payload.session_id.as_deref(),
@@ -54,7 +58,7 @@ pub fn derive_kimi_transcript_path(session_id: &str) -> Option<String> {
     None
 }
 
-fn update_position(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload, instance_name: &str) {
+fn update_position(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload, instance_name: &str) {
     let mut updates = serde_json::Map::new();
     if let Some(session_id) = payload.session_id.as_ref().filter(|s| !s.is_empty()) {
         updates.insert("session_id".into(), Value::String(session_id.clone()));
@@ -76,8 +80,8 @@ fn update_position(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload, instan
 }
 
 pub(crate) fn handle_sessionstart(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
 ) -> HookResult {
     // Persistent hooks also fire in plain runs; stay out of those.
@@ -90,7 +94,7 @@ pub(crate) fn handle_sessionstart(
         None => return hook_noop(),
     };
 
-    let env_tool = ctx.raw_env.get("HCOM_TOOL").cloned();
+    let env_tool = ctx.raw_env.get("COMMS_TOOL").cloned();
     if env_tool.as_deref().is_some_and(|tool| tool != "kimi") {
         log::log_warn(
             "hooks",
@@ -147,7 +151,7 @@ pub(crate) fn handle_sessionstart(
     hook_noop()
 }
 
-fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_userpromptsubmit(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance(db, ctx, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -158,7 +162,7 @@ fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload
     // Bootstrap is delivered here, NOT at SessionStart: kimi only injects
     // UserPromptSubmit hook output into model context — SessionStart output is
     // not added to context (see kimi hooks docs). Prepend it to the first
-    // delivery so a launched agent learns it's on hcom.
+    // delivery so a launched agent learns it's on comms.
     //
     // KNOWN LIMITATION (kimi 0.9.0): this makes the bootstrap *visible* — kimi
     // wraps UserPromptSubmit output as a `<hook_result>` block in the turn,
@@ -192,7 +196,7 @@ fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload
     hook_noop()
 }
 
-fn handle_pretooluse(db: &HcomDb, _ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_pretooluse(db: &CommsDb, _ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance(db, _ctx, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -208,7 +212,7 @@ fn handle_pretooluse(db: &HcomDb, _ctx: &HcomContext, payload: &HookPayload) -> 
     hook_noop()
 }
 
-fn handle_posttooluse(_db: &HcomDb, _ctx: &HcomContext, _payload: &HookPayload) -> HookResult {
+fn handle_posttooluse(_db: &CommsDb, _ctx: &CommsContext, _payload: &HookPayload) -> HookResult {
     // Kimi treats PostToolUse as observation-only; hook output is ignored and
     // must not advance the delivery cursor — silently acking here caused vanish.
     // Delivery happens at UserPromptSubmit and Stop only.
@@ -217,13 +221,13 @@ fn handle_posttooluse(_db: &HcomDb, _ctx: &HcomContext, _payload: &HookPayload) 
 
 /// PermissionRequest (observation-only): kimi fires this just before it blocks
 /// waiting for the user to approve/reject a tool call. Mark the agent `blocked`
-/// so `hcom list` reflects the stall and the delivery gate (require_idle) holds
+/// so `comms list` reflects the stall and the delivery gate (require_idle) holds
 /// off injecting until the user responds. `PermissionResult` clears it.
 ///
-/// hcom's own `[[permission.rules]]` allow-rules mean an agent's `hcom send`
+/// comms's own `[[permission.rules]]` allow-rules mean an agent's `comms send`
 /// etc. are auto-approved and never reach an `ask` — so this only fires for
 /// tool calls that genuinely need a human (mirrors claude's handle_permission_request).
-fn handle_permissionrequest(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_permissionrequest(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance(db, ctx, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -256,7 +260,7 @@ fn handle_permissionrequest(db: &HcomDb, ctx: &HcomContext, payload: &HookPayloa
 /// The payload's `decision` (`approved`/`rejected`/`cancelled`/`error`) drives a
 /// decision-aware context so a declined call isn't mislabeled as approved:
 /// `approved:<tool>` only when actually approved, `denied:<tool>` otherwise.
-fn handle_permissionresult(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_permissionresult(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance(db, ctx, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -280,7 +284,7 @@ fn handle_permissionresult(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload
     hook_noop()
 }
 
-pub(crate) fn handle_stop(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+pub(crate) fn handle_stop(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance(db, ctx, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -304,8 +308,8 @@ pub(crate) fn handle_stop(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload)
 }
 
 pub(crate) fn handle_sessionend(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
 ) -> HookResult {
     let instance = match resolve_instance(db, ctx, payload) {
@@ -351,15 +355,15 @@ pub(crate) fn handle_sessionend(
     hook_noop()
 }
 
-fn handle_subagentstart(_db: &HcomDb, _ctx: &HcomContext, _payload: &HookPayload) -> HookResult {
+fn handle_subagentstart(_db: &CommsDb, _ctx: &CommsContext, _payload: &HookPayload) -> HookResult {
     hook_noop()
 }
 
-fn handle_subagentstop(_db: &HcomDb, _ctx: &HcomContext, _payload: &HookPayload) -> HookResult {
+fn handle_subagentstop(_db: &CommsDb, _ctx: &CommsContext, _payload: &HookPayload) -> HookResult {
     hook_noop()
 }
 
-fn handle_notification(_db: &HcomDb, _ctx: &HcomContext, _payload: &HookPayload) -> HookResult {
+fn handle_notification(_db: &CommsDb, _ctx: &CommsContext, _payload: &HookPayload) -> HookResult {
     // Kimi treats Notification as observation-only; hook output is ignored and
     // must not advance the delivery cursor — silently acking here caused vanish.
     // Delivery happens at UserPromptSubmit and Stop only.
@@ -376,7 +380,7 @@ fn hook_noop() -> HookResult {
 
 pub(crate) fn get_handler(
     hook_name: &str,
-) -> Option<fn(&HcomDb, &HcomContext, &HookPayload) -> HookResult> {
+) -> Option<fn(&CommsDb, &CommsContext, &HookPayload) -> HookResult> {
     match hook_name {
         "kimi-sessionstart" => Some(handle_sessionstart),
         "kimi-userpromptsubmit" => Some(handle_userpromptsubmit),
@@ -396,7 +400,7 @@ pub(crate) fn get_handler(
 pub fn dispatch_kimi_hook(hook_name: &str) -> i32 {
     let start = Instant::now();
 
-    let ctx = HcomContext::from_os();
+    let ctx = CommsContext::from_os();
 
     let mut input = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut input) {
@@ -428,7 +432,7 @@ pub fn dispatch_kimi_hook(hook_name: &str) -> i32 {
             Some(sid) => sid,
             None => return 0,
         };
-        if let Ok(db) = HcomDb::open() {
+        if let Ok(db) = CommsDb::open() {
             if db.get_session_binding(sid).ok().flatten().is_none() {
                 return 0;
             }
@@ -437,11 +441,11 @@ pub fn dispatch_kimi_hook(hook_name: &str) -> i32 {
         }
     }
 
-    if !crate::paths::ensure_hcom_directories() {
+    if !crate::paths::ensure_comms_directories() {
         return 0;
     }
 
-    let db = match HcomDb::open() {
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(e) => {
             log::log_error("hooks", "kimi.db.error", &format!("{}", e));
@@ -484,7 +488,7 @@ pub fn dispatch_kimi_hook(hook_name: &str) -> i32 {
 
     // Advance the delivery cursor only after stdout is written (Allow message
     // or Block permissionDecisionReason). Without this the PTY loop never
-    // observes the advance and keeps re-injecting `<hcom>`.
+    // observes the advance and keeps re-injecting `<comms>`.
     match result {
         HookResult::Allow {
             additional_context: Some(ctx),

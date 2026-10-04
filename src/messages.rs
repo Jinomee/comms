@@ -6,9 +6,9 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-/// Precompiled regex for @[hcom-*] system notification mentions.
+/// Precompiled regex for @[comms-*] system notification mentions.
 static SYSTEM_BRACKET_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"@\[hcom-[a-z]+\]").unwrap());
+    LazyLock::new(|| Regex::new(r"@\[comms-[a-z]+\]").unwrap());
 
 /// Message scope: broadcast (everyone) or mentions (targeted).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,7 +381,7 @@ pub fn compute_scope(
 
     // No explicit targets (None) — check for @mentions in message text
     if message.contains('@') {
-        // Check for invalid system notification mention attempts like @[hcom-events]
+        // Check for invalid system notification mention attempts like @[comms-events]
         let system_attempts: Vec<&str> = SYSTEM_BRACKET_RE
             .find_iter(message)
             .map(|m| m.as_str())
@@ -655,7 +655,7 @@ pub fn format_hook_messages(
     result
 }
 
-/// Format messages for model injection — wraps in <hcom> tags.
+/// Format messages for model injection — wraps in <comms> tags.
 #[allow(clippy::type_complexity)]
 pub fn format_messages_json(
     messages: &[Value],
@@ -671,7 +671,7 @@ pub fn format_messages_json(
         get_config_hints,
         tip_checker,
     );
-    format!("<hcom>{}</hcom>", formatted)
+    format!("<comms>{}</comms>", formatted)
 }
 
 /// Get full name from instance data Value.
@@ -715,13 +715,13 @@ fn get_tip_text(tip_key: &str) -> Option<&'static str> {
 fn get_thread_tip_text(instance_name: &str, thread: &str) -> String {
     let sub_id = crate::db::subscriptions::thread_membership_sub_id(thread, instance_name);
     format!(
-        "[tip] You joined thread {thread}. To leave: hcom events unsub {sub_id} (find your sub-id with: hcom events sub list)"
+        "[tip] You joined thread {thread}. To leave: comms events unsub {sub_id} (find your sub-id with: comms events sub list)"
     )
 }
 
 /// Remove bash escape sequences from message content.
 ///
-/// Bash escapes special characters when constructing commands. Since hcom
+/// Bash escapes special characters when constructing commands. Since comms
 /// receives messages as command arguments, we unescape common sequences
 /// that don't affect the actual message intent.
 ///
@@ -888,8 +888,8 @@ pub const PREVIEW_MAX_LEN: usize = 60;
 /// Reuses format_hook_messages but truncates before user message content.
 /// User content may contain @ chars that trigger autocomplete in some CLIs.
 pub fn build_message_preview(formatted: &str, max_len: usize) -> String {
-    let wrapper_open = "<hcom>";
-    let wrapper_close = "</hcom>";
+    let wrapper_open = "<comms>";
+    let wrapper_close = "</comms>";
     let wrapper_len = wrapper_open.len() + wrapper_close.len();
 
     if formatted.is_empty() {
@@ -1181,7 +1181,7 @@ mod tests {
     #[test]
     fn test_compute_scope_system_mention_fails() {
         let instances = vec![info("luna", None)];
-        let result = compute_scope("hey @[hcom-events]", &instances, None);
+        let result = compute_scope("hey @[comms-events]", &instances, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("System notifications"));
     }
@@ -1310,7 +1310,7 @@ mod tests {
 
     #[test]
     fn test_build_message_preview_empty() {
-        assert_eq!(build_message_preview("", 60), "<hcom></hcom>");
+        assert_eq!(build_message_preview("", 60), "<comms></comms>");
     }
 
     #[test]
@@ -1318,8 +1318,8 @@ mod tests {
         let formatted = "[request #42] luna → nova: here is a long message";
         let result = build_message_preview(formatted, 60);
         // Should include up to the colon but not the message content
-        assert!(result.starts_with("<hcom>"));
-        assert!(result.ends_with("</hcom>"));
+        assert!(result.starts_with("<comms>"));
+        assert!(result.ends_with("</comms>"));
         assert!(result.contains("[request #42] luna → nova"));
         assert!(!result.contains("here is a long message"));
     }
@@ -1328,7 +1328,7 @@ mod tests {
     fn test_build_message_preview_no_colon() {
         let formatted = "short text";
         let result = build_message_preview(formatted, 60);
-        assert_eq!(result, "<hcom>short text</hcom>");
+        assert_eq!(result, "<comms>short text</comms>");
     }
 
     // ---- MessageScope / MessageIntent ----
@@ -1423,10 +1423,10 @@ mod tests {
             &msgs,
             "nova",
             &|_name| None,
-            &|| "respond with hcom send".to_string(),
+            &|| "respond with comms send".to_string(),
             None,
         );
-        assert!(result.contains("[respond with hcom send]"));
+        assert!(result.contains("[respond with comms send]"));
     }
 
     #[test]
@@ -1439,8 +1439,8 @@ mod tests {
         })];
 
         let result = format_messages_json(&msgs, "nova", &|_name| None, &|| String::new(), None);
-        assert!(result.starts_with("<hcom>"));
-        assert!(result.ends_with("</hcom>"));
+        assert!(result.starts_with("<comms>"));
+        assert!(result.ends_with("</comms>"));
     }
 
     #[test]
@@ -1553,7 +1553,7 @@ mod tests {
             Some(&tip_checker),
         );
         assert!(result.contains("[tip] You joined thread debate-1."));
-        assert!(result.contains("hcom events unsub sub-"));
+        assert!(result.contains("comms events unsub sub-"));
         assert_eq!(marks.get(), 1);
     }
 

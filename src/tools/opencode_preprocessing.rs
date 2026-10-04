@@ -1,4 +1,4 @@
-//! OpenCode launch preprocessing — sets environment variables for hcom integration.
+//! OpenCode launch preprocessing — sets environment variables for comms integration.
 //! Plugin management is handled separately in hooks/opencode.rs.
 
 use anyhow::{Context, Result, bail};
@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 /// OpenCode 2 hosts plugins in a shared background service that never sees
-/// hcom's launch env; `--standalone` runs a private server per launch instead.
+/// comms's launch env; `--standalone` runs a private server per launch instead.
 const STANDALONE_FLAG: &str = "--standalone";
 /// OpenCode 2's TUI has no `--fork`; the fork happens server-side instead.
 const FORK_FLAG: &str = "--fork";
@@ -16,13 +16,13 @@ const SESSION_FLAG: &str = "--session";
 /// server's defaults from these env vars.
 const AGENT_FLAGS: &[&str] = &["--agent"];
 const MODEL_FLAGS: &[&str] = &["--model", "-m"];
-const AGENT_ENV: &str = "HCOM_OPENCODE_AGENT";
-const MODEL_ENV: &str = "HCOM_OPENCODE_MODEL";
+const AGENT_ENV: &str = "COMMS_OPENCODE_AGENT";
+const MODEL_ENV: &str = "COMMS_OPENCODE_MODEL";
 const OPENCODE_2_MAJOR: u64 = 2;
 
 fn opencode_permission_json() -> String {
-    let prefix = crate::runtime_env::build_hcom_command();
-    let bash = crate::hooks::common::SAFE_HCOM_COMMANDS
+    let prefix = crate::runtime_env::build_comms_command();
+    let bash = crate::hooks::common::SAFE_COMMS_COMMANDS
         .iter()
         .map(|command| (format!("{prefix} {command}*"), serde_json::json!("allow")))
         .collect();
@@ -36,8 +36,8 @@ fn opencode_permission_json() -> String {
 /// Preprocess environment variables for an OpenCode-family launch.
 ///
 /// Sets:
-/// - App-specific permission override: Auto-approve safe hcom bash commands when enabled
-/// - `HCOM_NAME`: Instance name for plugin diagnostics (set before identity binding)
+/// - App-specific permission override: Auto-approve safe comms bash commands when enabled
+/// - `COMMS_NAME`: Instance name for plugin diagnostics (set before identity binding)
 pub fn preprocess_opencode_env(
     env: &mut HashMap<String, String>,
     tool: &str,
@@ -52,7 +52,7 @@ pub fn preprocess_opencode_env(
         };
         env.insert(key.to_string(), opencode_permission_json());
     }
-    env.insert("HCOM_NAME".to_string(), instance_name.to_string());
+    env.insert("COMMS_NAME".to_string(), instance_name.to_string());
 }
 
 /// Preprocess OpenCode launch args for OpenCode 2+: move `--agent`/`--model` into
@@ -129,16 +129,16 @@ fn validate_model_arg(model: &str) -> Result<()> {
     Ok(())
 }
 
-/// hcom's plugin comes from this launch's env (per-run), which only a server
-/// hcom starts itself can see, so `--server <url>` would run without hooks.
+/// comms's plugin comes from this launch's env (per-run), which only a server
+/// comms starts itself can see, so `--server <url>` would run without hooks.
 fn reject_foreign_server(args: &[String]) -> Result<()> {
     if args
         .iter()
         .any(|arg| arg == "--server" || arg.starts_with("--server="))
     {
         bail!(
-            "--server is not supported with hcom on OpenCode 2: an existing server never \
-             loads hcom's plugin. Drop --server; hcom runs a private --standalone server."
+            "--server is not supported with comms on OpenCode 2: an existing server never \
+             loads comms's plugin. Drop --server; comms runs a private --standalone server."
         );
     }
     Ok(())
@@ -236,10 +236,10 @@ mod tests {
         let mut env = HashMap::new();
         preprocess_opencode_env(&mut env, "opencode", "luna", true);
         let perm = env.get("OPENCODE_PERMISSION").unwrap();
-        let prefix = crate::runtime_env::build_hcom_command();
+        let prefix = crate::runtime_env::build_comms_command();
         assert!(perm.contains(&format!("{prefix} send*")));
         assert!(!perm.contains(&format!("\"{prefix} *\"")));
-        assert!(!perm.contains("hcom kill"));
+        assert!(!perm.contains("comms kill"));
     }
 
     #[test]
@@ -250,18 +250,18 @@ mod tests {
     }
 
     #[test]
-    fn test_preprocess_sets_hcom_name() {
+    fn test_preprocess_sets_comms_name() {
         let mut env = HashMap::new();
         preprocess_opencode_env(&mut env, "opencode", "nova", true);
-        assert_eq!(env.get("HCOM_NAME").unwrap(), "nova");
+        assert_eq!(env.get("COMMS_NAME").unwrap(), "nova");
     }
 
     #[test]
     fn test_preprocess_overwrites_existing() {
         let mut env = HashMap::new();
-        env.insert("HCOM_NAME".to_string(), "old".to_string());
+        env.insert("COMMS_NAME".to_string(), "old".to_string());
         preprocess_opencode_env(&mut env, "opencode", "nova", true);
-        assert_eq!(env.get("HCOM_NAME").unwrap(), "nova");
+        assert_eq!(env.get("COMMS_NAME").unwrap(), "nova");
     }
 
     #[test]
@@ -388,7 +388,7 @@ mod tests {
     fn test_permission_json_is_valid() {
         let parsed: serde_json::Value =
             serde_json::from_str(&opencode_permission_json()).expect("valid JSON");
-        let prefix = crate::runtime_env::build_hcom_command();
+        let prefix = crate::runtime_env::build_comms_command();
         assert!(parsed["bash"][format!("{prefix} send*")].is_string());
     }
 }

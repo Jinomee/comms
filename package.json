@@ -1,5 +1,5 @@
 {
-  "name": "hcom-plugin-typecheck",
+  "name": "comms-plugin-typecheck",
   "private": true,
   "description": "Type-checks the embedded agent plugins against their upstream SDK types.",
   "engines": {

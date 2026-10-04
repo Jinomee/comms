@@ -1,7 +1,7 @@
 //! TCP notification server for instant wake on message arrival.
 //!
 //! Used by the delivery loop to block efficiently instead of busy-polling.
-//! When a message is sent (`hcom send`), the wake helpers in
+//! When a message is sent (`comms send`), the wake helpers in
 //! `crate::notify::wake` connect briefly to each instance's notify port to
 //! wake its delivery thread.
 //!

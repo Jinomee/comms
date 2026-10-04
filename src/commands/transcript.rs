@@ -1,16 +1,16 @@
-//! `hcom transcript` command — view and search agent conversation transcripts.
+//! `comms transcript` command — view and search agent conversation transcripts.
 //!
 //!
 //! Supports:
-//! - View transcript: `hcom transcript @instance [N | N-M] [--full] [--detailed] [--json] [--last N]`
-//! - Timeline: `hcom transcript timeline [--last N] [--full] [--json]`
-//! - Search: `hcom transcript search "pattern" [--live] [--all] [--limit N] [--agent TYPE]`
+//! - View transcript: `comms transcript @instance [N | N-M] [--full] [--detailed] [--json] [--last N]`
+//! - Timeline: `comms transcript timeline [--last N] [--full] [--json]`
+//! - Search: `comms transcript search "pattern" [--live] [--all] [--limit N] [--agent TYPE]`
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::shared::CommandContext;
 use crate::tool::Tool;
 use crate::transcript::{self, Exchange, ReadOptions, format_exchanges, summarize_action};
@@ -37,7 +37,7 @@ fn run_search_tool(program: &str, args: &[&str]) -> Result<Option<std::process::
     }
 }
 
-/// Parsed arguments for `hcom transcript`.
+/// Parsed arguments for `comms transcript`.
 #[derive(clap::Parser, Debug)]
 #[command(name = "transcript", about = "View and search transcripts")]
 pub struct TranscriptArgs {
@@ -75,7 +75,7 @@ pub enum TranscriptSubcmd {
     Timeline(TranscriptTimelineArgs),
 }
 
-/// Args for `hcom transcript search`.
+/// Args for `comms transcript search`.
 #[derive(clap::Args, Debug)]
 pub struct TranscriptSearchArgs {
     /// Search pattern (regex)
@@ -100,7 +100,7 @@ pub struct TranscriptSearchArgs {
     pub agent: Option<String>,
 }
 
-/// Args for `hcom transcript timeline`.
+/// Args for `comms transcript timeline`.
 #[derive(clap::Args, Debug)]
 pub struct TranscriptTimelineArgs {
     /// JSON output
@@ -255,7 +255,7 @@ fn range_miss_message(
 /// Uses resolve_display_name_or_stopped (which handles exact base and tag-name
 /// resolution) to check if the instance exists without a transcript.
 fn no_transcript_error(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     display_name: &str,
     device: Option<&str>,
@@ -268,9 +268,9 @@ fn no_transcript_error(
         };
         let command = match device {
             Some(device) => format!(
-                "hcom events --remote-fetch --device {device} --participant {resolved} --type message"
+                "comms events --remote-fetch --device {device} --participant {resolved} --type message"
             ),
-            None => format!("hcom events --participant {resolved} --type message"),
+            None => format!("comms events --participant {resolved} --type message"),
         };
         format!(
             "No model transcript is registered for {display_name}.\nView transport messages with: {command}"
@@ -288,7 +288,7 @@ fn no_transcript_error(
 /// callers fall through to a plain-name DB lookup, which still succeeds via
 /// a looser `LIKE` prefix match and returns the remote device's transcript
 /// path as if it were a local file.
-fn resolve_remote_instance_name(db: &HcomDb, base_name: &str) -> Option<String> {
+fn resolve_remote_instance_name(db: &CommsDb, base_name: &str) -> Option<String> {
     db.conn()
         .query_row(
             "SELECT name FROM instances WHERE name LIKE ?1 ESCAPE '\\' ORDER BY status_time DESC LIMIT 1",
@@ -322,10 +322,10 @@ fn get_exchanges(
 
 // ── Search ───────────────────────────────────────────────────────────────
 
-/// Correlate transcript file paths to hcom agent names via DB queries.
+/// Correlate transcript file paths to comms agent names via DB queries.
 /// Checks instances table first, then stopped life events.
-fn correlate_paths_to_hcom(
-    db: &HcomDb,
+fn correlate_paths_to_comms(
+    db: &CommsDb,
     targets: &[(String, Option<String>)],
 ) -> std::collections::HashMap<String, String> {
     let mut result = std::collections::HashMap::new();
@@ -382,9 +382,9 @@ fn correlate_paths_to_hcom(
     result
 }
 
-/// Search across transcripts: `hcom transcript search "pattern" [--live] [--all] [--limit N] [--exclude-self]`
+/// Search across transcripts: `comms transcript search "pattern" [--live] [--all] [--limit N] [--exclude-self]`
 fn cmd_transcript_search(
-    db: &HcomDb,
+    db: &CommsDb,
     args: &TranscriptSearchArgs,
     ctx: Option<&CommandContext>,
 ) -> i32 {
@@ -515,7 +515,7 @@ fn cmd_transcript_search(
             return 0;
         }
 
-        // Correlate transcript paths/session IDs to hcom names via DB.
+        // Correlate transcript paths/session IDs to comms names via DB.
         let mut targets: Vec<(String, Option<String>)> = matching_files
             .iter()
             .cloned()
@@ -526,7 +526,7 @@ fn cmd_transcript_search(
                 .iter()
                 .filter_map(|m| m.session_id.clone().map(|sid| (m.path.clone(), Some(sid)))),
         );
-        let path_to_hcom = correlate_paths_to_hcom(db, &targets);
+        let path_to_comms = correlate_paths_to_comms(db, &targets);
 
         // Extract line-level matches from each file
         let mut results = Vec::new();
@@ -540,7 +540,7 @@ fn cmd_transcript_search(
                 continue;
             };
             let agent = detected_tool.as_str();
-            let hcom_name = path_to_hcom
+            let comms_name = path_to_comms
                 .get(&transcript_search_key(file_path, None))
                 .cloned()
                 .unwrap_or_default();
@@ -572,7 +572,7 @@ fn cmd_transcript_search(
                     let (line_num, snippet) = parse_match_line(lines[0], true, pattern);
 
                     results.push(json!({
-                            "hcom_name": if hcom_name.is_empty() { serde_json::Value::Null } else { json!(hcom_name) },
+                            "comms_name": if comms_name.is_empty() { serde_json::Value::Null } else { json!(comms_name) },
                             "agent": agent,
                             "path": file_path,
                             "line": line_num,
@@ -587,7 +587,7 @@ fn cmd_transcript_search(
             if results.len() >= limit {
                 break;
             }
-            let hcom_name = path_to_hcom
+            let comms_name = path_to_comms
                 .get(&transcript_search_key(
                     &database_match.path,
                     database_match.session_id.as_deref(),
@@ -595,7 +595,7 @@ fn cmd_transcript_search(
                 .cloned()
                 .unwrap_or_default();
             results.push(json!({
-                "hcom_name": if hcom_name.is_empty() { serde_json::Value::Null } else { json!(hcom_name) },
+                "comms_name": if comms_name.is_empty() { serde_json::Value::Null } else { json!(comms_name) },
                 "agent": database_match.agent,
                 "path": database_match.path,
                 "line": database_match.line,
@@ -635,7 +635,7 @@ fn cmd_transcript_search(
                     .rev()
                     .collect::<Vec<_>>()
                     .join("/");
-                let name_part = r["hcom_name"]
+                let name_part = r["comms_name"]
                     .as_str()
                     .map(|n| format!(" ({n})"))
                     .unwrap_or_default();
@@ -706,7 +706,7 @@ fn cmd_transcript_search(
                 }
     }
 
-    // Search using ripgrep (with line-level matches + snippets) — hcom-tracked/live paths
+    // Search using ripgrep (with line-level matches + snippets) — comms-tracked/live paths
     let mut results = Vec::new();
     for (name, path, agent) in &paths {
         if !Path::new(path).exists() {
@@ -753,7 +753,7 @@ fn cmd_transcript_search(
                 let (line_num, snippet) = parse_match_line(lines[0], has_column, pattern);
 
                 results.push(json!({
-                    "hcom_name": name,
+                    "comms_name": name,
                     "agent": agent,
                     "path": path,
                     "line": line_num,
@@ -773,13 +773,13 @@ fn cmd_transcript_search(
     } else if all_mode {
         ""
     } else {
-        " (hcom-tracked)"
+        " (comms-tracked)"
     };
 
     if json_mode {
         println!(
             "{}",
-            json!({"count": results.len(), "results": results, "scope": if live_mode {"live"} else if all_mode {"all"} else {"hcom"}})
+            json!({"count": results.len(), "results": results, "scope": if live_mode {"live"} else if all_mode {"all"} else {"comms"}})
         );
     } else {
         if results.is_empty() {
@@ -797,8 +797,8 @@ fn cmd_transcript_search(
             println!("Found {} matches{scope_label}:\n", results.len());
         }
         for result in &results {
-            let hcom_name = result
-                .get("hcom_name")
+            let comms_name = result
+                .get("comms_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let agent = result.get("agent").and_then(|v| v.as_str()).unwrap_or("");
@@ -816,7 +816,7 @@ fn cmd_transcript_search(
                 path.to_string()
             };
 
-            println!("[{agent}:{hcom_name}] {path_display}:{line}");
+            println!("[{agent}:{comms_name}] {path_display}:{line}");
             // Snippet is already bounded and centered on the match by
             // parse_match_line; just flatten newlines for single-line display.
             let snippet_clean = snippet.replace('\n', " ");
@@ -827,8 +827,8 @@ fn cmd_transcript_search(
     0
 }
 
-/// Timeline: `hcom transcript timeline [--last N] [--full] [--json]`
-fn cmd_transcript_timeline(db: &HcomDb, args: &TranscriptTimelineArgs) -> i32 {
+/// Timeline: `comms transcript timeline [--last N] [--full] [--json]`
+fn cmd_transcript_timeline(db: &CommsDb, args: &TranscriptTimelineArgs) -> i32 {
     let json_mode = args.json;
     let full_mode = args.full;
     let detailed = args.detailed;
@@ -981,7 +981,7 @@ fn cmd_transcript_timeline(db: &HcomDb, args: &TranscriptTimelineArgs) -> i32 {
 
         // Command line (instance reference for navigation)
         println!(
-            "  hcom transcript @{inst} {}",
+            "  comms transcript @{inst} {}",
             entry.get("position").and_then(|v| v.as_u64()).unwrap_or(1)
         );
         println!();
@@ -992,8 +992,8 @@ fn cmd_transcript_timeline(db: &HcomDb, args: &TranscriptTimelineArgs) -> i32 {
 
 // ── Main Entry Point ─────────────────────────────────────────────────────
 
-/// Main entry point for `hcom transcript` command.
-pub fn cmd_transcript(db: &HcomDb, args: &TranscriptArgs, ctx: Option<&CommandContext>) -> i32 {
+/// Main entry point for `comms transcript` command.
+pub fn cmd_transcript(db: &CommsDb, args: &TranscriptArgs, ctx: Option<&CommandContext>) -> i32 {
     // Handle subcommands
     match &args.subcmd {
         Some(TranscriptSubcmd::Search(search_args)) => {
@@ -1083,7 +1083,7 @@ pub fn cmd_transcript(db: &HcomDb, args: &TranscriptArgs, ctx: Option<&CommandCo
             }
         }
     } else {
-        eprintln!("Usage: hcom transcript @instance [N | N-M] [--full] [--json]");
+        eprintln!("Usage: comms transcript @instance [N | N-M] [--full] [--json]");
         return 1;
     };
 
@@ -1226,7 +1226,7 @@ impl Default for TranscriptRenderOpts<'_> {
 }
 
 pub fn render_instance_transcript(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     last_n: usize,
 ) -> Result<String, String> {
@@ -1243,7 +1243,7 @@ pub fn render_instance_transcript(
 }
 
 pub fn render_instance_transcript_with_options_no_retry(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     range: Option<&str>,
     last_n: usize,
@@ -1270,7 +1270,7 @@ pub fn render_instance_transcript_with_options_no_retry(
 /// Render a remote transcript while retaining the caller's device-qualified
 /// name in diagnostics.
 pub fn render_remote_instance_transcript_with_options_no_retry(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     display_name: &str,
     device: &str,
@@ -1280,7 +1280,7 @@ pub fn render_remote_instance_transcript_with_options_no_retry(
 }
 
 pub fn render_instance_transcript_with_options(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     range: Option<&str>,
     last_n: usize,
@@ -1305,7 +1305,7 @@ pub fn render_instance_transcript_with_options(
 }
 
 fn render_instance_transcript_impl(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     opts: &TranscriptRenderOpts<'_>,
     display_name: &str,
@@ -1411,7 +1411,7 @@ fn render_instance_transcript_impl(
 
 /// Resolve instance name to (name, transcript_path, agent_type, session_id).
 fn resolve_instance_transcript(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
 ) -> Option<(String, String, String, Option<String>)> {
     // An exact live or stopped identity is authoritative even when it has no
@@ -1502,10 +1502,10 @@ mod tests {
     use crate::transcript::shared::finalize_action_text;
     use std::fs;
 
-    fn test_db() -> HcomDb {
+    fn test_db() -> CommsDb {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         std::mem::forget(dir);
         db
@@ -1526,7 +1526,7 @@ mod tests {
         assert_eq!(
             error,
             "No model transcript is registered for pita.\n\
-View transport messages with: hcom events --participant pita --type message"
+View transport messages with: comms events --participant pita --type message"
         );
         assert!(!error.contains("no messages have been exchanged"));
     }
@@ -1546,7 +1546,7 @@ View transport messages with: hcom events --participant pita --type message"
         assert_eq!(
             error,
             "No model transcript is registered for pita:ABCD.\n\
-View transport messages with: hcom events --remote-fetch --device ABCD --participant pita --type message"
+View transport messages with: comms events --remote-fetch --device ABCD --participant pita --type message"
         );
     }
 
@@ -1769,9 +1769,9 @@ View transport messages with: hcom events --remote-fetch --device ABCD --partici
     }
 
     #[test]
-    fn test_correlate_paths_to_hcom_uses_session_id_for_opencode() {
+    fn test_correlate_paths_to_comms_uses_session_id_for_opencode() {
         let dir = tempfile::tempdir().unwrap();
-        let db = HcomDb::open_raw(&dir.path().join("hcom.db")).unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("comms.db")).unwrap();
         db.conn()
             .execute_batch(
                 "CREATE TABLE instances (
@@ -1800,7 +1800,7 @@ View transport messages with: hcom events --remote-fetch --device ABCD --partici
             )
             .unwrap();
 
-        let correlated = correlate_paths_to_hcom(
+        let correlated = correlate_paths_to_comms(
             &db,
             &[
                 ("/tmp/opencode.db".to_string(), Some("ses_a".to_string())),
@@ -2126,11 +2126,11 @@ View transport messages with: hcom events --remote-fetch --device ABCD --partici
     #[test]
     fn missing_search_tool_is_an_error_not_an_empty_result() {
         let err =
-            run_search_tool("__hcom_definitely_missing_search_tool__", &["pattern"]).unwrap_err();
+            run_search_tool("__comms_definitely_missing_search_tool__", &["pattern"]).unwrap_err();
         assert!(err.contains("was not found on PATH"));
     }
 
-    fn insert_test_instance(db: &HcomDb, name: &str, transcript_path: &str, tool: &str) {
+    fn insert_test_instance(db: &CommsDb, name: &str, transcript_path: &str, tool: &str) {
         let mut data = serde_json::Map::new();
         data.insert(
             "created_at".into(),

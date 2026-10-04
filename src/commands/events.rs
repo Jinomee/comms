@@ -1,11 +1,11 @@
-//! `hcom events` command — query events, manage subscriptions.
+//! `comms events` command — query events, manage subscriptions.
 //!
 //!
 //! Modes:
-//! - Query: `hcom events [--last N] [--all] [--full] [--wait SEC] [--sql EXPR] [filters...]`
-//! - Subscribe: `hcom events sub [list | SQL | filters...] [--once] [--for name]`
-//! - Unsubscribe: `hcom events unsub <id>`
-//! - Launch status: `hcom events launch [batch_id] [--timeout N]`
+//! - Query: `comms events [--last N] [--all] [--full] [--wait SEC] [--sql EXPR] [filters...]`
+//! - Subscribe: `comms events sub [list | SQL | filters...] [--once] [--for name]`
+//! - Unsubscribe: `comms events unsub <id>`
+//! - Launch status: `comms events launch [batch_id] [--timeout N]`
 
 use std::collections::HashMap;
 use std::net::TcpListener;
@@ -15,13 +15,13 @@ use serde_json::{Value, json};
 
 use crate::core::filters::{EventFilterArgs, build_sql_from_flags, resolve_filter_names};
 use crate::core::launch_status::wait_for_launch;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::db::subscriptions::{
     SubCreateOutcome, build_and_insert_sql_subscription, create_filter_subscription,
 };
 use crate::shared::CommandContext;
 
-/// Parsed arguments for `hcom events`.
+/// Parsed arguments for `comms events`.
 #[derive(clap::Parser, Debug)]
 #[command(name = "events", about = "Query and subscribe to events")]
 pub struct EventsArgs {
@@ -65,7 +65,7 @@ pub enum EventsSubcmd {
     Launch(EventsLaunchArgs),
 }
 
-/// Args for `hcom events sub`.
+/// Args for `comms events sub`.
 #[derive(clap::Args, Debug)]
 pub struct EventsSubArgs {
     /// Auto-remove after first match
@@ -80,7 +80,7 @@ pub struct EventsSubArgs {
     /// Attach a message (sent from the sub's caller) whenever it fires. Supports @mentions.
     #[arg(long = "on-hit")]
     pub on_hit: Option<String>,
-    /// Create the sub as an external sender (same semantics as `hcom send --from`).
+    /// Create the sub as an external sender (same semantics as `comms send --from`).
     /// Use `-b` as shorthand for `--as bigboss`.
     #[arg(long = "as")]
     pub as_name: Option<String>,
@@ -93,7 +93,7 @@ pub struct EventsSubArgs {
     pub rest: Vec<String>,
 }
 
-/// Args for `hcom events unsub`.
+/// Args for `comms events unsub`.
 #[derive(clap::Args, Debug)]
 pub struct EventsUnsubArgs {
     /// Subscription ID to remove
@@ -103,7 +103,7 @@ pub struct EventsUnsubArgs {
     pub device: Option<String>,
 }
 
-/// Args for `hcom events launch`.
+/// Args for `comms events launch`.
 #[derive(clap::Args, Debug)]
 pub struct EventsLaunchArgs {
     /// Batch ID to wait for
@@ -176,7 +176,7 @@ pub fn streamline_event(event: &Value, filters: &HashMap<String, Vec<String>>) -
 
 /// Query events from events_v view. Returns parsed event objects.
 fn query_events(
-    db: &HcomDb,
+    db: &CommsDb,
     filter_query: &str,
     last_n: usize,
     params: &[&dyn rusqlite::types::ToSql],
@@ -225,7 +225,7 @@ fn query_events(
 // ── Subscription Management ──────────────────────────────────────────────
 
 /// List all active event subscriptions.
-fn events_sub_list(db: &HcomDb) -> i32 {
+fn events_sub_list(db: &CommsDb) -> i32 {
     let rows: Vec<(String, String)> = db
         .conn()
         .prepare("SELECT key, value FROM kv WHERE key LIKE 'events_sub:%'")
@@ -336,13 +336,13 @@ fn events_sub_list(db: &HcomDb) -> i32 {
 
 /// Show one-time tip for a command, tracked per-instance via kv.
 /// Delegates to centralized core::tips module.
-fn maybe_show_tip(db: &HcomDb, instance_name: &str, command: &str) {
+fn maybe_show_tip(db: &CommsDb, instance_name: &str, command: &str) {
     crate::core::tips::maybe_show_tip(db, instance_name, command, false);
 }
 
 /// Create a filter-based subscription.
 fn events_sub_filter(
-    db: &HcomDb,
+    db: &CommsDb,
     filters: &HashMap<String, Vec<String>>,
     sql_parts: &[String],
     caller: &str,
@@ -383,7 +383,7 @@ fn events_sub_filter(
 
 /// Create a raw SQL subscription.
 fn events_sub_sql(
-    db: &HcomDb,
+    db: &CommsDb,
     sql_parts: &[String],
     caller: &str,
     once: bool,
@@ -443,8 +443,8 @@ fn events_sub_sql(
     0
 }
 
-/// Handle `hcom events sub` subcommand.
-fn cmd_events_sub(db: &HcomDb, args: &EventsSubArgs, caller_name: Option<&str>) -> i32 {
+/// Handle `comms events sub` subcommand.
+fn cmd_events_sub(db: &CommsDb, args: &EventsSubArgs, caller_name: Option<&str>) -> i32 {
     let is_list = args.rest.first().map(|s| s.as_str()) == Some("list");
 
     // Remote dispatch: install/list subscriptions on another device.
@@ -493,7 +493,7 @@ fn cmd_events_sub(db: &HcomDb, args: &EventsSubArgs, caller_name: Option<&str>) 
             Some(name) => name,
             None => {
                 eprintln!("Not found: {target}");
-                eprintln!("Use 'hcom list' to see available agents");
+                eprintln!("Use 'comms list' to see available agents");
                 return 1;
             }
         }
@@ -508,7 +508,7 @@ fn cmd_events_sub(db: &HcomDb, args: &EventsSubArgs, caller_name: Option<&str>) 
             Ok(id) => id.name,
             Err(_) => {
                 eprintln!("Error: Cannot create subscription without identity.");
-                eprintln!("Run 'hcom start' first, or use --name.");
+                eprintln!("Run 'comms start' first, or use --name.");
                 return 1;
             }
         }
@@ -529,7 +529,7 @@ fn cmd_events_sub(db: &HcomDb, args: &EventsSubArgs, caller_name: Option<&str>) 
     // No filters and no SQL: show help
     if sql_parts.is_empty() {
         println!(
-            "Event subscriptions: get notified via hcom message when a future event matches.\n\n\
+            "Event subscriptions: get notified via comms message when a future event matches.\n\n\
              Usage:\n\
              \x20 events sub [filters] [--once]     Subscribe using filter flags\n\
              \x20 events sub \"SQL WHERE\" [--once]   Subscribe using raw SQL\n\
@@ -566,8 +566,8 @@ fn cmd_events_sub(db: &HcomDb, args: &EventsSubArgs, caller_name: Option<&str>) 
     events_sub_sql(db, &sql_parts, &caller, once, args.on_hit.as_deref())
 }
 
-/// Handle `hcom events unsub <id>`.
-fn cmd_events_unsub(db: &HcomDb, args: &EventsUnsubArgs) -> i32 {
+/// Handle `comms events unsub <id>`.
+fn cmd_events_unsub(db: &CommsDb, args: &EventsUnsubArgs) -> i32 {
     let mut sub_id = args.id.clone();
     if !sub_id.starts_with("sub-") {
         sub_id = format!("sub-{sub_id}");
@@ -582,7 +582,7 @@ fn cmd_events_unsub(db: &HcomDb, args: &EventsUnsubArgs) -> i32 {
     // Check exists
     if db.kv_get(&key).ok().flatten().is_none() {
         eprintln!("Not found: {sub_id}");
-        eprintln!("Use 'hcom events sub list' to list active subscriptions.");
+        eprintln!("Use 'comms events sub list' to list active subscriptions.");
         return 1;
     }
 
@@ -592,7 +592,7 @@ fn cmd_events_unsub(db: &HcomDb, args: &EventsUnsubArgs) -> i32 {
 }
 
 /// An `--agent` typo otherwise looks exactly like "no events yet".
-fn warn_unknown_agent_filters(db: &HcomDb, filters: &crate::core::filters::FilterMap) {
+fn warn_unknown_agent_filters(db: &CommsDb, filters: &crate::core::filters::FilterMap) {
     let Some(names) = filters.get("instance") else {
         return;
     };
@@ -616,7 +616,7 @@ fn warn_unknown_agent_filters(db: &HcomDb, filters: &crate::core::filters::Filte
 }
 
 /// Install a subscription on a remote device via SUB_CREATE RPC.
-fn cmd_events_sub_remote_create(db: &HcomDb, args: &EventsSubArgs, device: &str) -> i32 {
+fn cmd_events_sub_remote_create(db: &CommsDb, args: &EventsSubArgs, device: &str) -> i32 {
     // Identity selection for the remote sub:
     //   --as NAME / -b → external caller (any name, not required to exist on remote)
     //   --for NAME     → existing remote instance caller
@@ -692,7 +692,7 @@ fn cmd_events_sub_remote_create(db: &HcomDb, args: &EventsSubArgs, device: &str)
 }
 
 /// List subscriptions on a remote device via SUB_LIST RPC.
-fn cmd_events_sub_remote_list(db: &HcomDb, device: &str) -> i32 {
+fn cmd_events_sub_remote_list(db: &CommsDb, device: &str) -> i32 {
     match crate::relay::control::dispatch_remote(
         db,
         device,
@@ -764,7 +764,7 @@ fn cmd_events_sub_remote_list(db: &HcomDb, device: &str) -> i32 {
 }
 
 /// Remove a subscription on a remote device via SUB_UNSUB RPC.
-fn cmd_events_unsub_remote(db: &HcomDb, device: &str, sub_id: &str) -> i32 {
+fn cmd_events_unsub_remote(db: &CommsDb, device: &str, sub_id: &str) -> i32 {
     let params = json!({ "id": sub_id });
     match crate::relay::control::dispatch_remote(
         db,
@@ -794,7 +794,7 @@ fn cmd_events_unsub_remote(db: &HcomDb, device: &str, sub_id: &str) -> i32 {
     }
 }
 
-/// Handle `hcom events launch [batch_id] [--timeout N]`.
+/// Handle `comms events launch [batch_id] [--timeout N]`.
 ///
 /// Exit codes:
 /// - `0` — batch reached `ready`
@@ -803,7 +803,7 @@ fn cmd_events_unsub_remote(db: &HcomDb, device: &str, sub_id: &str) -> i32 {
 ///
 /// Callers that just want "did it succeed" should check `== 0`. Callers that
 /// distinguish "still in progress" from "broken" should branch on `2` vs `1`.
-fn cmd_events_launch(db: &HcomDb, args: &EventsLaunchArgs, instance_name: Option<&str>) -> i32 {
+fn cmd_events_launch(db: &CommsDb, args: &EventsLaunchArgs, instance_name: Option<&str>) -> i32 {
     let timeout = args.timeout;
 
     let batch_id = args.batch_id.as_deref();
@@ -837,7 +837,7 @@ fn cmd_events_launch(db: &HcomDb, args: &EventsLaunchArgs, instance_name: Option
 
 /// Wait mode: block until matching event or timeout.
 fn events_wait(
-    db: &HcomDb,
+    db: &CommsDb,
     filter_query: &str,
     wait_timeout: u64,
     full_output: bool,
@@ -931,13 +931,13 @@ fn events_wait(
             break 0;
         }
 
-        // Check for unread messages (optional preview notification) — use <hcom> XML tag format
+        // Check for unread messages (optional preview notification) — use <comms> XML tag format
         if let Some(name) = instance_name
             && !unread_preview_shown
         {
             let messages = db.get_unread_messages(name);
             if !messages.is_empty() {
-                // Format as <hcom> XML tag
+                // Format as <comms> XML tag
                 let preview = build_message_preview(db, name);
                 println!("{preview}");
                 unread_preview_shown = true;
@@ -995,11 +995,11 @@ fn parse_event_row(row: &rusqlite::Row) -> Result<Value, rusqlite::Error> {
     }))
 }
 
-/// Build <hcom> XML message preview for unread notification.
-fn build_message_preview(db: &HcomDb, instance_name: &str) -> String {
+/// Build <comms> XML message preview for unread notification.
+fn build_message_preview(db: &CommsDb, instance_name: &str) -> String {
     let messages = db.get_unread_messages(instance_name);
     if messages.is_empty() {
-        return "<hcom></hcom>".to_string();
+        return "<comms></comms>".to_string();
     }
 
     // Build simple "sender → you" format
@@ -1030,16 +1030,16 @@ fn build_message_preview(db: &HcomDb, instance_name: &str) -> String {
             .rev()
             .find(|&i| preview.is_char_boundary(i))
             .unwrap_or(0);
-        format!("<hcom>{}...</hcom>", &preview[..end])
+        format!("<comms>{}...</comms>", &preview[..end])
     } else {
-        format!("<hcom>{preview}</hcom>")
+        format!("<comms>{preview}</comms>")
     }
 }
 
 // ── Main Entry Point ─────────────────────────────────────────────────────
 
-/// Main entry point for `hcom events` command.
-pub fn cmd_events(db: &HcomDb, args: &EventsArgs, ctx: Option<&CommandContext>) -> i32 {
+/// Main entry point for `comms events` command.
+pub fn cmd_events(db: &CommsDb, args: &EventsArgs, ctx: Option<&CommandContext>) -> i32 {
     // Resolve identity context
     let instance_name = ctx
         .and_then(|c| c.identity.as_ref())
@@ -1208,7 +1208,7 @@ pub fn cmd_events(db: &HcomDb, args: &EventsArgs, ctx: Option<&CommandContext>) 
         }
 
         // Search archives
-        let archive_dir = crate::paths::hcom_dir().join("archive");
+        let archive_dir = crate::paths::comms_dir().join("archive");
         if archive_dir.exists()
             && let Ok(entries) = std::fs::read_dir(&archive_dir)
         {
@@ -1217,7 +1217,7 @@ pub fn cmd_events(db: &HcomDb, args: &EventsArgs, ctx: Option<&CommandContext>) 
                 if !path.is_dir() {
                     continue;
                 }
-                let db_path = path.join("hcom.db");
+                let db_path = path.join("comms.db");
                 if !db_path.exists() {
                     continue;
                 }
@@ -1226,7 +1226,7 @@ pub fn cmd_events(db: &HcomDb, args: &EventsArgs, ctx: Option<&CommandContext>) 
                     .and_then(|n| n.to_str())
                     .unwrap_or("archive");
 
-                if let Ok(archive_db) = HcomDb::open_raw(&db_path) {
+                if let Ok(archive_db) = CommsDb::open_raw(&db_path) {
                     // Build archive query with same filters
                     let archive_filter = filter_query.clone();
                     let query = format!(
@@ -1507,14 +1507,14 @@ mod tests {
     struct WaiterFixture {
         _temp: tempfile::TempDir,
         db_path: std::path::PathBuf,
-        writer: HcomDb,
+        writer: CommsDb,
     }
 
     impl WaiterFixture {
         fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
             let db_path = temp.path().join("events_wait_test.db");
-            let writer = HcomDb::open_raw(&db_path).unwrap();
+            let writer = CommsDb::open_raw(&db_path).unwrap();
             writer.init_db().unwrap();
             Self {
                 _temp: temp,
@@ -1523,8 +1523,8 @@ mod tests {
             }
         }
 
-        fn open_reader(&self) -> HcomDb {
-            HcomDb::open_raw(&self.db_path).unwrap()
+        fn open_reader(&self) -> CommsDb {
+            CommsDb::open_raw(&self.db_path).unwrap()
         }
 
         fn register_instance(&self, name: &str) {
@@ -1584,7 +1584,7 @@ mod tests {
 
     impl WaiterWorker {
         fn spawn(
-            reader: HcomDb,
+            reader: CommsDb,
             filter_query: &'static str,
             timeout_secs: u64,
             instance: &'static str,

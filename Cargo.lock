@@ -369,6 +369,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
+name = "comms"
+version = "0.7.27"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bytes",
+ "chacha20poly1305",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs",
+ "glob",
+ "libc",
+ "lru",
+ "nix 0.31.3",
+ "portable-pty",
+ "rand 0.10.2",
+ "ratatui",
+ "regex",
+ "rumqttc",
+ "rusqlite",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha2 0.11.0",
+ "shell-words",
+ "signal-hook 0.4.4",
+ "tempfile",
+ "thiserror 2.0.19",
+ "toml",
+ "toml_edit",
+ "unicode-segmentation",
+ "unicode-width",
+ "uuid",
+ "vt100",
+ "webpki-roots",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "compact_str"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -886,48 +928,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "824e001ac4f3012dd16a264bec811403a67ca9deb6c102fc5049b32c4574b35f"
 dependencies = [
  "hashbrown 0.16.1",
-]
-
-[[package]]
-name = "hcom"
-version = "0.7.27"
-dependencies = [
- "anyhow",
- "base64",
- "bytes",
- "chacha20poly1305",
- "chrono",
- "clap",
- "crossterm",
- "dirs",
- "glob",
- "libc",
- "lru",
- "nix 0.31.3",
- "portable-pty",
- "rand 0.10.2",
- "ratatui",
- "regex",
- "rumqttc",
- "rusqlite",
- "rustls",
- "rustls-native-certs",
- "serde",
- "serde_json",
- "serial_test",
- "sha2 0.11.0",
- "shell-words",
- "signal-hook 0.4.4",
- "tempfile",
- "thiserror 2.0.19",
- "toml",
- "toml_edit",
- "unicode-segmentation",
- "unicode-width",
- "uuid",
- "vt100",
- "webpki-roots",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

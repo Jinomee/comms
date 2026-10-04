@@ -4,12 +4,12 @@ use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
-use super::HcomDb;
+use super::CommsDb;
 use crate::shared::time::now_epoch_i64;
 
 const CAPABILITY_TTL_SECS: i64 = 60 * 60;
 
-impl HcomDb {
+impl CommsDb {
     /// Create or reuse an opaque actor capability for one exact shell tool use.
     /// Duplicate hook registrations receive the same token for the same tuple.
     pub fn issue_claude_actor_capability(
@@ -181,7 +181,7 @@ impl HcomDb {
     }
 
     /// Keep outstanding root shell capabilities attached when the root
-    /// deliberately rebinds to another hcom name.
+    /// deliberately rebinds to another comms name.
     pub fn rebind_claude_root_actor_state(
         &self,
         session_id: &str,
@@ -207,9 +207,9 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn setup_db() -> (TempDir, HcomDb) {
+    fn setup_db() -> (TempDir, CommsDb) {
         let temp = TempDir::new().unwrap();
-        let db = HcomDb::open_raw(&temp.path().join("actors.db")).unwrap();
+        let db = CommsDb::open_raw(&temp.path().join("actors.db")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(

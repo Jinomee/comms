@@ -19,8 +19,8 @@ pub mod worker;
 
 pub use worker::observe_pid_file;
 
-use crate::config::HcomConfig;
-use crate::db::HcomDb;
+use crate::config::CommsConfig;
+use crate::db::CommsDb;
 use crate::instance_names;
 
 /// Public MQTT brokers (TLS, port 8883/8886). Tried in order during initial setup;
@@ -57,7 +57,7 @@ pub fn device_id_prefix(device_id: &str) -> &str {
 }
 
 /// Check if relay is configured AND enabled (relay_id set + relay_enabled flag).
-pub fn is_relay_enabled(config: &HcomConfig) -> bool {
+pub fn is_relay_enabled(config: &CommsConfig) -> bool {
     !config.relay_id.is_empty() && config.relay_enabled
 }
 
@@ -65,14 +65,14 @@ pub fn is_relay_enabled(config: &HcomConfig) -> bool {
 ///
 /// Returns `Err` if the field is empty or malformed. Callers that need to
 /// publish or open envelopes (worker, control sender) treat this as fatal —
-/// the user must rerun `hcom relay new` to regenerate a key.
-pub fn load_psk(config: &HcomConfig) -> Result<[u8; 32], String> {
+/// the user must rerun `comms relay new` to regenerate a key.
+pub fn load_psk(config: &CommsConfig) -> Result<[u8; 32], String> {
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     if config.relay_psk.is_empty() {
         return Err(
-            "relay key not set — run `hcom relay new` to generate one and re-share the token"
+            "relay key not set — run `comms relay new` to generate one and re-share the token"
                 .to_string(),
         );
     }
@@ -134,7 +134,7 @@ pub fn parse_broker_url(url: &str) -> Option<(String, u16, bool)> {
 }
 
 /// Get broker (host, port, use_tls) from config. Returns None if relay not configured.
-pub fn get_broker_from_config(config: &HcomConfig) -> Option<(String, u16, bool)> {
+pub fn get_broker_from_config(config: &CommsConfig) -> Option<(String, u16, bool)> {
     if !is_relay_enabled(config) {
         return None;
     }
@@ -145,7 +145,7 @@ pub fn get_broker_from_config(config: &HcomConfig) -> Option<(String, u16, bool)
 }
 
 /// Get or create persistent device UUID
-/// Reads from ~/.hcom/.tmp/device_id; creates with a new UUID if missing or empty.
+/// Reads from ~/.comms/.tmp/device_id; creates with a new UUID if missing or empty.
 ///
 /// Returns None only on genuine I/O failure (cannot create parent dir, cannot
 /// acquire lock, cannot persist UUID). Concurrent callers are serialized via
@@ -154,12 +154,12 @@ pub fn get_broker_from_config(config: &HcomConfig) -> Option<(String, u16, bool)
 /// is treated as missing and refilled under lock — recovers from prior aborted
 /// writes that left a 0-byte file.
 pub fn read_device_uuid() -> Option<String> {
-    let path = crate::paths::hcom_dir().join(".tmp").join("device_id");
+    let path = crate::paths::comms_dir().join(".tmp").join("device_id");
     read_or_create_device_uuid_at(&path)
 }
 
 /// Path-parameterized core of `read_device_uuid`. Split out so tests can drive
-/// it against a tempdir path without touching the global Config / HCOM_DIR env.
+/// it against a tempdir path without touching the global Config / COMMS_DIR env.
 fn read_or_create_device_uuid_at(path: &std::path::Path) -> Option<String> {
     // Fast path: file already populated.
     if let Some(uuid) = read_nonempty(path) {
@@ -228,7 +228,7 @@ pub fn device_short_id(device_uuid: &str) -> String {
 /// Existing mappings win first. Otherwise the natural hash is used if free,
 /// then linear probing walks the CVCV space; only when every CVCV slot is
 /// already taken by a different UUID does the fallback prefix kick in.
-pub fn device_short_id_for_db(db: &HcomDb, device_uuid: &str) -> String {
+pub fn device_short_id_for_db(db: &CommsDb, device_uuid: &str) -> String {
     let uuid_key = relay_uuid_short_key(device_uuid);
     if let Some(short_id) = safe_kv_get(db, &uuid_key) {
         let short_key = relay_short_key(&short_id);
@@ -260,7 +260,7 @@ pub fn device_short_id_for_db(db: &HcomDb, device_uuid: &str) -> String {
     fallback
 }
 
-pub(crate) fn remember_device_short_id(db: &HcomDb, device_uuid: &str, short_id: &str) {
+pub(crate) fn remember_device_short_id(db: &CommsDb, device_uuid: &str, short_id: &str) {
     safe_kv_set(db, &relay_uuid_short_key(device_uuid), Some(short_id));
     safe_kv_set(db, &relay_short_key(short_id), Some(device_uuid));
 }
@@ -271,44 +271,44 @@ pub fn add_device_suffix(name: &str, short_id: &str) -> String {
 }
 
 /// Safe KV get that won't crash on DB errors.
-pub(crate) fn safe_kv_get(db: &HcomDb, key: &str) -> Option<String> {
+pub(crate) fn safe_kv_get(db: &CommsDb, key: &str) -> Option<String> {
     db.kv_get(key).ok().flatten()
 }
 
 /// Safe KV set that won't crash on DB errors.
-pub(crate) fn safe_kv_set(db: &HcomDb, key: &str, value: Option<&str>) {
+pub(crate) fn safe_kv_set(db: &CommsDb, key: &str, value: Option<&str>) {
     let _ = db.kv_set(key, value);
 }
 
 /// Record a fresh worker heartbeat. Called by the worker's main loop ~once per second
 /// and once at pidfile-write so the startup window doesn't look stale.
-pub(crate) fn write_worker_heartbeat(db: &HcomDb) -> bool {
+pub(crate) fn write_worker_heartbeat(db: &CommsDb) -> bool {
     let now = crate::shared::time::now_epoch_f64();
     db.kv_set(HEARTBEAT_KEY, Some(&format!("{now}"))).is_ok()
 }
 
 /// Clear the heartbeat on clean worker shutdown so readers see "no worker" immediately
 /// instead of waiting out HEARTBEAT_STALE_SECS.
-pub(crate) fn clear_worker_heartbeat(db: &HcomDb) {
+pub(crate) fn clear_worker_heartbeat(db: &CommsDb) {
     safe_kv_set(db, HEARTBEAT_KEY, None);
 }
 
 /// Age in seconds of the last heartbeat write, or None if no heartbeat is recorded.
-pub fn worker_heartbeat_age(db: &HcomDb) -> Option<f64> {
+pub fn worker_heartbeat_age(db: &CommsDb) -> Option<f64> {
     let ts: f64 = safe_kv_get(db, HEARTBEAT_KEY)?.parse().ok()?;
     let now = crate::shared::time::now_epoch_f64();
     Some((now - ts).max(0.0))
 }
 
 /// True iff a heartbeat is recorded and it is younger than HEARTBEAT_STALE_SECS.
-pub fn is_worker_heartbeat_fresh(db: &HcomDb) -> bool {
+pub fn is_worker_heartbeat_fresh(db: &CommsDb) -> bool {
     worker_heartbeat_age(db).is_some_and(|age| age < HEARTBEAT_STALE_SECS)
 }
 
 /// Clear all per-device relay KV entries and reset global relay counters.
 /// Called on `relay new` so stale device mappings from the previous relay group
 /// don't contaminate the new one.
-pub fn clear_relay_device_state(db: &HcomDb) {
+pub fn clear_relay_device_state(db: &CommsDb) {
     let prefixes = [
         "relay_short_",
         "relay_uuid_short_",
@@ -452,7 +452,7 @@ pub struct RelayObservation {
 /// Read every relay signal from config + DB + filesystem into a plain struct.
 /// Pure read — no KV writes, no pidfile cleanup. Call `derive_relay_health`
 /// on the result to get the effective state.
-pub fn observe_relay(config: &HcomConfig, db: &HcomDb) -> RelayObservation {
+pub fn observe_relay(config: &CommsConfig, db: &CommsDb) -> RelayObservation {
     RelayObservation {
         configured: !config.relay_id.is_empty(),
         enabled: config.relay_enabled,
@@ -545,7 +545,7 @@ pub fn derive_relay_health(obs: &RelayObservation) -> RelayHealth {
 }
 
 /// Convenience wrapper for callers that just want the answer.
-pub fn relay_health(config: &HcomConfig, db: &HcomDb) -> RelayHealth {
+pub fn relay_health(config: &CommsConfig, db: &CommsDb) -> RelayHealth {
     derive_relay_health(&observe_relay(config, db))
 }
 
@@ -565,7 +565,7 @@ const RUNTIME_HEALTH_KV_KEYS: &[&str] = &[
 
 /// Clear runtime-health KV when the subsystem transitions off. Keeps activity
 /// watermarks so a subsequent `relay on` doesn't re-push already-synced events.
-pub fn clear_runtime_relay_kv(db: &HcomDb) {
+pub fn clear_runtime_relay_kv(db: &CommsDb) {
     for key in RUNTIME_HEALTH_KV_KEYS {
         safe_kv_set(db, key, None);
     }
@@ -594,7 +594,7 @@ pub struct RelayStatus {
 }
 
 /// Get relay status from config + DB.
-pub fn get_relay_status(config: &HcomConfig, db: &HcomDb) -> RelayStatus {
+pub fn get_relay_status(config: &CommsConfig, db: &CommsDb) -> RelayStatus {
     let obs = observe_relay(config, db);
     let health = derive_relay_health(&obs);
     RelayStatus {
@@ -614,7 +614,7 @@ pub fn get_relay_status(config: &HcomConfig, db: &HcomDb) -> RelayStatus {
 ///
 /// Validates port is actually reachable via TCP probe to handle stale ports from crashed daemons.
 /// Only clears port after 3 consecutive failures to avoid stampede from transient timeouts.
-pub fn is_relay_handled_by_daemon(db: &HcomDb) -> bool {
+pub fn is_relay_handled_by_daemon(db: &CommsDb) -> bool {
     let port_str = match safe_kv_get(db, "relay_daemon_port") {
         Some(p) => p,
         None => return false,
@@ -659,7 +659,7 @@ pub fn is_relay_handled_by_daemon(db: &HcomDb) -> bool {
 /// Notify the relay daemon to push immediately via TCP connect.
 /// Returns true if daemon was successfully notified.
 pub fn notify_relay_daemon() -> bool {
-    let db = match HcomDb::open() {
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(_) => return false,
     };
@@ -679,15 +679,15 @@ pub fn notify_relay_daemon() -> bool {
         .unwrap_or(false)
 }
 
-/// Fire-and-forget `hcom relay push` in a background child process so remote
+/// Fire-and-forget `comms relay push` in a background child process so remote
 /// devices see local changes (session end, launch) without waiting for the
 /// worker's next periodic cycle. Best-effort: spawn failures are ignored.
 ///
-/// Unit tests must not spawn the real hcom binary: a child process can outlive
-/// the test's temporary environment and fall back to the developer's `~/.hcom`.
+/// Unit tests must not spawn the real comms binary: a child process can outlive
+/// the test's temporary environment and fall back to the developer's `~/.comms`.
 pub fn spawn_background_push() {
     #[cfg(not(test))]
-    spawn_background_push_with(&crate::runtime_env::get_hcom_prefix());
+    spawn_background_push_with(&crate::runtime_env::get_comms_prefix());
 }
 
 // Callers: `spawn_background_push` under `not(test)`, and the unix-only
@@ -743,7 +743,7 @@ pub fn trigger_push() {
 /// Non-worker callers bail if a daemon is actively handling relay (relay_daemon_port set).
 /// On "ok", the caller claims ownership via relay_status_owner PID.
 /// On error, only the owning PID (or non-daemon callers) can write.
-pub fn set_relay_status(db: &HcomDb, status: &str, error: Option<&str>, is_worker: bool) {
+pub fn set_relay_status(db: &CommsDb, status: &str, error: Option<&str>, is_worker: bool) {
     let pid = std::process::id().to_string();
     let daemon_active = if !is_worker {
         is_relay_handled_by_daemon(db)
@@ -785,7 +785,7 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("spawned");
-        let shim = temp.path().join("hcom-shim");
+        let shim = temp.path().join("comms-shim");
         std::fs::write(&shim, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
         let mut permissions = std::fs::metadata(&shim).unwrap().permissions();
         permissions.set_mode(0o755);
@@ -796,7 +796,7 @@ mod tests {
 
         assert!(
             !marker.exists(),
-            "unit tests must never spawn a real hcom relay push subprocess"
+            "unit tests must never spawn a real comms relay push subprocess"
         );
     }
 
@@ -911,7 +911,7 @@ mod tests {
 
     #[test]
     fn test_is_relay_enabled() {
-        let mut config = HcomConfig::default();
+        let mut config = CommsConfig::default();
         // Default: relay_id empty, relay_enabled true → not enabled
         assert!(!is_relay_enabled(&config));
 
@@ -1216,9 +1216,9 @@ mod tests {
 
     // ── disable clears runtime KV, preserves activity watermarks ────
 
-    fn test_db() -> HcomDb {
+    fn test_db() -> CommsDb {
         let dir = tempfile::tempdir().unwrap();
-        let db = HcomDb::open_raw(&dir.path().join("test.db")).unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("test.db")).unwrap();
         db.init_db().unwrap();
         std::mem::forget(dir);
         db

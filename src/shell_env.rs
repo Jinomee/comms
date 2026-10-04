@@ -19,7 +19,7 @@ const CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 // to be discarded rather than aged out over CACHE_TTL.
 const CACHE_VERSION: u32 = 3;
 const SHELL_TIMEOUT: Duration = Duration::from_secs(10);
-const MARKER_VAR: &str = "HCOM_SHELL_ENV_MARKER";
+const MARKER_VAR: &str = "COMMS_SHELL_ENV_MARKER";
 const RC_FILES: &[&str] = &[
     ".zshrc",
     ".zprofile",
@@ -32,7 +32,7 @@ const RC_FILES: &[&str] = &[
 /// Resolve the user's login+interactive shell environment, out-of-band, cached.
 /// Returns None on any failure so callers can fall back to parent inheritance.
 pub fn resolved_shell_env() -> Option<HashMap<String, String>> {
-    let cache_path = crate::paths::hcom_path(&["shell_env.json"]);
+    let cache_path = crate::paths::comms_path(&["shell_env.json"]);
     let home = dirs::home_dir().or_else(|| std::env::var_os("HOME").map(PathBuf::from))?;
     let rc_mtime = rc_mtime_key_for_home(&home).ok()?;
     let now = epoch_secs(SystemTime::now())?;
@@ -67,7 +67,7 @@ fn resolve_shell_env_uncached() -> Option<HashMap<String, String>> {
         return None;
     }
 
-    let marker = format!("hcom-shell-env-{}", uuid::Uuid::new_v4());
+    let marker = format!("comms-shell-env-{}", uuid::Uuid::new_v4());
     let cmd = format!("printf %s \"${MARKER_VAR}\"; env -0; printf %s \"${MARKER_VAR}\"");
     let output = timed_shell_output(&shell, &cmd, &marker)?;
     parse_shell_env_output(&output.stdout, &marker, MARKER_VAR)
@@ -248,7 +248,7 @@ fn parse_shell_env_output(
             continue;
         };
         let key = String::from_utf8(entry[..eq].to_vec()).ok()?;
-        if key.starts_with("HCOM_") || key == marker_var {
+        if key.starts_with("COMMS_") || key == marker_var {
             continue;
         }
         let value = String::from_utf8(entry[eq + 1..].to_vec()).ok()?;
@@ -281,22 +281,22 @@ mod tests {
     use serial_test::serial;
 
     #[test]
-    fn parse_shell_env_output_extracts_between_markers_and_strips_hcom() {
+    fn parse_shell_env_output_extracts_between_markers_and_strips_comms() {
         let marker = "MARKER";
-        let stdout = b"noiseMARKER\0a=1\0b=two\nlines\0HCOM_PROCESS_ID=pid\0HCOM_SHELL_ENV_MARKER=MARKER\0MARKERtail";
+        let stdout = b"noiseMARKER\0a=1\0b=two\nlines\0COMMS_PROCESS_ID=pid\0COMMS_SHELL_ENV_MARKER=MARKER\0MARKERtail";
 
         let env = parse_shell_env_output(stdout, marker, MARKER_VAR).unwrap();
 
         assert_eq!(env.get("a").map(String::as_str), Some("1"));
         assert_eq!(env.get("b").map(String::as_str), Some("two\nlines"));
-        assert!(!env.contains_key("HCOM_PROCESS_ID"));
+        assert!(!env.contains_key("COMMS_PROCESS_ID"));
         assert!(!env.contains_key(MARKER_VAR));
     }
 
     #[test]
     fn parse_shell_env_output_ignores_marker_value_inside_env_body() {
         let marker = "MARKER";
-        let stdout = b"MARKERHCOM_SHELL_ENV_MARKER=MARKER\0a=1\0MARKER";
+        let stdout = b"MARKERCOMMS_SHELL_ENV_MARKER=MARKER\0a=1\0MARKER";
 
         let env = parse_shell_env_output(stdout, marker, MARKER_VAR).unwrap();
 
@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn resolver_discards_stderr_without_breaking_env_resolution() {
         let shell = test_shell_path();
-        let marker = "hcom-shell-env-stderr-test";
+        let marker = "comms-shell-env-stderr-test";
         // ~256KB of stderr, several times the 64KB pipe buffer the resolver
         // would deadlock on if stderr were piped instead of discarded. The
         // chunk is doubled into a variable and emitted with the `echo`
@@ -524,7 +524,7 @@ mod tests {
     fn clean_shell_seed_env_excludes_parent_tool_contamination() {
         unsafe { std::env::set_var("CODEX_CI", "1") };
         unsafe { std::env::set_var("NO_COLOR", "1") };
-        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", "/tmp/hcom") };
+        unsafe { std::env::set_var("CARGO_MANIFEST_DIR", "/tmp/comms") };
 
         let env = clean_shell_seed_env(Path::new("/bin/zsh"));
 

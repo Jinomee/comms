@@ -108,37 +108,37 @@ const GROK_NATIVE: &[EnvPredicate] = &[
     },
 ];
 const PI_NATIVE: &[EnvPredicate] = &[EnvPredicate {
-    var: "HCOM_PI",
+    var: "COMMS_PI",
     condition: EnvMatch::Equals("1"),
 }];
 const OMP_NATIVE: &[EnvPredicate] = &[EnvPredicate {
-    var: "HCOM_OMP",
+    var: "COMMS_OMP",
     condition: EnvMatch::Equals("1"),
 }];
 
-macro_rules! hcom_tool_predicate {
+macro_rules! comms_tool_predicate {
     ($name:literal, $ident:ident) => {
         const $ident: &[EnvPredicate] = &[EnvPredicate {
-            var: "HCOM_TOOL",
+            var: "COMMS_TOOL",
             condition: EnvMatch::Equals($name),
         }];
     };
 }
 
-hcom_tool_predicate!("claude", HCOM_TOOL_CLAUDE);
-hcom_tool_predicate!("antigravity", HCOM_TOOL_ANTIGRAVITY);
-hcom_tool_predicate!("gemini", HCOM_TOOL_GEMINI);
-hcom_tool_predicate!("codex", HCOM_TOOL_CODEX);
-hcom_tool_predicate!("opencode", HCOM_TOOL_OPENCODE);
-hcom_tool_predicate!("kilo", HCOM_TOOL_KILO);
-hcom_tool_predicate!("cursor", HCOM_TOOL_CURSOR);
-hcom_tool_predicate!("kimi", HCOM_TOOL_KIMI);
-hcom_tool_predicate!("copilot", HCOM_TOOL_COPILOT);
-hcom_tool_predicate!("grok", HCOM_TOOL_GROK);
-hcom_tool_predicate!("pi", HCOM_TOOL_PI);
-hcom_tool_predicate!("omp", HCOM_TOOL_OMP);
+comms_tool_predicate!("claude", COMMS_TOOL_CLAUDE);
+comms_tool_predicate!("antigravity", COMMS_TOOL_ANTIGRAVITY);
+comms_tool_predicate!("gemini", COMMS_TOOL_GEMINI);
+comms_tool_predicate!("codex", COMMS_TOOL_CODEX);
+comms_tool_predicate!("opencode", COMMS_TOOL_OPENCODE);
+comms_tool_predicate!("kilo", COMMS_TOOL_KILO);
+comms_tool_predicate!("cursor", COMMS_TOOL_CURSOR);
+comms_tool_predicate!("kimi", COMMS_TOOL_KIMI);
+comms_tool_predicate!("copilot", COMMS_TOOL_COPILOT);
+comms_tool_predicate!("grok", COMMS_TOOL_GROK);
+comms_tool_predicate!("pi", COMMS_TOOL_PI);
+comms_tool_predicate!("omp", COMMS_TOOL_OMP);
 
-/// Detection precedence: native markers first, then hcom's explicit fallback.
+/// Detection precedence: native markers first, then comms's explicit fallback.
 pub static TOOL_DETECTION_RULES: &[ToolDetectionRule] = &[
     ToolDetectionRule {
         tool: Tool::Claude,
@@ -201,72 +201,76 @@ pub static TOOL_DETECTION_RULES: &[ToolDetectionRule] = &[
     ToolDetectionRule {
         tool: Tool::Pi,
         predicates: PI_NATIVE,
-        clear_for_child: &["HCOM_PI", "PI_CODING_AGENT", "PI_CODING_AGENT_SESSION_DIR"],
+        clear_for_child: &["COMMS_PI", "PI_CODING_AGENT", "PI_CODING_AGENT_SESSION_DIR"],
     },
     ToolDetectionRule {
         tool: Tool::Omp,
         predicates: OMP_NATIVE,
-        clear_for_child: &["HCOM_OMP", "PI_CODING_AGENT", "PI_CODING_AGENT_SESSION_DIR"],
+        clear_for_child: &[
+            "COMMS_OMP",
+            "PI_CODING_AGENT",
+            "PI_CODING_AGENT_SESSION_DIR",
+        ],
     },
     ToolDetectionRule {
         tool: Tool::Claude,
-        predicates: HCOM_TOOL_CLAUDE,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_CLAUDE,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::Antigravity,
-        predicates: HCOM_TOOL_ANTIGRAVITY,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_ANTIGRAVITY,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::Gemini,
-        predicates: HCOM_TOOL_GEMINI,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_GEMINI,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::Codex,
-        predicates: HCOM_TOOL_CODEX,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_CODEX,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::OpenCode,
-        predicates: HCOM_TOOL_OPENCODE,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_OPENCODE,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::Kilo,
-        predicates: HCOM_TOOL_KILO,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_KILO,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::Cursor,
-        predicates: HCOM_TOOL_CURSOR,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_CURSOR,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::Kimi,
-        predicates: HCOM_TOOL_KIMI,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_KIMI,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::Copilot,
-        predicates: HCOM_TOOL_COPILOT,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_COPILOT,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::Grok,
-        predicates: HCOM_TOOL_GROK,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_GROK,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::Pi,
-        predicates: HCOM_TOOL_PI,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_PI,
+        clear_for_child: &["COMMS_TOOL"],
     },
     ToolDetectionRule {
         tool: Tool::Omp,
-        predicates: HCOM_TOOL_OMP,
-        clear_for_child: &["HCOM_TOOL"],
+        predicates: COMMS_TOOL_OMP,
+        clear_for_child: &["COMMS_TOOL"],
     },
 ];
 
@@ -327,9 +331,9 @@ mod tests {
     }
 
     #[test]
-    fn native_markers_beat_hcom_tool_fallback() {
+    fn native_markers_beat_comms_tool_fallback() {
         assert_eq!(
-            detect_tool(&env(&[("GEMINI_CLI", "1"), ("HCOM_TOOL", "claude")])),
+            detect_tool(&env(&[("GEMINI_CLI", "1"), ("COMMS_TOOL", "claude")])),
             Tool::Gemini
         );
     }
@@ -359,6 +363,6 @@ mod tests {
     #[test]
     fn previously_missing_markers_are_in_child_clear_set() {
         assert!(tool_marker_vars().contains(&"CLAUDE_ENV_FILE"));
-        assert!(tool_marker_vars().contains(&"HCOM_TOOL"));
+        assert!(tool_marker_vars().contains(&"COMMS_TOOL"));
     }
 }

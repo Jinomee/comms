@@ -6,13 +6,13 @@ set windows-shell := ["powershell.exe", "-NoProfile", "-Command"]
 # move under $HOME: npm links its shims with symlinks, and the checkout's FUSE
 # mount rejects those (`ln -s` under the repo fails with EPERM).
 default-mock-prefix := if os() == "android" {
-    home_directory() + "/.cache/hcom-mock-tools"
+    home_directory() + "/.cache/comms-mock-tools"
 } else {
     justfile_directory() + "/target/mock-tools"
 }
 
 default-mock-cache := if os() == "android" {
-    home_directory() + "/.cache/hcom-mock-tools-npm"
+    home_directory() + "/.cache/comms-mock-tools-npm"
 } else {
     justfile_directory() + "/target/npm-cache"
 }
@@ -22,16 +22,16 @@ default-mock-cache := if os() == "android" {
 # the ambient TMPDIR and so changes nothing; on Android it is pinned under
 # $HOME/.cache rather than Termux's $PREFIX/tmp.
 ci-tmp := if os() == "android" {
-    home_directory() + "/.cache/hcom-test-tmp"
+    home_directory() + "/.cache/comms-test-tmp"
 } else {
     env_var_or_default("TMPDIR", "/tmp")
 }
 
 mock-prefix := env_var_or_default(
-    "HCOM_MOCK_TOOLS_PREFIX",
+    "COMMS_MOCK_TOOLS_PREFIX",
     default-mock-prefix,
 )
-mock-cache := env_var_or_default("HCOM_MOCK_TOOLS_NPM_CACHE", default-mock-cache)
+mock-cache := env_var_or_default("COMMS_MOCK_TOOLS_NPM_CACHE", default-mock-cache)
 mock-bin := mock-prefix + "/bin"
 
 # The Windows recipes and scripts/ci-windows.ps1 keep their own copies of these
@@ -48,7 +48,7 @@ default:
 [group("setup")]
 [doc("Install the pinned real CLIs (scripts/mock-tools.pins) the real-tool tests run against")]
 mock-tools:
-    HCOM_MOCK_TOOLS_PREFIX="{{mock-prefix}}" HCOM_MOCK_TOOLS_NPM_CACHE="{{mock-cache}}" bash ./scripts/install-mock-tools.sh
+    COMMS_MOCK_TOOLS_PREFIX="{{mock-prefix}}" COMMS_MOCK_TOOLS_NPM_CACHE="{{mock-cache}}" bash ./scripts/install-mock-tools.sh
 
 [group("checks")]
 [doc("Typecheck the omp/opencode/pi plugin sources (skips loudly on Android)")]
@@ -104,8 +104,8 @@ ci *steps:
     only_steps="{{ steps }}"
 
     export TMPDIR="{{ ci-tmp }}"
-    export HCOM_MOCK_TOOLS_PREFIX="{{ mock-prefix }}"
-    export HCOM_MOCK_TOOLS_NPM_CACHE="{{ mock-cache }}"
+    export COMMS_MOCK_TOOLS_PREFIX="{{ mock-prefix }}"
+    export COMMS_MOCK_TOOLS_NPM_CACHE="{{ mock-cache }}"
 
     log_dir="$TMPDIR/ci-logs"
     mkdir -p "$log_dir"
@@ -235,10 +235,10 @@ package-smoke-windows:
     cargo build --release --locked
     New-Item -ItemType Directory -Force target/package-smoke | Out-Null
     # Move (not copy): if real-tool-tests-windows runs after this, every
-    # test-spawned hcom process sets HCOM_DEV_ROOT, which makes dev_root_binary() pick
+    # test-spawned comms process sets COMMS_DEV_ROOT, which makes dev_root_binary() pick
     # whichever of target/release or target/debug has the newer mtime. Leaving
-    # a freshly-built target/release/hcom.exe behind would make it win over the
+    # a freshly-built target/release/comms.exe behind would make it win over the
     # debug binary cargo test just built, so tests would silently re-exec into
     # this release build instead of exercising their own binary.
-    Move-Item -Force target/release/hcom.exe target/package-smoke/hcom-windows-x86_64.exe
-    $version = & target/package-smoke/hcom-windows-x86_64.exe --version; if ($LASTEXITCODE -ne 0 -or $version -notmatch '^hcom ') { throw "Packaged binary smoke test failed: $version" }; Write-Output $version
+    Move-Item -Force target/release/comms.exe target/package-smoke/comms-windows-x86_64.exe
+    $version = & target/package-smoke/comms-windows-x86_64.exe --version; if ($LASTEXITCODE -ne 0 -or $version -notmatch '^comms ') { throw "Packaged binary smoke test failed: $version" }; Write-Output $version

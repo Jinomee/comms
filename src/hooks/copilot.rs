@@ -1,4 +1,4 @@
-//! GitHub Copilot CLI native hook handlers and hooks/hcom.json management.
+//! GitHub Copilot CLI native hook handlers and hooks/comms.json management.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -6,19 +6,19 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
-use crate::db::{HcomDb, InstanceRow};
+use crate::db::{CommsDb, InstanceRow};
 use crate::hooks::{DeliveryAck, HookPayload, common};
 use crate::instance_binding;
 use crate::instance_lifecycle as lifecycle;
 use crate::instances;
 use crate::log;
 use crate::paths;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 use crate::shared::{ST_ACTIVE, ST_LISTENING};
 
 use super::runtime::{self, LaunchCtx, PerRunAdapter, RuntimeInjection};
 
-const HCOM_TRIGGER: &str = "<hcom>";
+const COMMS_TRIGGER: &str = "<comms>";
 const HOOK_TIMEOUT_SECS: u64 = 15;
 // PascalCase selects Copilot's VS Code-compatible payload format; changing to
 // camelCase also changes payload fields, so it requires checking
@@ -64,7 +64,7 @@ pub static PER_RUN: PerRunAdapter = PerRunAdapter {
 };
 
 const COPILOT_PLUGIN_MANIFEST: &[u8] =
-    br#"{"name":"hcom","description":"hcom per-run hooks","hooks":"hooks.json"}"#;
+    br#"{"name":"comms","description":"comms per-run hooks","hooks":"hooks.json"}"#;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SetupError {
@@ -98,20 +98,21 @@ pub enum SetupError {
     },
 }
 
-fn hcom_hooks_file(copilot_home: PathBuf) -> PathBuf {
-    copilot_home.join("hooks").join("hcom.json")
+fn comms_hooks_file(copilot_home: PathBuf) -> PathBuf {
+    copilot_home.join("hooks").join("comms.json")
 }
 
 fn copilot_hooks_path_for_ctx(ctx: &LaunchCtx) -> PathBuf {
-    hcom_hooks_file(
+    comms_hooks_file(
         ctx.path_var("COPILOT_HOME")
             .unwrap_or_else(|| ctx.home().join(".copilot")),
     )
 }
 
-/// Older hcom used `<HCOM_DIR parent>/.copilot` under a project-local HCOM_DIR.
+/// Older comms used `<COMMS_DIR parent>/.copilot` under a project-local COMMS_DIR.
 fn project_local_legacy_path() -> Option<PathBuf> {
-    crate::runtime_env::legacy_tool_config_root().map(|root| hcom_hooks_file(root.join(".copilot")))
+    crate::runtime_env::legacy_tool_config_root()
+        .map(|root| comms_hooks_file(root.join(".copilot")))
 }
 
 /// Relative paths (e.g. a relative `COPILOT_HOME`) resolve against the
@@ -128,18 +129,18 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
 fn copilot_hooks_cleanup_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for dir in crate::runtime_env::tool_config_cleanup_dirs(".copilot", "COPILOT_HOME") {
-        push_unique(&mut paths, hcom_hooks_file(dir));
+        push_unique(&mut paths, comms_hooks_file(dir));
     }
     paths
 }
 
 fn build_copilot_hook_command(command: &str) -> String {
-    let mut parts = crate::runtime_env::get_hcom_prefix();
+    let mut parts = crate::runtime_env::get_comms_prefix();
     parts.push(command.to_string());
     parts.join(" ")
 }
 
-fn is_hcom_copilot_command(command: &str) -> bool {
+fn is_comms_copilot_command(command: &str) -> bool {
     COPILOT_HOOK_COMMANDS.iter().any(|(_, suffix, _, _)| {
         command == build_copilot_hook_command(suffix) || command.ends_with(suffix)
     })
@@ -197,7 +198,7 @@ fn write_json(path: &Path, value: &Value) -> Result<(), SetupError> {
     })
 }
 
-fn merge_hcom_hooks(root: &mut Value, include_permissions: bool) {
+fn merge_comms_hooks(root: &mut Value, include_permissions: bool) {
     if !root.is_object() {
         *root = json!({});
     }
@@ -215,7 +216,7 @@ fn merge_hcom_hooks(root: &mut Value, include_permissions: bool) {
                 !entry
                     .get("command")
                     .and_then(Value::as_str)
-                    .is_some_and(is_hcom_copilot_command)
+                    .is_some_and(is_comms_copilot_command)
             });
         }
     }
@@ -242,7 +243,7 @@ fn merge_hcom_hooks(root: &mut Value, include_permissions: bool) {
     });
 }
 
-fn remove_hcom_hooks(root: &mut Value) {
+fn remove_comms_hooks(root: &mut Value) {
     let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
         return;
     };
@@ -254,7 +255,7 @@ fn remove_hcom_hooks(root: &mut Value) {
             !entry
                 .get("command")
                 .and_then(Value::as_str)
-                .is_some_and(is_hcom_copilot_command)
+                .is_some_and(is_comms_copilot_command)
         });
     }
     hooks.retain(|_, entries| {
@@ -266,7 +267,7 @@ fn remove_hcom_hooks(root: &mut Value) {
 
 fn runtime_hooks_json(include_permissions: bool) -> Result<Vec<u8>> {
     let mut root = json!({});
-    merge_hcom_hooks(&mut root, include_permissions);
+    merge_comms_hooks(&mut root, include_permissions);
     Ok(serde_json::to_vec_pretty(&root)?)
 }
 
@@ -305,30 +306,30 @@ fn cleanup_legacy_per_run(ctx: &LaunchCtx) -> Result<()> {
     )
 }
 
-/// Strip hcom's entries from a legacy `hooks/hcom.json`. When that removed
+/// Strip comms's entries from a legacy `hooks/comms.json`. When that removed
 /// something and only `version` and empty `hooks` remain, the file is deleted;
-/// a file hcom had no entries in is never touched.
+/// a file comms had no entries in is never touched.
 fn remove_hooks_at(path: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let fix = runtime::FIX_REMOVE_HCOM_HOOKS;
+    let fix = runtime::FIX_REMOVE_COMMS_HOOKS;
     let mut value = Value::Object(
         read_json_object(path).with_context(|| runtime::LegacyFile::read(path, fix))?,
     );
     let before = value.clone();
-    remove_hcom_hooks(&mut value);
+    remove_comms_hooks(&mut value);
     if value == before {
         return Ok(());
     }
-    let only_hcom = value.as_object().is_some_and(|root| {
+    let only_comms = value.as_object().is_some_and(|root| {
         root.iter().all(|(key, v)| match key.as_str() {
             "version" => true,
             "hooks" => v.as_object().is_some_and(|hooks| hooks.is_empty()),
             _ => false,
         })
     });
-    if only_hcom {
+    if only_comms {
         std::fs::remove_file(path).map_err(anyhow::Error::from)
     } else {
         write_json(path, &value).map_err(anyhow::Error::from)
@@ -353,7 +354,11 @@ pub fn remove_copilot_hooks() -> bool {
     ok
 }
 
-fn resolve_instance(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Option<InstanceRow> {
+fn resolve_instance(
+    db: &CommsDb,
+    ctx: &CommsContext,
+    payload: &HookPayload,
+) -> Option<InstanceRow> {
     instance_binding::resolve_instance_from_binding(
         db,
         payload.session_id.as_deref(),
@@ -361,7 +366,7 @@ fn resolve_instance(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Op
     )
 }
 
-fn update_position(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload, instance_name: &str) {
+fn update_position(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload, instance_name: &str) {
     let mut updates = serde_json::Map::new();
     if let Some(session_id) = payload.session_id.as_ref().filter(|s| !s.is_empty()) {
         updates.insert("session_id".into(), Value::String(session_id.clone()));
@@ -380,7 +385,7 @@ fn update_position(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload, instan
     instances::update_instance_position(db, instance_name, &updates);
 }
 
-fn handle_sessionstart(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_sessionstart(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     let Some(session_id) = payload.session_id.as_deref().filter(|sid| !sid.is_empty()) else {
         return json!({});
     };
@@ -417,13 +422,17 @@ fn handle_sessionstart(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) ->
     }
 }
 
-fn resolved_instance(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Option<InstanceRow> {
+fn resolved_instance(
+    db: &CommsDb,
+    ctx: &CommsContext,
+    payload: &HookPayload,
+) -> Option<InstanceRow> {
     let instance = resolve_instance(db, ctx, payload)?;
     update_position(db, ctx, payload, &instance.name);
     Some(instance)
 }
 
-fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_userpromptsubmit(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     if let Some(instance) = resolved_instance(db, ctx, payload) {
         let prompt = payload
             .raw
@@ -431,7 +440,7 @@ fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload
             .or_else(|| payload.raw.get("initial_prompt"))
             .and_then(Value::as_str)
             .unwrap_or("");
-        let context = if prompt.trim() == HCOM_TRIGGER {
+        let context = if prompt.trim() == COMMS_TRIGGER {
             "trigger"
         } else {
             "prompt"
@@ -441,7 +450,7 @@ fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload
     json!({})
 }
 
-fn handle_pretooluse(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_pretooluse(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     if let Some(instance) = resolved_instance(db, ctx, payload) {
         common::update_tool_status(
             db,
@@ -454,7 +463,7 @@ fn handle_pretooluse(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> V
     json!({})
 }
 
-fn pending_additional_context(db: &HcomDb, instance_name: &str) -> (Value, Option<DeliveryAck>) {
+fn pending_additional_context(db: &CommsDb, instance_name: &str) -> (Value, Option<DeliveryAck>) {
     match common::prepare_pending_messages(db, instance_name) {
         Some(prepared) => (
             json!({ "additionalContext": prepared.formatted }),
@@ -465,8 +474,8 @@ fn pending_additional_context(db: &HcomDb, instance_name: &str) -> (Value, Optio
 }
 
 fn handle_posttooluse(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
 ) -> (Value, Option<DeliveryAck>) {
     let Some(instance) = resolved_instance(db, ctx, payload) else {
@@ -476,8 +485,8 @@ fn handle_posttooluse(
 }
 
 fn handle_agentstop(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
 ) -> (Value, Option<DeliveryAck>) {
     let Some(instance) = resolved_instance(db, ctx, payload) else {
@@ -494,7 +503,7 @@ fn handle_agentstop(
     }
 }
 
-fn handle_notification(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_notification(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     let Some(instance) = resolved_instance(db, ctx, payload) else {
         return json!({});
     };
@@ -513,7 +522,7 @@ fn handle_notification(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) ->
     }
 }
 
-fn handle_erroroccurred(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_erroroccurred(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     let Some(instance) = resolved_instance(db, ctx, payload) else {
         return json!({});
     };
@@ -540,11 +549,11 @@ fn handle_erroroccurred(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -
     json!({})
 }
 
-fn command_looks_safe_hcom(command: &str) -> bool {
-    common::is_safe_hcom_command(command)
+fn command_looks_safe_comms(command: &str) -> bool {
+    common::is_safe_comms_command(command)
 }
 
-fn handle_permissionrequest(_db: &HcomDb, _ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_permissionrequest(_db: &CommsDb, _ctx: &CommsContext, payload: &HookPayload) -> Value {
     let command = payload
         .tool_input
         .get("command")
@@ -555,15 +564,15 @@ fn handle_permissionrequest(_db: &HcomDb, _ctx: &HcomContext, payload: &HookPayl
     // POSIX shells only: the check parses POSIX quoting, and PowerShell
     // reads a backslash-escaped `;` as a statement separator.
     if (payload.tool_name == "bash" || (payload.tool_name == "shell" && !cfg!(windows)))
-        && command_looks_safe_hcom(command)
+        && command_looks_safe_comms(command)
     {
-        json!({ "behavior": "allow", "message": "hcom coordination command" })
+        json!({ "behavior": "allow", "message": "comms coordination command" })
     } else {
         json!({})
     }
 }
 
-fn handle_subagentstart(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_subagentstart(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     let Some(instance) = resolved_instance(db, ctx, payload) else {
         return json!({});
     };
@@ -581,11 +590,11 @@ fn handle_subagentstart(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -
 
 /// Only the instance's own session ends it (as in Claude's SessionEnd).
 /// Resolution prefers the process binding, so without this check any session
-/// the Copilot process ends would stop the instance. After `hcom r`, the new,
+/// the Copilot process ends would stop the instance. After `comms r`, the new,
 /// still-running process sent SessionEnd `user_exit` ~15s in and the resumed
 /// instance was stopped. A PTY-launched instance whose session is not bound
 /// yet is still cleaned up by the PTY wrapper when Copilot exits.
-fn handle_sessionend(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_sessionend(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     let Some(instance) = resolve_instance(db, ctx, payload) else {
         return json!({});
     };
@@ -635,7 +644,7 @@ pub fn dispatch_copilot_hook_native(hook_name: &str) -> i32 {
             return 0;
         }
     };
-    let db = match HcomDb::open() {
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(err) => {
             log::log_warn(
@@ -646,7 +655,7 @@ pub fn dispatch_copilot_hook_native(hook_name: &str) -> i32 {
             return 0;
         }
     };
-    let ctx = HcomContext::from_os();
+    let ctx = CommsContext::from_os();
     if !common::hook_gate_check(&ctx, &db) {
         return 0;
     }
@@ -698,7 +707,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", workspace.join(".hcom"));
+            std::env::set_var("COMMS_DIR", workspace.join(".comms"));
             std::env::remove_var("COPILOT_HOME");
         }
         (dir, workspace, guard)
@@ -708,7 +717,7 @@ mod tests {
     fn sessionend_only_stops_the_instances_own_session() {
         crate::config::Config::init();
         let dir = tempfile::tempdir().unwrap();
-        let db = HcomDb::open_raw(&dir.path().join("test.db")).unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("test.db")).unwrap();
         db.init_db().unwrap();
         // A resumed instance: launched with the resumed session id and bound
         // to the new Copilot process.
@@ -721,10 +730,10 @@ mod tests {
             .unwrap();
         db.set_process_binding("proc-new", "resumed-sid", "memo")
             .unwrap();
-        let env = [("HCOM_PROCESS_ID".to_string(), "proc-new".to_string())]
+        let env = [("COMMS_PROCESS_ID".to_string(), "proc-new".to_string())]
             .into_iter()
             .collect();
-        let ctx = HcomContext::from_env(&env, dir.path().to_path_buf());
+        let ctx = CommsContext::from_env(&env, dir.path().to_path_buf());
         let end = |sid: &str| {
             let raw = json!({"sessionId": sid, "reason": "user_exit"});
             handle_sessionend(
@@ -785,7 +794,7 @@ mod tests {
     #[serial]
     fn per_run_cleanup_preserves_unrelated_legacy_hooks() {
         let (_dir, workspace, _guard) = copilot_test_env();
-        let hooks_path = workspace.join(".copilot/hooks/hcom.json");
+        let hooks_path = workspace.join(".copilot/hooks/comms.json");
         std::fs::create_dir_all(hooks_path.parent().unwrap()).unwrap();
         let mut root = json!({
             "version": 1,
@@ -793,7 +802,7 @@ mod tests {
                 "SessionStart": [{ "type": "command", "command": "./custom-start.sh" }]
             }
         });
-        merge_hcom_hooks(&mut root, true);
+        merge_comms_hooks(&mut root, true);
         std::fs::write(&hooks_path, serde_json::to_vec_pretty(&root).unwrap()).unwrap();
         let mut ctx = LaunchCtx::ambient(crate::tool::Tool::Copilot, false);
         ctx.cwd = workspace;
@@ -808,12 +817,12 @@ mod tests {
 
     #[test]
     #[serial]
-    fn per_run_cleanup_deletes_hcom_only_legacy_file() {
+    fn per_run_cleanup_deletes_comms_only_legacy_file() {
         let (_dir, workspace, _guard) = copilot_test_env();
-        let hooks_path = workspace.join(".copilot/hooks/hcom.json");
+        let hooks_path = workspace.join(".copilot/hooks/comms.json");
         std::fs::create_dir_all(hooks_path.parent().unwrap()).unwrap();
         let mut root = json!({ "version": 1 });
-        merge_hcom_hooks(&mut root, true);
+        merge_comms_hooks(&mut root, true);
         std::fs::write(&hooks_path, serde_json::to_vec_pretty(&root).unwrap()).unwrap();
         let mut ctx = LaunchCtx::ambient(crate::tool::Tool::Copilot, false);
         ctx.cwd = workspace;
@@ -822,9 +831,9 @@ mod tests {
     }
 
     #[test]
-    fn remove_leaves_file_without_hcom_entries_alone() {
+    fn remove_leaves_file_without_comms_entries_alone() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("hcom.json");
+        let path = dir.path().join("comms.json");
         let source = r#"{"version":1,"hooks":{}}"#;
         std::fs::write(&path, source).unwrap();
         remove_hooks_at(&path).unwrap();
@@ -832,29 +841,31 @@ mod tests {
     }
 
     #[test]
-    fn safe_hcom_command_detection() {
-        assert!(command_looks_safe_hcom("hcom send @luna -- hi"));
-        assert!(command_looks_safe_hcom("uvx hcom list --json"));
-        assert!(!command_looks_safe_hcom("hcom kill luna"));
-        assert!(!command_looks_safe_hcom("echo hcom send @luna"));
-        assert!(command_looks_safe_hcom("hcom"));
-        assert!(command_looks_safe_hcom(
-            "hcom send @luna --name nova -- 'costs $5; fine (really)'"
+    fn safe_comms_command_detection() {
+        assert!(command_looks_safe_comms("comms send @luna -- hi"));
+        assert!(command_looks_safe_comms("uvx comms list --json"));
+        assert!(!command_looks_safe_comms("comms kill luna"));
+        assert!(!command_looks_safe_comms("echo comms send @luna"));
+        assert!(command_looks_safe_comms("comms"));
+        assert!(command_looks_safe_comms(
+            "comms send @luna --name nova -- 'costs $5; fine (really)'"
         ));
-        assert!(command_looks_safe_hcom(r#"hcom send @luna -- "a; b | c""#));
+        assert!(command_looks_safe_comms(
+            r#"comms send @luna -- "a; b | c""#
+        ));
         for chained in [
-            "hcom send @luna -- hi; rm -rf ~",
-            "hcom send @luna -- hi && rm -rf ~",
-            "hcom list | sh",
-            "hcom send @luna -- $(cat ~/.ssh/id_rsa)",
-            r#"hcom send @luna -- "$(whoami)""#,
-            "hcom send @luna -- `id`",
-            "hcom list > /tmp/x",
-            "hcom list\nrm -rf ~",
-            "hcom send @luna -- 'unterminated",
-            "hcomx list",
+            "comms send @luna -- hi; rm -rf ~",
+            "comms send @luna -- hi && rm -rf ~",
+            "comms list | sh",
+            "comms send @luna -- $(cat ~/.ssh/id_rsa)",
+            r#"comms send @luna -- "$(whoami)""#,
+            "comms send @luna -- `id`",
+            "comms list > /tmp/x",
+            "comms list\nrm -rf ~",
+            "comms send @luna -- 'unterminated",
+            "commsx list",
         ] {
-            assert!(!command_looks_safe_hcom(chained), "{chained}");
+            assert!(!command_looks_safe_comms(chained), "{chained}");
         }
     }
 }

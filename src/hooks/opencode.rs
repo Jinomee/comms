@@ -6,13 +6,13 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::bootstrap;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::instance_binding;
 use crate::instance_lifecycle as lifecycle;
 use crate::instances;
 use crate::log::{log_error, log_info};
 use crate::shared::ST_LISTENING;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 
 use super::common;
 use super::common::finalize_session;
@@ -75,7 +75,7 @@ fn launch_agent_and_model_from_args(launch_args: Option<&str>) -> (Option<String
     (agent, model)
 }
 
-fn launch_agent_and_model(db: &HcomDb, instance_name: &str) -> (Option<String>, Option<Value>) {
+fn launch_agent_and_model(db: &CommsDb, instance_name: &str) -> (Option<String>, Option<Value>) {
     db.get_instance_full(instance_name)
         .ok()
         .flatten()
@@ -84,7 +84,7 @@ fn launch_agent_and_model(db: &HcomDb, instance_name: &str) -> (Option<String>, 
 }
 
 /// Upsert plugin notify endpoint in DB.
-fn upsert_plugin_notify_endpoint(db: &HcomDb, instance_name: &str, port: u16) {
+fn upsert_plugin_notify_endpoint(db: &CommsDb, instance_name: &str, port: u16) {
     if let Err(e) = db.upsert_notify_endpoint(instance_name, "plugin", port) {
         log_error(
             "native",
@@ -102,11 +102,11 @@ fn upsert_plugin_notify_endpoint(db: &HcomDb, instance_name: &str, port: u16) {
 /// Used by status handler when instance becomes listening.
 /// Wakes every registered wake kind (pty, hook, plugin, listen variants,
 /// events_wait). The inject endpoint is excluded — it speaks RPC, not wake.
-fn notify_all_endpoints(db: &HcomDb, instance_name: &str) {
+fn notify_all_endpoints(db: &CommsDb, instance_name: &str) {
     crate::notify::wake(db, instance_name, &[]);
 }
 
-fn instance_tool(db: &HcomDb, instance_name: &str) -> String {
+fn instance_tool(db: &CommsDb, instance_name: &str) -> String {
     db.get_instance_full(instance_name)
         .ok()
         .flatten()
@@ -133,10 +133,10 @@ fn get_opencode_db_path() -> Option<String> {
 /// Handle opencode-start: bind session to process, set listening status.
 ///
 /// Called by OpenCode plugin on session.created event.
-/// Expects: hcom opencode-start --session-id <id> [--notify-port <port>]
+/// Expects: comms opencode-start --session-id <id> [--notify-port <port>]
 ///
 /// Returns JSON: {"name": "<instance>", "session_id": "<id>", "bootstrap": "..."}
-fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (i32, String) {
+fn handle_start(ctx: &CommsContext, db: &CommsDb, argv: &[String]) -> (i32, String) {
     let session_id = match parse_flag(argv, "--session-id") {
         Some(sid) => sid,
         None => return (0, r#"{"error":"Missing --session-id"}"#.to_string()),
@@ -146,7 +146,7 @@ fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (i32, String
 
     let process_id = match &ctx.process_id {
         Some(pid) => pid.clone(),
-        None => return (0, r#"{"error":"HCOM_PROCESS_ID not set"}"#.to_string()),
+        None => return (0, r#"{"error":"COMMS_PROCESS_ID not set"}"#.to_string()),
     };
 
     // Re-binding detection: session already bound (compaction or reconnect)
@@ -225,7 +225,7 @@ fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (i32, String
     if let Ok(Some(existing)) = db.get_instance_full(&instance_name)
         && existing.last_event_id == 0
     {
-        let launch_event_id: Option<i64> = std::env::var("HCOM_LAUNCH_EVENT_ID")
+        let launch_event_id: Option<i64> = std::env::var("COMMS_LAUNCH_EVENT_ID")
             .ok()
             .and_then(|s| s.parse().ok());
         let current_max = db.get_last_event_id();
@@ -291,12 +291,12 @@ fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (i32, String
 /// Handle opencode-status: update instance status.
 ///
 /// Called by OpenCode plugin on session.status and session.idle events.
-/// Expects: hcom opencode-status --name <name> --status <status> [--context <ctx>] [--detail <d>]
+/// Expects: comms opencode-status --name <name> --status <status> [--context <ctx>] [--detail <d>]
 ///
 /// Tool activity (`tool.execute.before`) instead passes
 /// `--tool <id> --input-json <args>`; the detail is then derived from the
 /// tool's `status_detail` mapping, like every other tool's pre-tool hook.
-fn handle_status(db: &HcomDb, argv: &[String]) -> (i32, String) {
+fn handle_status(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"error":"Missing --name or --status"}"#.to_string()),
@@ -344,7 +344,7 @@ fn handle_status(db: &HcomDb, argv: &[String]) -> (i32, String) {
 /// - --check: Return "true" or "false" string
 /// - --ack --up-to <id>: Advance cursor to explicit event_id
 /// - --ack (no --up-to): Advance cursor to max pending event_id (legacy)
-fn handle_read(db: &HcomDb, argv: &[String]) -> (i32, String) {
+fn handle_read(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"error":"Missing --name"}"#.to_string()),
@@ -428,8 +428,8 @@ fn handle_read(db: &HcomDb, argv: &[String]) -> (i32, String) {
 /// Handle opencode-stop: finalize session and clean up instance.
 ///
 /// Called by OpenCode plugin on session.deleted event.
-/// Expects: hcom opencode-stop --name <name> [--reason <reason>]
-fn handle_stop(db: &HcomDb, argv: &[String]) -> (i32, String) {
+/// Expects: comms opencode-stop --name <name> [--reason <reason>]
+fn handle_stop(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"error":"Missing --name"}"#.to_string()),
@@ -449,14 +449,14 @@ pub fn dispatch_opencode_hook(hook_name: &str, argv: &[String]) -> (i32, String)
     let start = Instant::now();
 
     // Build context
-    let ctx = HcomContext::from_os();
+    let ctx = CommsContext::from_os();
 
-    // Ensure hcom directories exist before opening DB.
-    // On clean HOME/HCOM_DIR the DB parent dir won't exist yet.
-    crate::paths::ensure_hcom_directories_at(&ctx.hcom_dir);
+    // Ensure comms directories exist before opening DB.
+    // On clean HOME/COMMS_DIR the DB parent dir won't exist yet.
+    crate::paths::ensure_comms_directories_at(&ctx.comms_dir);
 
     // Open DB (includes schema migration/compat)
-    let db = match HcomDb::open() {
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(e) => {
             log_error(
@@ -521,10 +521,10 @@ pub fn dispatch_opencode_hook(hook_name: &str, argv: &[String]) -> (i32, String)
     (exit_code, output)
 }
 
-/// Embedded hcom.ts plugin source (compiled into the binary).
-pub const PLUGIN_SOURCE: &str = include_str!("../opencode_plugin/hcom.ts");
+/// Embedded comms.ts plugin source (compiled into the binary).
+pub const PLUGIN_SOURCE: &str = include_str!("../opencode_plugin/comms.ts");
 
-const PLUGIN_FILENAME: &str = "hcom.ts";
+const PLUGIN_FILENAME: &str = "comms.ts";
 
 pub static OPENCODE_PER_RUN: PerRunAdapter = PerRunAdapter {
     prepare: prepare_per_run,
@@ -696,10 +696,10 @@ fn prepare_per_run(ctx: &LaunchCtx) -> Result<RuntimeInjection> {
         .or_insert_with(|| serde_json::json!([]))
         .as_array_mut()
         .with_context(|| format!("{env_var}.plugin must be an array"))?;
-    // An inherited value (e.g. `hcom opencode` run from an hcom agent's shell)
-    // can carry another hcom version's plugin; two copies in one process would
+    // An inherited value (e.g. `comms opencode` run from an comms agent's shell)
+    // can carry another comms version's plugin; two copies in one process would
     // both claim the host, so keep only the current one.
-    plugins.retain(|value| !value.as_str().is_some_and(runtime::is_hcom_runtime_path));
+    plugins.retain(|value| !value.as_str().is_some_and(runtime::is_comms_runtime_path));
     plugins.push(Value::String(plugin_url));
     Ok(RuntimeInjection {
         args: ctx.args.clone(),
@@ -767,7 +767,7 @@ fn cleanup_legacy_per_run(ctx: &LaunchCtx) -> Result<()> {
     let paths = discovery_roots(ctx)
         .into_iter()
         .flat_map(|root| ["plugin", "plugins"].map(|dir| root.join(dir).join(PLUGIN_FILENAME)));
-    runtime::remove_owned_files(paths, is_hcom_owned)
+    runtime::remove_owned_files(paths, is_comms_owned)
 }
 
 fn current_home_dir() -> std::path::PathBuf {
@@ -784,7 +784,7 @@ fn xdg_config_home() -> String {
         .into_owned()
 }
 
-/// The XDG global plugin dir for an OpenCode-family app, where older hcom
+/// The XDG global plugin dir for an OpenCode-family app, where older comms
 /// installed its plugin.
 fn plugin_dir_for_app(app: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(xdg_config_home())
@@ -797,7 +797,7 @@ fn get_opencode_plugin_dir() -> std::path::PathBuf {
     plugin_dir_for_app("opencode")
 }
 
-/// Get the canonical install path for the hcom.ts plugin.
+/// Get the canonical install path for the comms.ts plugin.
 #[cfg(test)]
 fn get_opencode_plugin_path() -> std::path::PathBuf {
     get_opencode_plugin_dir().join(PLUGIN_FILENAME)
@@ -808,7 +808,7 @@ fn get_kilo_plugin_path() -> std::path::PathBuf {
     plugin_dir_for_app("kilo").join(PLUGIN_FILENAME)
 }
 
-/// Remove hcom.ts from ALL plugin directories for an app.
+/// Remove comms.ts from ALL plugin directories for an app.
 ///
 /// Checks all candidate directories directly (without filtering by dir existence)
 /// to avoid missing stale plugins when path resolution differs between install/remove.
@@ -850,24 +850,24 @@ fn remove_plugin(app: &str) -> std::io::Result<()> {
     }
 
     for p in paths {
-        if is_hcom_owned(&p)? {
+        if is_comms_owned(&p)? {
             std::fs::remove_file(&p)?;
         }
     }
     Ok(())
 }
 
-/// Marker line in `src/opencode_plugin/hcom.ts` identifying hcom's plugin.
-pub const PLUGIN_MARKER: &str = "// hcom-managed-plugin";
+/// Marker line in `src/opencode_plugin/comms.ts` identifying comms's plugin.
+pub const PLUGIN_MARKER: &str = "// comms-managed-plugin";
 
-/// True when `path` holds an hcom OpenCode/Kilo plugin: the current source, the
-/// marker, or a pre-marker version (every one exports `HcomPlugin` and reads
-/// `HCOM_DIR`). A user's own `hcom.ts` is not matched.
-pub fn is_hcom_owned(path: &std::path::Path) -> std::io::Result<bool> {
-    crate::hooks::runtime::file_is_hcom_owned(path, |content| {
+/// True when `path` holds an comms OpenCode/Kilo plugin: the current source, the
+/// marker, or a pre-marker version (every one exports `CommsPlugin` and reads
+/// `COMMS_DIR`). A user's own `comms.ts` is not matched.
+pub fn is_comms_owned(path: &std::path::Path) -> std::io::Result<bool> {
+    crate::hooks::runtime::file_is_comms_owned(path, |content| {
         content == PLUGIN_SOURCE
             || content.contains(PLUGIN_MARKER)
-            || (content.contains("HcomPlugin") && content.contains("HCOM_DIR"))
+            || (content.contains("CommsPlugin") && content.contains("COMMS_DIR"))
     })
 }
 
@@ -890,10 +890,10 @@ mod tests {
     }
 
     /// Create a fresh test DB in a temp directory with schema initialized.
-    fn test_db() -> (tempfile::TempDir, HcomDb) {
+    fn test_db() -> (tempfile::TempDir, CommsDb) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         (dir, db)
     }
@@ -1034,8 +1034,8 @@ mod tests {
 
     #[test]
     fn test_plugin_source_contains_entrypoint() {
-        assert!(PLUGIN_SOURCE.contains("HcomPlugin"));
-        assert!(PLUGIN_SOURCE.contains("HCOM_PLUGIN_HOST_PID"));
+        assert!(PLUGIN_SOURCE.contains("CommsPlugin"));
+        assert!(PLUGIN_SOURCE.contains("COMMS_PLUGIN_HOST_PID"));
         assert!(PLUGIN_SOURCE.contains("if (!claimPluginHost()) return {}"));
         assert!(PLUGIN_SOURCE.contains("if (!claimPluginHost()) return async () => {}"));
     }
@@ -1043,7 +1043,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_per_run_config_merges_jsonc_plugins_in_order() {
-        let (_dir, hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_dir, comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         let ctx = LaunchCtx {
             tool: crate::tool::Tool::OpenCode,
             env: [
@@ -1086,20 +1086,20 @@ mod tests {
             assert!(dir.join("index.ts").is_file(), "{runtime}");
         }
         // Decodes the URL, so Windows `file:///C:/…` compares as a native path.
-        assert!(runtime::is_hcom_runtime_path(runtime), "{runtime}");
-        assert!(runtime::integrations_dir().starts_with(&hcom));
+        assert!(runtime::is_comms_runtime_path(runtime), "{runtime}");
+        assert!(runtime::integrations_dir().starts_with(&comms));
     }
 
     #[test]
     #[serial]
-    fn test_per_run_config_replaces_inherited_hcom_plugin() {
-        let (_dir, hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+    fn test_per_run_config_replaces_inherited_comms_plugin() {
+        let (_dir, comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         let stale = runtime::file_url(
-            &hcom
+            &comms
                 .join("integrations")
                 .join("opencode")
                 .join("0ld")
-                .join("hcom.ts"),
+                .join("comms.ts"),
         );
         let ctx = LaunchCtx {
             tool: crate::tool::Tool::Kilo,
@@ -1153,16 +1153,16 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let owned_paths = [
-            xdg.join("opencode").join("plugin").join("hcom.ts"),
-            home.join(".opencode").join("plugins").join("hcom.ts"),
-            project.join(".opencode").join("plugin").join("hcom.ts"),
-            custom.join("plugins").join("hcom.ts"),
+            xdg.join("opencode").join("plugin").join("comms.ts"),
+            home.join(".opencode").join("plugins").join("comms.ts"),
+            project.join(".opencode").join("plugin").join("comms.ts"),
+            custom.join("plugins").join("comms.ts"),
         ];
         for path in &owned_paths {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, PLUGIN_SOURCE).unwrap();
         }
-        let user = cwd.join(".opencode").join("plugins").join("hcom.ts");
+        let user = cwd.join(".opencode").join("plugins").join("comms.ts");
         std::fs::create_dir_all(user.parent().unwrap()).unwrap();
         std::fs::write(&user, "export const Mine = async () => ({})").unwrap();
 
@@ -1197,14 +1197,14 @@ mod tests {
     fn test_get_opencode_plugin_dir_defaults_to_xdg_global_path() {
         let dir = tempfile::tempdir().unwrap();
         let saved_home = std::env::var("HOME").ok();
-        let saved_hcom = std::env::var("HCOM_DIR").ok();
+        let saved_comms = std::env::var("COMMS_DIR").ok();
         let saved_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         let home = dir.path().join("home");
         let xdg = dir.path().join("xdg");
-        std::fs::create_dir_all(home.join(".hcom")).unwrap();
+        std::fs::create_dir_all(home.join(".comms")).unwrap();
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", home.join(".hcom"));
+            std::env::set_var("COMMS_DIR", home.join(".comms"));
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
         }
 
@@ -1218,10 +1218,10 @@ mod tests {
         } else {
             unsafe { std::env::remove_var("HOME") };
         }
-        if let Some(hcom) = saved_hcom {
-            unsafe { std::env::set_var("HCOM_DIR", hcom) };
+        if let Some(comms) = saved_comms {
+            unsafe { std::env::set_var("COMMS_DIR", comms) };
         } else {
-            unsafe { std::env::remove_var("HCOM_DIR") };
+            unsafe { std::env::remove_var("COMMS_DIR") };
         }
         if let Some(xdg) = saved_xdg {
             unsafe { std::env::set_var("XDG_CONFIG_HOME", xdg) };
@@ -1233,27 +1233,27 @@ mod tests {
     #[test]
     fn test_get_opencode_plugin_path() {
         let path = get_opencode_plugin_path();
-        assert!(path.ends_with("hcom.ts"));
+        assert!(path.ends_with("comms.ts"));
     }
 
     #[test]
     fn test_plugin_filename_constant() {
-        assert_eq!(PLUGIN_FILENAME, "hcom.ts");
+        assert_eq!(PLUGIN_FILENAME, "comms.ts");
     }
 
     #[test]
     #[serial]
-    fn test_project_local_hcom_dir_keeps_global_plugin_dir_and_cleans_legacy() {
+    fn test_project_local_comms_dir_keeps_global_plugin_dir_and_cleans_legacy() {
         let _guard = EnvGuard::new();
         let dir = tempfile::tempdir().unwrap();
         let workspace = dir.path().join("workspace");
-        let hcom_dir = workspace.join(".hcom");
+        let comms_dir = workspace.join(".comms");
         let home = dir.path().join("home");
         let xdg = dir.path().join("xdg");
-        std::fs::create_dir_all(&hcom_dir).unwrap();
+        std::fs::create_dir_all(&comms_dir).unwrap();
         std::fs::create_dir_all(&home).unwrap();
         unsafe {
-            std::env::set_var("HCOM_DIR", &hcom_dir);
+            std::env::set_var("COMMS_DIR", &comms_dir);
             std::env::set_var("HOME", &home);
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
             std::env::remove_var("KILO_CONFIG_DIR");
@@ -1282,16 +1282,16 @@ mod tests {
         let home = dir.path().join("home");
         let xdg = dir.path().join("xdg");
         let custom = dir.path().join("custom-opencode");
-        std::fs::create_dir_all(home.join(".hcom")).unwrap();
+        std::fs::create_dir_all(home.join(".comms")).unwrap();
         std::fs::create_dir_all(custom.join("plugins")).unwrap();
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", home.join(".hcom"));
+            std::env::set_var("COMMS_DIR", home.join(".comms"));
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
             std::env::set_var("OPENCODE_CONFIG_DIR", &custom);
         }
 
-        let plugin_path = custom.join("plugins").join("hcom.ts");
+        let plugin_path = custom.join("plugins").join("comms.ts");
         std::fs::write(&plugin_path, PLUGIN_SOURCE).unwrap();
 
         remove_opencode_plugin().unwrap();
@@ -1306,16 +1306,16 @@ mod tests {
         let home = dir.path().join("home");
         let xdg = dir.path().join("xdg");
         let custom = dir.path().join("custom-kilo");
-        std::fs::create_dir_all(home.join(".hcom")).unwrap();
+        std::fs::create_dir_all(home.join(".comms")).unwrap();
         std::fs::create_dir_all(custom.join("plugins")).unwrap();
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", home.join(".hcom"));
+            std::env::set_var("COMMS_DIR", home.join(".comms"));
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
             std::env::set_var("KILO_CONFIG_DIR", &custom);
         }
 
-        let plugin_path = custom.join("plugins").join("hcom.ts");
+        let plugin_path = custom.join("plugins").join("comms.ts");
         std::fs::write(&plugin_path, PLUGIN_SOURCE).unwrap();
 
         remove_kilo_plugin().unwrap();
@@ -1324,38 +1324,38 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_remove_plugin_deletes_only_hcom_owned_files() {
+    fn test_remove_plugin_deletes_only_comms_owned_files() {
         let _guard = EnvGuard::new();
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         let xdg = dir.path().join("xdg");
         let custom = dir.path().join("custom-opencode");
-        std::fs::create_dir_all(home.join(".hcom")).unwrap();
+        std::fs::create_dir_all(home.join(".comms")).unwrap();
         std::fs::create_dir_all(xdg.join("opencode").join("plugins")).unwrap();
         std::fs::create_dir_all(custom.join("plugin")).unwrap();
         std::fs::create_dir_all(custom.join("plugins")).unwrap();
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", home.join(".hcom"));
+            std::env::set_var("COMMS_DIR", home.join(".comms"));
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
             std::env::set_var("OPENCODE_CONFIG_DIR", &custom);
         }
 
-        let user_file = xdg.join("opencode").join("plugins").join("hcom.ts");
+        let user_file = xdg.join("opencode").join("plugins").join("comms.ts");
         std::fs::write(&user_file, "export const Mine = async () => ({})").unwrap();
-        // Pre-marker hcom version.
-        let legacy = custom.join("plugin").join("hcom.ts");
+        // Pre-marker comms version.
+        let legacy = custom.join("plugin").join("comms.ts");
         std::fs::write(
             &legacy,
-            "const HCOM_DIR = process.env.HCOM_DIR\nexport const HcomPlugin = async () => ({})",
+            "const COMMS_DIR = process.env.COMMS_DIR\nexport const CommsPlugin = async () => ({})",
         )
         .unwrap();
-        let marked = custom.join("plugins").join("hcom.ts");
+        let marked = custom.join("plugins").join("comms.ts");
         std::fs::write(&marked, format!("{PLUGIN_MARKER}\nold body")).unwrap();
 
         assert!(PLUGIN_SOURCE.starts_with(PLUGIN_MARKER));
         remove_opencode_plugin().unwrap();
-        assert!(user_file.exists(), "user's own hcom.ts must survive");
+        assert!(user_file.exists(), "user's own comms.ts must survive");
         assert!(!legacy.exists());
         assert!(!marked.exists());
     }
@@ -1367,17 +1367,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
         let custom = dir.path().join("custom-opencode");
-        std::fs::create_dir_all(home.join(".hcom")).unwrap();
+        std::fs::create_dir_all(home.join(".comms")).unwrap();
         // A directory where the plugin file should be can't be inspected.
-        std::fs::create_dir_all(custom.join("plugins").join("hcom.ts")).unwrap();
+        std::fs::create_dir_all(custom.join("plugins").join("comms.ts")).unwrap();
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", home.join(".hcom"));
+            std::env::set_var("COMMS_DIR", home.join(".comms"));
             std::env::set_var("XDG_CONFIG_HOME", dir.path().join("xdg"));
             std::env::set_var("OPENCODE_CONFIG_DIR", &custom);
         }
         let err = remove_opencode_plugin().unwrap_err();
-        assert!(err.to_string().contains("hcom.ts"), "{err}");
+        assert!(err.to_string().contains("comms.ts"), "{err}");
     }
 
     // ── Transcript path ──
@@ -1396,7 +1396,7 @@ mod tests {
     #[test]
     fn test_handle_start_missing_session_id() {
         crate::config::Config::init();
-        let ctx = HcomContext::from_os();
+        let ctx = CommsContext::from_os();
         let (_dir, db) = test_db();
         let argv = sv(&[]);
         let (code, output) = handle_start(&ctx, &db, &argv);
@@ -1408,7 +1408,7 @@ mod tests {
     #[serial]
     fn test_handle_start_rebind_includes_launch_identity() {
         crate::config::Config::init();
-        let (_env_dir, hcom_dir, test_home, _guard) =
+        let (_env_dir, comms_dir, test_home, _guard) =
             crate::hooks::test_helpers::isolated_test_env();
         let (_db_dir, db) = test_db();
         let launch_args =
@@ -1425,13 +1425,13 @@ mod tests {
 
         let env = std::collections::HashMap::from([
             (
-                "HCOM_DIR".to_string(),
-                hcom_dir.to_string_lossy().to_string(),
+                "COMMS_DIR".to_string(),
+                comms_dir.to_string_lossy().to_string(),
             ),
             ("HOME".to_string(), test_home.to_string_lossy().to_string()),
-            ("HCOM_PROCESS_ID".to_string(), "pid-123".to_string()),
+            ("COMMS_PROCESS_ID".to_string(), "pid-123".to_string()),
         ]);
-        let ctx = HcomContext::from_env(&env, std::path::PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, std::path::PathBuf::from("/tmp"));
 
         let (code, output) = handle_start(&ctx, &db, &sv(&["--session-id", "sess-1"]));
         assert_eq!(code, 0);

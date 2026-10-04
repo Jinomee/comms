@@ -1,18 +1,18 @@
 //! Antigravity (agy) PTY exit cleanup.
 //!
 //! Delivery itself runs through the shared state machine in `delivery.rs`
-//! (PTY injects `<hcom>` wake, hooks deliver bodies via `gemini-beforeagent`
+//! (PTY injects `<comms>` wake, hooks deliver bodies via `gemini-beforeagent`
 //! and ack via `commit_delivery_ack` cursor advance). Only the teardown path
 //! is special: SessionEnd may have already soft-stopped the instance, in
 //! which case we must not re-delete its row.
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::log::{log_info, log_warn};
 use crate::shared::ST_INACTIVE;
 
 /// PTY exit cleanup when SessionEnd already soft-stopped the instance.
 pub(crate) fn cleanup_antigravity_pty_exit(
-    db: &mut HcomDb,
+    db: &mut CommsDb,
     current_name: &str,
     process_id: &str,
     owns_instance: bool,

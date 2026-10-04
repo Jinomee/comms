@@ -5,10 +5,10 @@ import { dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:net";
 
-const HCOM_DIR = process.env.HCOM_DIR || `${homedir()}/.hcom`;
-const LOG_PATH = `${HCOM_DIR}/.tmp/logs/hcom.log`;
+const COMMS_DIR = process.env.COMMS_DIR || `${homedir()}/.comms`;
+const LOG_PATH = `${COMMS_DIR}/.tmp/logs/comms.log`;
 
-type HcomResult = {
+type CommsResult = {
 	code: number;
 	stdout: string;
 	stderr: string;
@@ -34,9 +34,9 @@ function log(
 	} catch {}
 }
 
-function hcom(args: string[]): Promise<HcomResult> {
+function comms(args: string[]): Promise<CommsResult> {
 	return new Promise((resolve) => {
-		const child = spawn("hcom", args, { stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn("comms", args, { stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "";
 		let stderr = "";
 		child.stdout.setEncoding("utf8");
@@ -63,16 +63,16 @@ function formatMessagesForInjection(messages: any[], recipientName: string): str
 				: `[new message #${m.event_id}]`;
 		return `${prefix} ${m.from} -> ${recipientName}: ${m.message}`;
 	});
-	if (messages.length === 1) return `<hcom>${parts[0]}</hcom>`;
-	return `<hcom>[${messages.length} new messages] | ${parts.join(" | ")}</hcom>`;
+	if (messages.length === 1) return `<comms>${parts[0]}</comms>`;
+	return `<comms>[${messages.length} new messages] | ${parts.join(" | ")}</comms>`;
 }
 
 function isBodylessWake(text: string): boolean {
 	const trimmed = text.trim();
-	return trimmed === "<hcom>" || trimmed === "<hcom></hcom>";
+	return trimmed === "<comms>" || trimmed === "<comms></comms>";
 }
 
-export default function hcomExtension(pi: ExtensionAPI) {
+export default function commsExtension(pi: ExtensionAPI) {
 	let instanceName: string | null = null;
 	let sessionId: string | null = null;
 	let bootstrapText: string | null = null;
@@ -139,7 +139,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 	async function bindIdentity(ctx: ExtensionContext): Promise<void> {
 		currentCtx = ctx;
 		if (instanceName || bindingPromise) return bindingPromise ?? Promise.resolve();
-		if (process.env.HCOM_LAUNCHED !== "1") return;
+		if (process.env.COMMS_LAUNCHED !== "1") return;
 		bindingPromise = (async () => {
 			try {
 				const sid = ctx.sessionManager.getSessionId();
@@ -148,7 +148,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 				const args = ["pi-start", "--session-id", sid, "--cwd", ctx.cwd];
 				if (transcriptPath) args.push("--transcript-path", transcriptPath);
 				if (port) args.push("--notify-port", String(port));
-				const result = await hcom(args);
+				const result = await comms(args);
 				if (result.code !== 0) {
 					stopNotifyServer();
 					log("WARN", "plugin.bind_failed", null, { exit_code: result.code, stderr: result.stderr.slice(0, 300) });
@@ -180,7 +180,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 
 	async function fetchPending(): Promise<{ messages: any[]; maxId: number } | null> {
 		if (!instanceName) return null;
-		const result = await hcom(["pi-read", "--name", instanceName]);
+		const result = await comms(["pi-read", "--name", instanceName]);
 		if (result.code !== 0) {
 			log("WARN", "plugin.delivery_read_failed", instanceName, { exit_code: result.code, stderr: result.stderr.slice(0, 300) });
 			return null;
@@ -272,7 +272,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		if (!instanceName || pendingAckId === null) return;
 		const ackId = pendingAckId;
 		pendingAckId = null;
-		await hcom(["pi-read", "--name", instanceName, "--ack", "--up-to", String(ackId)]);
+		await comms(["pi-read", "--name", instanceName, "--ack", "--up-to", String(ackId)]);
 		log("INFO", "plugin.deferred_ack", instanceName, { acked_to: ackId, source });
 		// The extension-input ack path clears pendingAckId outside deliverPending;
 		// replay any wake that was gated while it was set.
@@ -285,7 +285,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		const args = ["pi-status", "--name", instanceName, "--status", status];
 		if (context) args.push("--context", context);
 		if (detail) args.push("--detail", detail);
-		await hcom(args);
+		await comms(args);
 		lastReportedStatusKey = statusKey(status, context, detail);
 	}
 
@@ -358,7 +358,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		// via the process binding — stopping here would delete the live instance.
 		const terminal = event.reason === undefined || event.reason === "quit";
 		if (instanceName && terminal) {
-			await hcom(["pi-stop", "--name", instanceName, "--reason", event.reason ?? "shutdown"]);
+			await comms(["pi-stop", "--name", instanceName, "--reason", event.reason ?? "shutdown"]);
 		}
 		resetBinding();
 	});
@@ -386,7 +386,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 			}
 			return { action: "handled" };
 		}
-		await reportStatus(ctx, "active", event.text.trim() === "<hcom>" ? "trigger" : "prompt");
+		await reportStatus(ctx, "active", event.text.trim() === "<comms>" ? "trigger" : "prompt");
 		return { action: "continue" };
 	});
 
@@ -400,7 +400,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		log("DEBUG", "plugin.hidden_bootstrap", instanceName, { bootstrap_len: bootstrapText.length });
 		return {
 			message: {
-				customType: "hcom-bootstrap",
+				customType: "comms-bootstrap",
 				content: bootstrapText,
 				display: false,
 			},
@@ -412,7 +412,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		await bindIdentity(ctx);
 		if (!instanceName) return undefined;
 		await reportStatus(ctx, "active", `tool:${event.toolName}`, String((event.input as any)?.path ?? (event.input as any)?.command ?? ""));
-		const result = await hcom([
+		const result = await comms([
 			"pi-beforetool",
 			"--name",
 			instanceName,
@@ -424,7 +424,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		try {
 			const json = JSON.parse(result.stdout || "{}");
 			if (json.decision === "block") {
-				return { block: true, reason: String(json.reason || "Blocked by hcom") };
+				return { block: true, reason: String(json.reason || "Blocked by comms") };
 			}
 		} catch {}
 		return undefined;

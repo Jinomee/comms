@@ -238,11 +238,12 @@ mod tests {
     fn agy_wake_echo_with_backtab_renders_in_place() {
         // agy 1.2.16 echoing an injected wake: it repaints the model label two
         // rows down, then returns with CUU + CBT instead of CUB.
-        let data = b"> <hcom>\n\n\x1b[38C\x1b[1K G\x1b[2A\x1b[5Z[inform #1] a -> b</hcom>";
+        // (Tag is 8 columns wide so the back-tab lands on the stop at column 8.)
+        let data = b"> <wake>\n\n\x1b[38C\x1b[1K G\x1b[2A\x1b[5Z[inform #1] a -> b</wake>";
         let (contents, _) = screen_after(4, 69, data);
         assert_eq!(
             contents.lines().next(),
-            Some("> <hcom>[inform #1] a -> b</hcom>")
+            Some("> <wake>[inform #1] a -> b</wake>")
         );
     }
 

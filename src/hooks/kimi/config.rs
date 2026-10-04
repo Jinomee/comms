@@ -66,14 +66,14 @@ pub fn get_kimi_settings_path() -> PathBuf {
 }
 
 pub(crate) fn build_kimi_hook_command(command: &str) -> String {
-    let mut parts = crate::runtime_env::get_hcom_prefix();
+    let mut parts = crate::runtime_env::get_comms_prefix();
     parts.push(command.to_string());
     parts.join(" ")
 }
 
-pub(crate) fn is_hcom_kimi_command(command: &str) -> bool {
+pub(crate) fn is_comms_kimi_command(command: &str) -> bool {
     let trimmed = command.trim();
-    ["hcom", "uvx hcom"].iter().any(|prefix| {
+    ["comms", "uvx comms"].iter().any(|prefix| {
         KIMI_HOOK_COMMANDS
             .iter()
             .any(|(_, suffix)| trimmed == format!("{prefix} {suffix}"))
@@ -111,7 +111,7 @@ fn write_toml(path: &Path, doc: &DocumentMut) -> Result<(), SetupError> {
     })
 }
 
-pub(crate) fn merge_hcom_hooks(doc: &mut DocumentMut) {
+pub(crate) fn merge_comms_hooks(doc: &mut DocumentMut) {
     let hooks_item = doc
         .entry("hooks")
         .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()));
@@ -123,7 +123,7 @@ pub(crate) fn merge_hcom_hooks(doc: &mut DocumentMut) {
                 let keep = table
                     .get("command")
                     .and_then(|v| v.as_str())
-                    .map(|cmd| !is_hcom_kimi_command(cmd))
+                    .map(|cmd| !is_comms_kimi_command(cmd))
                     .unwrap_or(true);
                 if keep {
                     filtered.push(table.clone());
@@ -145,7 +145,7 @@ pub(crate) fn merge_hcom_hooks(doc: &mut DocumentMut) {
     }
 }
 
-fn remove_hcom_hooks(doc: &mut DocumentMut) {
+fn remove_comms_hooks(doc: &mut DocumentMut) {
     let Some(hooks_item) = doc.get_mut("hooks") else {
         return;
     };
@@ -158,7 +158,7 @@ fn remove_hcom_hooks(doc: &mut DocumentMut) {
             let keep = table
                 .get("command")
                 .and_then(|v| v.as_str())
-                .map(|cmd| !is_hcom_kimi_command(cmd))
+                .map(|cmd| !is_comms_kimi_command(cmd))
                 .unwrap_or(true);
             if keep {
                 filtered.push(table.clone());
@@ -171,28 +171,28 @@ fn remove_hcom_hooks(doc: &mut DocumentMut) {
     }
 }
 
-/// Allow-rule patterns hcom installs (current hcom command prefix).
+/// Allow-rule patterns comms installs (current comms command prefix).
 pub(crate) fn kimi_permission_patterns() -> Vec<String> {
-    let prefix = crate::runtime_env::build_hcom_command();
-    common::SAFE_HCOM_COMMANDS
+    let prefix = crate::runtime_env::build_comms_command();
+    common::SAFE_COMMS_COMMANDS
         .iter()
         .map(|command| format!("Bash({prefix} {command}*)"))
         .collect()
 }
 
-/// All patterns hcom may have written (both `hcom` and `uvx hcom` prefixes), so
+/// All patterns comms may have written (both `comms` and `uvx comms` prefixes), so
 /// removal/re-merge can recognize and strip stale managed rules.
 fn all_kimi_permission_patterns() -> Vec<String> {
     let mut patterns = Vec::new();
-    for prefix in ["hcom", "uvx hcom"] {
-        for command in common::SAFE_HCOM_COMMANDS {
+    for prefix in ["comms", "uvx comms"] {
+        for command in common::SAFE_COMMS_COMMANDS {
             patterns.push(format!("Bash({prefix} {command}*)"));
         }
     }
     patterns
 }
 
-fn is_hcom_permission_pattern(pattern: &str) -> bool {
+fn is_comms_permission_pattern(pattern: &str) -> bool {
     all_kimi_permission_patterns()
         .iter()
         .any(|managed| managed == pattern)
@@ -217,20 +217,20 @@ fn permission_rules_mut(doc: &mut DocumentMut) -> Option<&mut ArrayOfTables> {
     }
 }
 
-pub(crate) fn merge_hcom_permissions(doc: &mut DocumentMut) {
+pub(crate) fn merge_comms_permissions(doc: &mut DocumentMut) {
     let Some(arr) = permission_rules_mut(doc) else {
         return;
     };
 
-    // Rebuild with hcom allow-rules first (first-match-wins ordering), then the
-    // user's existing non-hcom rules. This makes the merge idempotent and keeps
-    // hcom's allows ahead of any broad user `ask`/`deny` on `Bash`.
+    // Rebuild with comms allow-rules first (first-match-wins ordering), then the
+    // user's existing non-comms rules. This makes the merge idempotent and keeps
+    // comms's allows ahead of any broad user `ask`/`deny` on `Bash`.
     let mut rebuilt = ArrayOfTables::new();
     for pattern in kimi_permission_patterns() {
         let mut table = Table::new();
         table.insert("decision", toml_edit::value("allow"));
         table.insert("pattern", toml_edit::value(pattern));
-        table.insert("reason", toml_edit::value("hcom auto-approve"));
+        table.insert("reason", toml_edit::value("comms auto-approve"));
         rebuilt.push(table);
     }
     for i in 0..arr.len() {
@@ -238,7 +238,7 @@ pub(crate) fn merge_hcom_permissions(doc: &mut DocumentMut) {
             let is_managed = table
                 .get("pattern")
                 .and_then(|v| v.as_str())
-                .map(is_hcom_permission_pattern)
+                .map(is_comms_permission_pattern)
                 .unwrap_or(false);
             if !is_managed {
                 rebuilt.push(table.clone());
@@ -248,7 +248,7 @@ pub(crate) fn merge_hcom_permissions(doc: &mut DocumentMut) {
     *arr = rebuilt;
 }
 
-pub(crate) fn remove_hcom_permissions(doc: &mut DocumentMut) {
+pub(crate) fn remove_comms_permissions(doc: &mut DocumentMut) {
     let Some(Item::Table(permission)) = doc.get_mut("permission") else {
         return;
     };
@@ -259,7 +259,7 @@ pub(crate) fn remove_hcom_permissions(doc: &mut DocumentMut) {
                 let is_managed = table
                     .get("pattern")
                     .and_then(|v| v.as_str())
-                    .map(is_hcom_permission_pattern)
+                    .map(is_comms_permission_pattern)
                     .unwrap_or(false);
                 if !is_managed {
                     filtered.push(table.clone());
@@ -315,7 +315,7 @@ fn verify_hooks_at(path: &Path) -> bool {
     })
 }
 
-/// Cleans ~/.kimi-code, $KIMI_CODE_HOME and legacy `<HCOM_DIR parent>/.kimi-code`.
+/// Cleans ~/.kimi-code, $KIMI_CODE_HOME and legacy `<COMMS_DIR parent>/.kimi-code`.
 pub fn remove_kimi_hooks() -> bool {
     crate::runtime_env::tool_config_cleanup_dirs(".kimi-code", "KIMI_CODE_HOME")
         .iter()
@@ -330,8 +330,8 @@ fn remove_kimi_hooks_at(path: &Path) -> bool {
     }
     match read_toml_document(path) {
         Ok(mut doc) => {
-            remove_hcom_hooks(&mut doc);
-            remove_hcom_permissions(&mut doc);
+            remove_comms_hooks(&mut doc);
+            remove_comms_permissions(&mut doc);
             write_toml(path, &doc).is_ok()
         }
         Err(_) => false,
@@ -341,11 +341,11 @@ fn remove_kimi_hooks_at(path: &Path) -> bool {
 pub fn try_setup_kimi_hooks(include_permissions: bool) -> Result<(), SetupError> {
     let path = get_kimi_settings_path();
     let mut doc = read_toml_document(&path)?;
-    merge_hcom_hooks(&mut doc);
+    merge_comms_hooks(&mut doc);
     if include_permissions {
-        merge_hcom_permissions(&mut doc);
+        merge_comms_permissions(&mut doc);
     } else {
-        remove_hcom_permissions(&mut doc);
+        remove_comms_permissions(&mut doc);
     }
     write_toml(&path, &doc)?;
     if !verify_hooks_at(&path) {

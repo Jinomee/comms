@@ -1,7 +1,7 @@
 //! Real database-backed DataSource for the TUI.
 //!
-//! Reads from ~/.hcom/hcom.db (or HCOM_DIR/hcom.db) to populate DataState.
-//! Used when HCOM_MOCK_TUI is not set.
+//! Reads from ~/.comms/comms.db (or COMMS_DIR/comms.db) to populate DataState.
+//! Used when COMMS_MOCK_TUI is not set.
 
 use rusqlite::{Connection, params};
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use crate::shared::ST_ACTIVE;
 
 // An open SQLite connection continues to address an unlinked database on Unix.
 // Keep the file identity from when the connection was opened so the TUI can
-// reconnect after `hcom reset` replaces hcom.db from another terminal.
+// reconnect after `comms reset` replaces comms.db from another terminal.
 #[cfg(unix)]
 type DbFileId = (u64, u64);
 
@@ -94,8 +94,8 @@ impl DbDataSource {
             // Harden before opening: the TUI is the no-arg default entry point,
             // so it must apply the same owner-only permission boundary as the
             // CLI rather than letting SQLite create/leave a broad db.
-            let hcom_dir = self.db_path.parent().unwrap_or(std::path::Path::new("."));
-            if let Err(e) = paths::ensure_private_directory(hcom_dir)
+            let comms_dir = self.db_path.parent().unwrap_or(std::path::Path::new("."));
+            if let Err(e) = paths::ensure_private_directory(comms_dir)
                 .and_then(|()| paths::ensure_private_db(&self.db_path))
             {
                 self.last_error = Some(format!("secure {}: {}", self.db_path.display(), e));
@@ -154,7 +154,7 @@ impl DbDataSource {
         self.conn.as_ref()
     }
 
-    /// Drop a connection to a database that `hcom reset` has replaced.
+    /// Drop a connection to a database that `comms reset` has replaced.
     ///
     /// A missing file is intentionally ignored: reset briefly removes the old
     /// file before bootstrapping the new one, and opening it during that window
@@ -291,7 +291,7 @@ fn load_all(conn: &Connection, default_limit: usize) -> DataState {
 
     // Load one shared timeline window, then split into message vs status/life
     // so both panes stay aligned to the same event-id/time range.
-    let timeline_limit = env_usize("HCOM_TUI_TIMELINE_LIMIT", default_limit);
+    let timeline_limit = env_usize("COMMS_TUI_TIMELINE_LIMIT", default_limit);
     let (mut messages, mut events) = load_timeline(conn, timeline_limit);
     messages.sort_by(|a, b| a.time.total_cmp(&b.time));
     events.sort_by(|a, b| a.time.total_cmp(&b.time));
@@ -1076,7 +1076,7 @@ fn parse_status_or_life_row(
                     if !extras.is_empty() {
                         sub_lines.push(extras.join(" | "));
                     }
-                    sub_lines.push(format!("resume: hcom r {}", instance));
+                    sub_lines.push(format!("resume: comms r {}", instance));
                 }
             }
             "batch_launched" => {
@@ -1130,8 +1130,8 @@ fn parse_status_or_life_row(
 
     let (kind, tool_name, detail_text) = if status == ST_ACTIVE && context.starts_with("tool:") {
         let t = context.strip_prefix("tool:").unwrap_or(context);
-        // Suppress hcom send commands — the resulting message is already shown
-        if detail.starts_with("hcom send") {
+        // Suppress comms send commands — the resulting message is already shown
+        if detail.starts_with("comms send") {
             return None;
         }
         (EventKind::Tool, t.to_string(), detail.to_string())
@@ -1179,7 +1179,7 @@ fn truncate_path(path: &str, max_len: usize) -> String {
 
 /// Read (configured, enabled) flags from config.toml. `configured` is true
 /// when `relay.id` is a non-empty string; `enabled` is the `relay.enabled`
-/// flag (defaults true when absent — matches HcomConfig::default).
+/// flag (defaults true when absent — matches CommsConfig::default).
 fn read_relay_config_flags() -> (bool, bool) {
     let Some(table) = read_config_toml() else {
         return (false, false);
@@ -1211,7 +1211,7 @@ fn kv_get(conn: &Connection, key: &str) -> Option<String> {
 
 /// Build a RelayObservation from the TUI's raw connection + pidfile + caller-
 /// supplied config flags, then derive RelayHealth. The TUI snapshot path
-/// doesn't carry an HcomConfig/HcomDb pair, so we reconstruct the observation
+/// doesn't carry an CommsConfig/CommsDb pair, so we reconstruct the observation
 /// locally rather than threading those types through every snapshot call.
 /// `configured` and `enabled` are passed in so the caller can read config.toml
 /// once per snapshot rather than us re-reading it here.
@@ -1536,9 +1536,9 @@ mod tests {
     fn ensure_conn_secures_existing_broad_database() {
         use std::os::unix::fs::PermissionsExt;
 
-        let (_tmp, hcom_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_tmp, comms_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         // Pre-existing broad db (legacy install opened only through the TUI).
-        let db_path = hcom_dir.join("hcom.db");
+        let db_path = comms_dir.join("comms.db");
         std::fs::write(&db_path, b"").unwrap();
         std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
@@ -1564,12 +1564,12 @@ mod tests {
     #[test]
     fn reconnects_when_database_is_replaced_during_or_after_open() {
         // Private tempdir, not isolated_test_env: that points the process-wide
-        // HCOM_DIR here, so unguarded parallel tests resolving the default db
+        // COMMS_DIR here, so unguarded parallel tests resolving the default db
         // could open or lock these files mid-replacement.
         let tmp = tempfile::tempdir().unwrap();
-        let hcom_dir = tmp.path().join(".hcom");
-        std::fs::create_dir_all(&hcom_dir).unwrap();
-        let db_path = hcom_dir.join("hcom.db");
+        let comms_dir = tmp.path().join(".comms");
+        std::fs::create_dir_all(&comms_dir).unwrap();
+        let db_path = comms_dir.join("comms.db");
 
         let first = Connection::open(&db_path).unwrap();
         first.execute_batch("PRAGMA application_id = 101;").unwrap();
@@ -1578,7 +1578,7 @@ mod tests {
         let mut ds = super::DbDataSource::new();
         ds.db_path = db_path.clone();
 
-        let replacement_path = hcom_dir.join("replacement.db");
+        let replacement_path = comms_dir.join("replacement.db");
         let replacement = Connection::open(&replacement_path).unwrap();
         replacement
             .execute_batch("PRAGMA application_id = 202;")
@@ -1591,8 +1591,8 @@ mod tests {
         let target_path = db_path.clone();
         ds.after_next_open = Some(Box::new(move || {
             for sidecar in [
-                target_path.with_file_name("hcom.db-wal"),
-                target_path.with_file_name("hcom.db-shm"),
+                target_path.with_file_name("comms.db-wal"),
+                target_path.with_file_name("comms.db-shm"),
             ] {
                 let _ = std::fs::remove_file(sidecar);
             }
@@ -1611,15 +1611,15 @@ mod tests {
             .unwrap();
         assert_eq!(raced_replacement_id, 202);
 
-        let later_replacement_path = hcom_dir.join("later-replacement.db");
+        let later_replacement_path = comms_dir.join("later-replacement.db");
         let later_replacement = Connection::open(&later_replacement_path).unwrap();
         later_replacement
             .execute_batch("PRAGMA application_id = 303;")
             .unwrap();
         drop(later_replacement);
         for sidecar in [
-            db_path.with_file_name("hcom.db-wal"),
-            db_path.with_file_name("hcom.db-shm"),
+            db_path.with_file_name("comms.db-wal"),
+            db_path.with_file_name("comms.db-shm"),
         ] {
             let _ = std::fs::remove_file(sidecar);
         }
@@ -1930,7 +1930,7 @@ mod tests {
         assert!(
             ev.sub_lines
                 .iter()
-                .any(|l| l.starts_with("resume: hcom r nova")),
+                .any(|l| l.starts_with("resume: comms r nova")),
             "expected resume hint in sub-lines, got {:?}",
             ev.sub_lines
         );

@@ -5,17 +5,17 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::db::{HcomDb, InstanceRow};
+use crate::db::{CommsDb, InstanceRow};
 use crate::hooks::{DeliveryAck, HookPayload, common};
 use crate::instance_binding;
 use crate::instance_lifecycle as lifecycle;
 use crate::instances;
 use crate::log;
 use crate::paths;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 use crate::shared::{ST_ACTIVE, ST_LISTENING};
 
-const HCOM_TRIGGER: &str = "<hcom>";
+const COMMS_TRIGGER: &str = "<comms>";
 const HOOK_TIMEOUT_SECS: u64 = 15;
 const CURSOR_HOOK_COMMANDS: &[(&str, &str)] = &[
     ("sessionStart", "cursor-sessionstart"),
@@ -91,13 +91,13 @@ pub fn get_cursor_permissions_path() -> PathBuf {
 }
 
 fn build_cursor_hook_command(command: &str) -> String {
-    let mut parts = crate::runtime_env::get_hcom_prefix();
+    let mut parts = crate::runtime_env::get_comms_prefix();
     parts.push(command.to_string());
     parts.join(" ")
 }
 
-fn is_hcom_cursor_command(command: &str) -> bool {
-    ["hcom", "uvx hcom"].iter().any(|prefix| {
+fn is_comms_cursor_command(command: &str) -> bool {
+    ["comms", "uvx comms"].iter().any(|prefix| {
         CURSOR_HOOK_COMMANDS
             .iter()
             .any(|(_, suffix)| command == format!("{prefix} {suffix}"))
@@ -118,7 +118,7 @@ fn expected_hook(event: &str, command: &str) -> Value {
     Value::Object(obj)
 }
 
-fn merge_hcom_hooks(root: &mut Value) {
+fn merge_comms_hooks(root: &mut Value) {
     if !root.is_object() {
         *root = json!({});
     }
@@ -142,13 +142,13 @@ fn merge_hcom_hooks(root: &mut Value) {
             !entry
                 .get("command")
                 .and_then(Value::as_str)
-                .is_some_and(is_hcom_cursor_command)
+                .is_some_and(is_comms_cursor_command)
         });
         entries.push(expected_hook(event, command));
     }
 }
 
-fn remove_hcom_hooks(root: &mut Value) {
+fn remove_comms_hooks(root: &mut Value) {
     let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
         return;
     };
@@ -160,7 +160,7 @@ fn remove_hcom_hooks(root: &mut Value) {
             !entry
                 .get("command")
                 .and_then(Value::as_str)
-                .is_some_and(is_hcom_cursor_command)
+                .is_some_and(is_comms_cursor_command)
         });
     }
     hooks.retain(|_, entries| {
@@ -233,8 +233,8 @@ fn verify_hooks_at(path: &Path) -> bool {
 }
 
 fn cursor_permission_rules() -> Vec<String> {
-    let prefix = crate::runtime_env::build_hcom_command();
-    common::SAFE_HCOM_COMMANDS
+    let prefix = crate::runtime_env::build_comms_command();
+    common::SAFE_COMMS_COMMANDS
         .iter()
         .map(|command| format!("Shell({prefix} {command})"))
         .collect()
@@ -242,9 +242,9 @@ fn cursor_permission_rules() -> Vec<String> {
 
 fn all_cursor_permission_rules() -> Vec<String> {
     let mut rules = Vec::new();
-    for prefix in ["hcom", "uvx hcom"] {
+    for prefix in ["comms", "uvx comms"] {
         rules.push(format!("Shell({prefix})"));
-        for command in common::SAFE_HCOM_COMMANDS {
+        for command in common::SAFE_COMMS_COMMANDS {
             rules.push(format!("Shell({prefix} {command})"));
         }
     }
@@ -345,7 +345,7 @@ fn remove_cursor_hooks_at(path: &Path) -> bool {
     match read_json_object(path) {
         Ok(root) => {
             let mut value = Value::Object(root);
-            remove_hcom_hooks(&mut value);
+            remove_comms_hooks(&mut value);
             write_json(path, &value).is_ok()
         }
         Err(_) => false,
@@ -412,7 +412,7 @@ pub fn remove_cursor_hooks() -> bool {
 pub fn try_setup_cursor_hooks(include_permissions: bool) -> Result<(), SetupError> {
     let hooks_path = get_cursor_hooks_path();
     let mut hooks = Value::Object(read_json_object(&hooks_path)?);
-    merge_hcom_hooks(&mut hooks);
+    merge_comms_hooks(&mut hooks);
     write_json(&hooks_path, &hooks)?;
     if !verify_hooks_at(&hooks_path) {
         return Err(SetupError::PostWriteVerifyFailed(hooks_path));
@@ -434,7 +434,11 @@ pub fn verify_cursor_hooks_installed(check_permissions: bool) -> bool {
     verify_hooks_at(&get_cursor_hooks_path()) && (!check_permissions || verify_cursor_permissions())
 }
 
-fn resolve_instance(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Option<InstanceRow> {
+fn resolve_instance(
+    db: &CommsDb,
+    ctx: &CommsContext,
+    payload: &HookPayload,
+) -> Option<InstanceRow> {
     instance_binding::resolve_instance_from_binding(
         db,
         payload.session_id.as_deref(),
@@ -442,7 +446,7 @@ fn resolve_instance(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Op
     )
 }
 
-fn update_position(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload, instance_name: &str) {
+fn update_position(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload, instance_name: &str) {
     let mut updates = serde_json::Map::new();
     if let Some(session_id) = payload.session_id.as_ref().filter(|s| !s.is_empty()) {
         updates.insert("session_id".into(), Value::String(session_id.clone()));
@@ -469,18 +473,18 @@ fn update_position(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload, instan
     instances::update_instance_position(db, instance_name, &updates);
 }
 
-fn cursor_session_env(ctx: &HcomContext) -> Value {
+fn cursor_session_env(ctx: &CommsContext) -> Value {
     const KEYS: &[&str] = &[
-        "HCOM_PROCESS_ID",
-        "HCOM_INSTANCE_NAME",
-        "HCOM_TOOL",
-        "HCOM_DIR",
-        "HCOM_LAUNCHED",
-        "HCOM_PTY_MODE",
-        "HCOM_BACKGROUND",
-        "HCOM_LAUNCHED_BY",
-        "HCOM_LAUNCH_BATCH_ID",
-        "HCOM_LAUNCH_EVENT_ID",
+        "COMMS_PROCESS_ID",
+        "COMMS_INSTANCE_NAME",
+        "COMMS_TOOL",
+        "COMMS_DIR",
+        "COMMS_LAUNCHED",
+        "COMMS_PTY_MODE",
+        "COMMS_BACKGROUND",
+        "COMMS_LAUNCHED_BY",
+        "COMMS_LAUNCH_BATCH_ID",
+        "COMMS_LAUNCH_EVENT_ID",
     ];
     Value::Object(
         KEYS.iter()
@@ -493,7 +497,7 @@ fn cursor_session_env(ctx: &HcomContext) -> Value {
     )
 }
 
-fn handle_sessionstart(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_sessionstart(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     let Some(session_id) = payload.session_id.as_deref().filter(|sid| !sid.is_empty()) else {
         return json!({ "env": cursor_session_env(ctx) });
     };
@@ -530,20 +534,24 @@ fn handle_sessionstart(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) ->
     Value::Object(output)
 }
 
-fn resolved_instance(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Option<InstanceRow> {
+fn resolved_instance(
+    db: &CommsDb,
+    ctx: &CommsContext,
+    payload: &HookPayload,
+) -> Option<InstanceRow> {
     let instance = resolve_instance(db, ctx, payload)?;
     update_position(db, ctx, payload, &instance.name);
     Some(instance)
 }
 
-fn handle_beforesubmitprompt(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_beforesubmitprompt(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     if let Some(instance) = resolved_instance(db, ctx, payload) {
         let prompt = payload
             .raw
             .get("prompt")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let context = if prompt.trim() == HCOM_TRIGGER {
+        let context = if prompt.trim() == COMMS_TRIGGER {
             "trigger"
         } else {
             "prompt"
@@ -553,7 +561,7 @@ fn handle_beforesubmitprompt(db: &HcomDb, ctx: &HcomContext, payload: &HookPaylo
     json!({ "continue": true })
 }
 
-fn handle_pretooluse(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_pretooluse(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     if let Some(instance) = resolved_instance(db, ctx, payload) {
         common::update_tool_status(
             db,
@@ -567,8 +575,8 @@ fn handle_pretooluse(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> V
 }
 
 fn handle_posttooluse(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
 ) -> (Value, Option<DeliveryAck>) {
     let Some(instance) = resolved_instance(db, ctx, payload) else {
@@ -584,8 +592,8 @@ fn handle_posttooluse(
 }
 
 fn handle_stop(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
 ) -> (Value, Option<DeliveryAck>) {
     let Some(instance) = resolved_instance(db, ctx, payload) else {
@@ -605,7 +613,7 @@ fn handle_stop(
     }
 }
 
-fn handle_sessionend(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Value {
+fn handle_sessionend(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> Value {
     if let Some(instance) = resolved_instance(db, ctx, payload) {
         let reason = payload
             .raw
@@ -630,7 +638,7 @@ pub fn dispatch_cursor_hook_native(hook_name: &str) -> i32 {
             return 0;
         }
     };
-    let db = match HcomDb::open() {
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(err) => {
             log::log_warn(
@@ -641,7 +649,7 @@ pub fn dispatch_cursor_hook_native(hook_name: &str) -> i32 {
             return 0;
         }
     };
-    let ctx = HcomContext::from_os();
+    let ctx = CommsContext::from_os();
     if !common::hook_gate_check(&ctx, &db) {
         return 0;
     }
@@ -689,7 +697,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", workspace.join(".hcom"));
+            std::env::set_var("COMMS_DIR", workspace.join(".comms"));
             std::env::remove_var("CURSOR_CONFIG_DIR");
             std::env::remove_var("XDG_CONFIG_HOME");
         }
@@ -770,9 +778,9 @@ mod tests {
                 "permissions": {
                     "allow": [
                         "Shell(custom)",
-                        "Shell(hcom)",
-                        "Shell(uvx hcom)",
-                        "Shell(uvx hcom send)"
+                        "Shell(comms)",
+                        "Shell(uvx comms)",
+                        "Shell(uvx comms send)"
                     ]
                 }
             }))
@@ -786,13 +794,13 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(permissions_path).unwrap()).unwrap();
         let allow = root["permissions"]["allow"].as_array().unwrap();
         assert!(allow.iter().any(|rule| rule == "Shell(custom)"));
-        assert!(!allow.iter().any(|rule| rule == "Shell(hcom)"));
-        assert!(!allow.iter().any(|rule| rule == "Shell(uvx hcom)"));
+        assert!(!allow.iter().any(|rule| rule == "Shell(comms)"));
+        assert!(!allow.iter().any(|rule| rule == "Shell(uvx comms)"));
         for rule in cursor_permission_rules() {
             assert!(allow.iter().any(|entry| entry == &rule), "missing {rule}");
         }
-        assert!(!allow.iter().any(|rule| rule == "Shell(hcom kill)"));
-        assert!(!allow.iter().any(|rule| rule == "Shell(hcom reset)"));
+        assert!(!allow.iter().any(|rule| rule == "Shell(comms kill)"));
+        assert!(!allow.iter().any(|rule| rule == "Shell(comms reset)"));
     }
 
     #[test]
@@ -806,8 +814,8 @@ mod tests {
             serde_json::to_string_pretty(&json!({
                 "hooks": {
                     "stop": [
-                        { "command": "hcom cursor-stop" },
-                        { "command": "uvx hcom cursor-stop" },
+                        { "command": "comms cursor-stop" },
+                        { "command": "uvx comms cursor-stop" },
                         { "command": "./custom-stop.sh" }
                     ]
                 }
@@ -833,7 +841,9 @@ mod tests {
         );
         assert_eq!(
             stop.iter()
-                .filter(|hook| hook["command"].as_str().is_some_and(is_hcom_cursor_command))
+                .filter(|hook| hook["command"]
+                    .as_str()
+                    .is_some_and(is_comms_cursor_command))
                 .count(),
             1
         );
@@ -850,7 +860,7 @@ mod tests {
         let home = dir.path().join("home");
         let override_dir = dir.path().join("cursor-override");
         unsafe {
-            std::env::set_var("HCOM_DIR", home.join(".hcom"));
+            std::env::set_var("COMMS_DIR", home.join(".comms"));
             std::env::set_var("CURSOR_CONFIG_DIR", &override_dir);
         }
 
@@ -862,7 +872,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn project_local_hcom_dir_does_not_move_cursor_config() {
+    fn project_local_comms_dir_does_not_move_cursor_config() {
         let (dir, _workspace, _guard) = cursor_test_env();
         let home = dir.path().join("home");
 
@@ -889,7 +899,7 @@ mod tests {
         let home = dir.path().join("home");
         let xdg = dir.path().join("xdg");
         unsafe {
-            std::env::set_var("HCOM_DIR", home.join(".hcom"));
+            std::env::set_var("COMMS_DIR", home.join(".comms"));
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
         }
 
@@ -958,7 +968,7 @@ mod tests {
                 serde_json::to_string_pretty(&json!({
                     "hooks": {
                         "stop": [
-                            { "command": "hcom cursor-stop" },
+                            { "command": "comms cursor-stop" },
                             { "command": "./custom-stop.sh" }
                         ]
                     }
@@ -973,7 +983,7 @@ mod tests {
                 path,
                 serde_json::to_string_pretty(&json!({
                     "permissions": {
-                        "allow": ["Shell(hcom)", "Shell(custom)"]
+                        "allow": ["Shell(comms)", "Shell(custom)"]
                     }
                 }))
                 .unwrap(),

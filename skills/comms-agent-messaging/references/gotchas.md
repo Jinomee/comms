@@ -1,41 +1,41 @@
-# hcom Script Gotchas
+# comms Script Gotchas
 
 Common issues and fixes discovered during real testing.
 
 ## Script Hangs Forever
 
-**Cause:** Missing `--go` flag on launch commands such as `hcom 1 claude`.
+**Cause:** Missing `--go` flag on launch commands such as `comms 1 claude`.
 
-**Fix:** Include `--go` on launch commands in scripts. `hcom kill` does not
+**Fix:** Include `--go` on launch commands in scripts. `comms kill` does not
 prompt, so `--go` is optional for kill commands.
 
 ```bash
 # WRONG - hangs waiting for user confirmation
-hcom 1 claude --tag worker --headless --hcom-prompt "..."
+comms 1 claude --tag worker --headless --comms-prompt "..."
 
 # RIGHT
-hcom 1 claude --tag worker --go --headless --hcom-prompt "..."
+comms 1 claude --tag worker --go --headless --comms-prompt "..."
 ```
 
 ## Agent Not Receiving Messages
 
 **Diagnosis steps:**
 ```bash
-hcom list                    # Is agent alive? What status?
-hcom events --last 5         # Was message actually sent?
-hcom events --agent luna     # What has luna seen recently?
+comms list                    # Is agent alive? What status?
+comms events --last 5         # Was message actually sent?
+comms events --agent luna     # What has luna seen recently?
 ```
 
 **Common causes and fixes:**
 
 | Cause | How to detect | Fix |
 |-------|---------------|-----|
-| Agent already stopped | `hcom list` shows inactive/missing | Check timing; agent may finish before message arrives |
-| Agent has not bound session yet | `hcom list` shows "launching" | Wait: `hcom events --wait 30 --idle "$name"` |
+| Agent already stopped | `comms list` shows inactive/missing | Check timing; agent may finish before message arrives |
+| Agent has not bound session yet | `comms list` shows "launching" | Wait: `comms events --wait 30 --idle "$name"` |
 | Mistyped @-mention | `send` fails: "non-existent or stopped agents" + Available list | Names resolve exactly — use the exact agent name or `@tag-` group, no partial/prefix matching |
 | No matching thread | Agent sees no messages | Both sides must use exact same `--thread` value |
 | Message scope mismatch | Event `scope` is "mentions" but agent not in `mentions` array | Verify @mention matches agent name or tag |
-| Identity binding failed | Agent not in `instances` table | Check `HCOM_PROCESS_ID` env var propagation |
+| Identity binding failed | Agent not in `instances` table | Check `COMMS_PROCESS_ID` env var propagation |
 
 ## Messages Leaking Between Workflows
 
@@ -45,8 +45,8 @@ hcom events --agent luna     # What has luna seen recently?
 ```bash
 thread="my-workflow-$(date +%s)"
 # All messages in this workflow use --thread
-hcom send @worker- --thread "$thread" -- "task"
-hcom events --wait 120 --sql "msg_thread='${thread}' AND msg_text LIKE '%DONE%'"
+comms send @worker- --thread "$thread" -- "task"
+comms events --wait 120 --sql "msg_thread='${thread}' AND msg_text LIKE '%DONE%'"
 ```
 
 **Why timestamps work:** `$(date +%s)` gives epoch seconds. Even if two workflows start in the same second, different thread prefixes (e.g., "review-" vs "ensemble-") prevent collision.
@@ -58,18 +58,18 @@ hcom events --wait 120 --sql "msg_thread='${thread}' AND msg_text LIKE '%DONE%'"
 **Precision matching when needed:**
 ```bash
 # Case-sensitive match (use GLOB instead of LIKE)
-hcom events --sql "msg_text GLOB '*APPROVED*'"
+comms events --sql "msg_text GLOB '*APPROVED*'"
 
 # Match exact word boundary
-hcom events --sql "msg_text LIKE '% APPROVED%' OR msg_text LIKE 'APPROVED%'"
+comms events --sql "msg_text LIKE '% APPROVED%' OR msg_text LIKE 'APPROVED%'"
 ```
 
-## hcom events --wait Exit Code
+## comms events --wait Exit Code
 
 Returns **0** on match, **1** on timeout, **2** on SQL error. Use exit code directly:
 
 ```bash
-hcom events --wait 60 --sql "msg_thread='${thread}' AND msg_text LIKE '%DONE%'" $name_arg >/dev/null 2>&1
+comms events --wait 60 --sql "msg_thread='${thread}' AND msg_text LIKE '%DONE%'" $name_arg >/dev/null 2>&1
 case $? in
   0) echo "MATCHED" ;;
   1) echo "TIMEOUT" ;;
@@ -84,7 +84,7 @@ In scripts where you only care about success vs failure, `&& echo PASS || echo F
 Names are random 4-letter CVCV words (luna, nemo, bali, kiwi, cora, etc.). Never hardcode them. Always parse from launch output:
 
 ```bash
-launch_out=$(hcom 1 claude --tag worker --go --headless --hcom-prompt "..." 2>&1)
+launch_out=$(comms 1 claude --tag worker --go --headless --comms-prompt "..." 2>&1)
 track_launch "$launch_out"
 name=$(echo "$launch_out" | grep '^Names: ' | sed 's/^Names: //' | tr -d ' ')
 # $name is now "luna" or "nemo" etc.
@@ -93,7 +93,7 @@ echo "Launched: $name"
 
 **For batch launches (multiple agents):**
 ```bash
-launch_out=$(hcom 3 claude --tag team --go --headless --hcom-prompt "..." 2>&1)
+launch_out=$(comms 3 claude --tag team --go --headless --comms-prompt "..." 2>&1)
 # Names: luna nemo bali (space-separated)
 names=$(echo "$launch_out" | grep '^Names: ' | sed 's/^Names: //')
 for n in $names; do
@@ -106,40 +106,40 @@ done
 
 Without cleanup, orphan headless agents run indefinitely consuming resources. Always use `trap cleanup ERR INT TERM` and track launched names. See `script-template.md` for the full pattern.
 
-**Use `hcom kill` not `hcom stop`:** Kill sends SIGTERM and closes the terminal pane. Stop preserves the session for resume but leaves the pane open.
+**Use `comms kill` not `comms stop`:** Kill sends SIGTERM and closes the terminal pane. Stop preserves the session for resume but leaves the pane open.
 
 ## Broadcast vs Mention Routing
 
 **Broadcast (no @mentions):**
 ```bash
-hcom send -- "everyone sees this"  # No @ prefix = broadcast
+comms send -- "everyone sees this"  # No @ prefix = broadcast
 ```
 
 **Mention (targeted):**
 ```bash
-hcom send @luna -- "only luna sees this"         # Direct mention
-hcom send @worker- -- "all workers see this"     # Tag prefix
-hcom send @luna @nova -- "luna and nova see this" # Multiple mentions
+comms send @luna -- "only luna sees this"         # Direct mention
+comms send @worker- -- "all workers see this"     # Tag prefix
+comms send @luna @nova -- "luna and nova see this" # Multiple mentions
 ```
 
 **Common mistake:** Forgetting `--` before the message text. Without `--`, the message text might be parsed as flags.
 
 ## Heartbeat and Stale Detection
 
-Agents are marked stale (inactive) if their heartbeat is not updated within tool-dependent thresholds. After system sleep/wake, hcom gives a grace period where heartbeat checks are suspended to prevent mass stale detection after laptop lid close/open.
+Agents are marked stale (inactive) if their heartbeat is not updated within tool-dependent thresholds. After system sleep/wake, comms gives a grace period where heartbeat checks are suspended to prevent mass stale detection after laptop lid close/open.
 
 ## Intent System Misuse
 
 **Wrong:** Not using intents, causing agents to over-respond:
 ```bash
-hcom send @worker- -- "FYI: I updated the config"  # No intent = ambiguous
+comms send @worker- -- "FYI: I updated the config"  # No intent = ambiguous
 ```
 
 **Right:**
 ```bash
-hcom send @worker- --intent inform -- "FYI: I updated the config"   # Worker won't respond
-hcom send @worker- --intent request -- "Review this code"           # Worker must respond
-hcom send @worker- --intent ack -- "Got it, thanks"                 # Worker ignores
+comms send @worker- --intent inform -- "FYI: I updated the config"   # Worker won't respond
+comms send @worker- --intent request -- "Review this code"           # Worker must respond
+comms send @worker- --intent ack -- "Got it, thanks"                 # Worker ignores
 ```
 
 The bootstrap teaches agents: `request -> always respond`, `inform -> respond only if useful`, `ack -> don't respond`.
@@ -155,10 +155,10 @@ The bootstrap teaches agents: `request -> always respond`, `inform -> respond on
 
 ## TTY/PTY Issues
 
-**Agent shows as "blocked" in hcom list:**
+**Agent shows as "blocked" in comms list:**
 - Cause: Approval prompt detected (OSC9 sequence) or output unstable
 - Fix: Agent needs user to approve a tool call, or the PTY delivery detected instability
 
 **Agent terminal pane does not close on kill:**
 - Cause: Terminal preset close command failed or pane ID was not captured
-- Fix: Manually close the terminal tab/pane. Check `hcom config terminal` for preset.
+- Fix: Manually close the terminal tab/pane. Check `comms config terminal` for preset.

@@ -7,7 +7,7 @@
 //! screen tracking, [`InjectServer`] for TCP text injection, and
 //! [`run_delivery_loop`] for notify-driven message delivery. This is what lets
 //! an **idle** agent be woken on Windows (the M1 limitation): the delivery loop
-//! injects `<hcom>` text into the ConPTY input when a message arrives.
+//! injects `<comms>` text into the ConPTY input when a message arrives.
 
 use anyhow::{Context, Result};
 use std::io::{IsTerminal, Read, Write};
@@ -24,7 +24,7 @@ use super::inject::{InjectResult, InjectServer, QueryCommand};
 use super::screen::ScreenTracker;
 use super::shared;
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::delivery::{EXIT_WAS_KILLED, ScreenState};
 use crate::log::log_error;
 
@@ -64,7 +64,7 @@ pub struct Proxy {
     /// read by the delivery coordinator to start delivery early. A latch never
     /// regresses, unlike reading the (non-latched) screen-state ready flag.
     ready_signaled: Arc<AtomicBool>,
-    /// Eagerly-maintained screen dump for `hcom term` screen queries. The reader
+    /// Eagerly-maintained screen dump for `comms term` screen queries. The reader
     /// owns the `ScreenTracker` and refreshes this (throttled) each chunk; the
     /// inject thread serves it directly so an idle agent — whose reader is
     /// blocked in `read()` — still answers immediately (#4).
@@ -126,14 +126,14 @@ impl Proxy {
             cmd.env(k, v);
         }
         // Pin the ConPTY child's working directory. The Unix runner `.sh` does
-        // `cd {cwd}` then `exec hcom`, so the openpty child inherits the launch
+        // `cd {cwd}` then `exec comms`, so the openpty child inherits the launch
         // dir; the Windows runner `.ps1` uses `Set-Location` then invokes
-        // `hcom.exe` as a *child*. `Set-Location` only moves the PowerShell
-        // host's cwd — the spawned hcom (and the ConPTY child) do not reliably
+        // `comms.exe` as a *child*. `Set-Location` only moves the PowerShell
+        // host's cwd — the spawned comms (and the ConPTY child) do not reliably
         // inherit it, and `CommandBuilder` defaults the child to the process
         // default (the user's home) when no cwd is set. That launched Claude
         // outside the repo, so its file index fell back to a full-home ripgrep
-        // scan (~11s), freezing input and swallowing ESC-ESC. hcom's own cwd is
+        // scan (~11s), freezing input and swallowing ESC-ESC. comms's own cwd is
         // already the launch dir, so pinning to it keeps Claude in-repo.
         if let Ok(cwd) = std::env::current_dir() {
             cmd.cwd(crate::shared::platform::child_process_path(&cwd));
@@ -158,13 +158,13 @@ impl Proxy {
 
         let writer = pair.master.take_writer().context("take_writer failed")?;
 
-        // Persist PID so `hcom kill` can target the agent.
+        // Persist PID so `comms kill` can target the agent.
         if let Some(ref instance_name) = config.instance_name {
             let persist_result = (|| -> Result<()> {
                 let pid = child
                     .process_id()
                     .context("ConPTY child has no process id")?;
-                let db = HcomDb::open()?;
+                let db = CommsDb::open()?;
                 // The child handle keeps this PID from being reused, so a missing
                 // identity only means no reuse protection for later cleanup.
                 db.update_instance_pid_with_identity(
@@ -270,7 +270,7 @@ impl Proxy {
         // (or allow the reader thread to do so), the delivery loop can enter
         // cleanup before this store — recording exit:closed for a kill.
         // Exit code 130 is the sentinel written by terminate_win() for an
-        // externally-issued `hcom kill`.
+        // externally-issued `comms kill`.
         EXIT_WAS_KILLED.store(exit_code == 130, Ordering::Release);
 
         // Join the reader BEFORE reading last_tail (and before running=false, so
@@ -297,7 +297,7 @@ impl Proxy {
         // running=false, mirroring the Unix proxy: finalize records the real
         // evidence first, and the shared launch_phase flag then suppresses a
         // duplicate generic failure from delivery cleanup. Skipped on a kill so
-        // a manual `hcom kill` is never recorded as a launch failure.
+        // a manual `comms kill` is never recorded as a launch failure.
         if !EXIT_WAS_KILLED.load(Ordering::Acquire) {
             let tail = self.last_tail.read().ok().and_then(|g| g.clone());
             shared::finalize_launch_failure_after_exit(
@@ -479,7 +479,7 @@ impl Proxy {
     /// `shared::update_delivery_state`), latching the ready signal for the
     /// delivery coordinator, consuming approval-clear requests from the
     /// stdin/inject threads, applying pending resizes, refreshing the screen
-    /// snapshot for `hcom term` queries, answering the child's cursor-position
+    /// snapshot for `comms term` queries, answering the child's cursor-position
     /// query when headless, and emitting title OSC updates on status/name
     /// changes.
     ///
@@ -519,7 +519,7 @@ impl Proxy {
         // Producer: owns the ConPTY reader and blocks in read(), forwarding raw
         // chunks over a channel. This exists so the consumer loop below can wait
         // with a bounded timeout (`recv_timeout`) instead of blocking in read()
-        // forever — that bounded wait is what lets it render a trailing `hcom
+        // forever — that bounded wait is what lets it render a trailing `comms
         // term` snapshot ~120ms after an idle agent's output stops (#4); a plain
         // blocking read() could not, since it never returns while the child is
         // idle. Detached like the old single reader was: on the orphaned-
@@ -568,14 +568,14 @@ impl Proxy {
             // Terminal-title behavior. Read once; the child title comes from the
             // reader-owned `screen`, no extra lock needed. In `Off` the filter
             // passes the tool's own titles through and we write nothing.
-            let title_mode = crate::config::HcomConfig::load(None)
+            let title_mode = crate::config::CommsConfig::load(None)
                 .map(|c| crate::shared::TitleMode::from_config(&c.title_mode))
                 .unwrap_or(crate::shared::TitleMode::Combined);
             let title_enabled = title_mode != crate::shared::TitleMode::Off;
             filter.set_passthrough_titles(!title_enabled);
             let mut last_child = String::new();
 
-            // `hcom term` snapshot refresh (see should_refresh_snapshot). Under
+            // `comms term` snapshot refresh (see should_refresh_snapshot). Under
             // sustained output we render at most once per SNAPSHOT_THROTTLE;
             // chunks skipped by that throttle set `dirty`. When output then goes
             // quiet, recv_timeout fires after SNAPSHOT_DEBOUNCE and we render one
@@ -599,7 +599,7 @@ impl Proxy {
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         // Output has been quiet for SNAPSHOT_DEBOUNCE. If a frame
                         // was deferred by the throttle, render it now so an idle
-                        // agent's final frame is current for `hcom term`.
+                        // agent's final frame is current for `comms term`.
                         if dirty {
                             refresh(&screen);
                             last_snapshot = Instant::now();
@@ -636,7 +636,7 @@ impl Proxy {
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         // EOF / read error: capture the visible tail so run() can
                         // build the launch-failure diagnostic before the screen is
-                        // gone, and render the final frame for a late `hcom term`.
+                        // gone, and render the final frame for a late `comms term`.
                         if let Ok(mut g) = last_tail.write() {
                             *g = screen.visible_tail(8, 1000);
                         }
@@ -684,7 +684,7 @@ impl Proxy {
 
                         screen.process(data);
 
-                        // Refresh the `hcom term` snapshot, throttled to ≤10Hz so
+                        // Refresh the `comms term` snapshot, throttled to ≤10Hz so
                         // heavy output doesn't spend the reader in screen dumps
                         // (~150µs each). A chunk skipped here is marked dirty and
                         // captured by the trailing-edge Timeout branch above once
@@ -761,7 +761,7 @@ impl Proxy {
             // ensures EXIT_WAS_KILLED is committed before the delivery thread
             // sees running=false and enters cleanup. If the reader set it first,
             // the delivery loop could read EXIT_WAS_KILLED=false and record
-            // exit:closed even when the child was killed via `hcom kill`.
+            // exit:closed even when the child was killed via `comms kill`.
         }))
     }
 
@@ -827,7 +827,7 @@ impl Proxy {
     }
 
     /// InjectServer → PTY input. Polls for inject connections (the delivery loop
-    /// and `hcom term inject` connect here) and writes the text to the ConPTY.
+    /// and `comms term inject` connect here) and writes the text to the ConPTY.
     fn spawn_inject_thread(&self, mut inject_server: InjectServer) {
         let writer = self.writer.clone();
         let running = self.running.clone();
@@ -839,14 +839,14 @@ impl Proxy {
         let screen_snapshot = self.screen_snapshot.clone();
         // A client stuck Pending past this long (connected but never sending
         // EOF/erroring — e.g. a killed-without-cleanup peer) stops blocking
-        // later-queued clients such as independent `hcom term` screen queries.
+        // later-queued clients such as independent `comms term` screen queries.
         const STALL_TIMEOUT: Duration = Duration::from_secs(2);
         thread::spawn(move || {
             let mut stalled_since: Option<Instant> = None;
             while running.load(Ordering::Acquire) {
                 // Drain the accept queue.
                 while matches!(inject_server.accept(), Ok(true)) {}
-                // Preserve connection order. `hcom term inject --enter` sends
+                // Preserve connection order. `comms term inject --enter` sends
                 // text and Enter on two consecutive TCP connections; processing
                 // newest-first delivers Enter before the text and leaves the
                 // prompt filled but unsubmitted. Completed clients remove
@@ -879,7 +879,7 @@ impl Proxy {
                             }
                             true
                         }
-                        // Screen queries (`hcom term`) are served from the
+                        // Screen queries (`comms term`) are served from the
                         // eagerly-maintained snapshot the reader refreshes, so an
                         // idle agent (reader blocked in read()) still answers
                         // immediately rather than hanging or returning "" (#4).
@@ -936,7 +936,7 @@ impl Proxy {
 /// only after the PTY signals EOF/HUP (the child is already tearing down) and
 /// exists to break the full-PTY-buffer write deadlock; that deadlock cannot
 /// happen here because the reader thread keeps draining the ConPTY pipe
-/// concurrently. A genuinely stuck child is still covered: `hcom kill`
+/// concurrently. A genuinely stuck child is still covered: `comms kill`
 /// terminates the tree directly (releasing this wait), and Drop's kill_group
 /// plus the job object's kill-on-close reap anything left.
 ///
@@ -993,7 +993,7 @@ impl Drop for Proxy {
                 // Mark as killed so the delivery thread records exit:killed if
                 // it is still running. Do not also call child.kill() below: it
                 // would send a second, competing TerminateProcess to the same
-                // PID and can overwrite the hcom-kill sentinel exit code (130)
+                // PID and can overwrite the comms-kill sentinel exit code (130)
                 // that kill_group's terminate_win already set — the same race
                 // fixed in kill_child_group (sys/process.rs).
                 EXIT_WAS_KILLED.store(true, Ordering::Release);
@@ -1003,7 +1003,7 @@ impl Drop for Proxy {
             }
         }
         if let Some(ref instance_name) = self.config.instance_name
-            && let Ok(db) = HcomDb::open()
+            && let Ok(db) = CommsDb::open()
         {
             let _ = db.delete_notify_endpoint(instance_name, "inject");
         }

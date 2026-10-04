@@ -2,7 +2,7 @@
 
 **Let your coding agents talk to each other.** Get a second opinion from a different model, or run Claude Code and Codex side by side in one project and have them coordinate instead of collide.
 
-`comms` is a fork of [hcom](https://github.com/aannoo/hcom) (MIT) by aannoo. hcom provides the messaging engine: launching agents through a wrapper, @mentions, and delivering messages mid-turn or by waking idle agents. comms adds the pieces for two models sharing one codebase:
+Start each agent with `comms` in front of it and prompt normally. The agents can then message each other, @mention each other, and wake each other up, whether they're busy or idle. On top of that, comms adds the pieces two models need to share one codebase:
 
 | | What it does |
 |---|---|
@@ -12,7 +12,9 @@
 | **Turn budget** | Stops two agents from messaging each other forever without you. |
 | **Per-project data** | `comms init` keeps a project's agents and messages in `.comms/`, separate from other projects. |
 
-Supports `claude` and `codex` for the comms features. Everything hcom supports (opencode, gemini, cursor, …) still works for messaging.
+The features above support `claude` and `codex`. Messaging also works with opencode, gemini, cursor, kimi, kilo, copilot, pi, omp, grok and antigravity.
+
+comms is forked from [hcom](https://github.com/aannoo/hcom) by aannoo (MIT).
 
 ---
 
@@ -26,11 +28,7 @@ cd comms
 cargo install --path .
 ```
 
-This installs two binaries next to each other:
-- **`comms`**: the command you use.
-- **`hcom`**: the engine. Agents call it internally.
-
-If you already have upstream hcom installed, this `hcom` replaces it. The two are compatible.
+This installs the `comms` binary. Agents launched with it call `comms` themselves to send messages, so it needs to stay on your `PATH`.
 
 ---
 
@@ -111,22 +109,22 @@ Each agent-to-agent message counts toward that pair of agents. After **20** mess
 ```bash
 comms budget          # per-pair counts
 comms budget reset    # let them continue
-comms budget 50       # change the limit (0 = off), or set HCOM_TURN_BUDGET
+comms budget 50       # change the limit (0 = off), or set COMMS_TURN_BUDGET
 ```
 
 Counts reset when you send a message, or when you type directly into an agent. Agents can see the budget but can't change it.
 
 ## Per-project data
 
-`comms init` creates `<git root>/.comms/hcom` and adds `.comms/` to `.gitignore`. Inside the project, every `comms` or `hcom` call uses that directory, including calls agents make. Outside any initialized project, data lives in `~/.hcom` as in upstream. An explicit `HCOM_DIR` always takes precedence.
+`comms init` creates `<git root>/.comms/data` and adds `.comms/` to `.gitignore`. Inside the project, every `comms` call uses that directory, including calls agents make. Outside any initialized project, data lives in `~/.comms`. An explicit `COMMS_DIR` always takes precedence.
 
 ---
 
 ## Everything else
 
-All of hcom's features still apply: spawning and forking agents, subscriptions, threads, transcripts, cross-device relay, the TUI and the config. See **[docs/HCOM.md](docs/HCOM.md)** (hcom's own README) and `comms --help`.
+The full reference covers spawning and forking agents, subscriptions, threads, transcripts, cross-device relay, the TUI and the config. See **[docs/REFERENCE.md](docs/REFERENCE.md)** and `comms --help`.
 
-[SPEC.md](SPEC.md) has the original design for comms and notes on how each part maps onto hcom.
+[SPEC.md](SPEC.md) has the original design and notes on how each part was built.
 
 ## Development
 
@@ -136,13 +134,6 @@ cargo test
 cargo clippy --all-targets
 ```
 
-Upstream hcom is tracked as the `upstream` remote. Internal names (`hcom`, `HCOM_*`, `~/.hcom`) are left unchanged so upstream fixes still merge cleanly:
-
-```bash
-git remote add upstream https://github.com/aannoo/hcom.git   # once
-git fetch upstream && git merge upstream/main
-```
-
 ## License
 
-MIT. Copyright (c) 2025 aannoo (hcom), with comms changes by its contributors. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Based on [hcom](https://github.com/aannoo/hcom), copyright (c) 2025 aannoo.

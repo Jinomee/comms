@@ -163,7 +163,7 @@ fn prompt_submit_observed(
 /// so the common keystroke path does not allocate.
 ///
 /// GitHub Copilot CLI enables focus reporting (DECSET 1004) and *pauses draining
-/// its stdin on focus-out*. hcom drives copilot purely by injection, so once the
+/// its stdin on focus-out*. comms drives copilot purely by injection, so once the
 /// pane is blurred that pause silently stalls message delivery until the user
 /// refocuses — and only a real terminal focus-in resumes it (an injected `CSI I`
 /// does not, because while paused copilot isn't reading stdin at all). Hiding
@@ -724,10 +724,10 @@ impl Proxy {
         );
         let startup_trace = shared::StartupTrace::new(spawned_at, config.instance_name.as_deref());
 
-        // Write PID and launch context to database for hcom kill
+        // Write PID and launch context to database for comms kill
         if let Some(ref instance_name) = config.instance_name {
             let persist_result = (|| -> Result<()> {
-                let db = crate::db::HcomDb::open()?;
+                let db = crate::db::CommsDb::open()?;
                 // Our unreaped child can't have been recycled, so a missing identity
                 // (unobservable on this platform) just means no reuse protection.
                 db.update_instance_pid_with_identity(
@@ -775,7 +775,7 @@ impl Proxy {
             let base = config.instance_name.clone().unwrap_or_default();
             if base.is_empty() {
                 base
-            } else if let Ok(db) = crate::db::HcomDb::open() {
+            } else if let Ok(db) = crate::db::CommsDb::open() {
                 match db.get_instance_tag(&base) {
                     Some(tag) => format!("{}-{}", tag, base),
                     None => base,
@@ -837,7 +837,7 @@ impl Proxy {
         // under it. In `Off` we neither strip the tool's titles nor write our own;
         // in `Combined` we append the tool's live title (read from `self.screen`,
         // which this thread owns — no extra Arc needed).
-        let title_mode = crate::config::HcomConfig::load(None)
+        let title_mode = crate::config::CommsConfig::load(None)
             .map(|c| crate::shared::TitleMode::from_config(&c.title_mode))
             .unwrap_or(crate::shared::TitleMode::Combined);
         let title_enabled = title_mode != crate::shared::TitleMode::Off;
@@ -1317,7 +1317,7 @@ impl Proxy {
                             }
                             let origin = has_user_input.then_some(InputOrigin::User);
                             // Copilot pauses stdin processing on terminal focus-out
-                            // (it enables DECSET 1004). Since hcom drives it via
+                            // (it enables DECSET 1004). Since comms drives it via
                             // injection, that pause silently stalls delivery until the
                             // pane is refocused — so hide focus events from it.
                             if self.config.target.name() == "copilot"
@@ -1710,9 +1710,9 @@ fn initialize_delivery_components<DbF, NotifyF>(
     instance_name: &str,
     db_factory: DbF,
     notify_factory: NotifyF,
-) -> anyhow::Result<(crate::db::HcomDb, crate::notify::NotifyServer)>
+) -> anyhow::Result<(crate::db::CommsDb, crate::notify::NotifyServer)>
 where
-    DbF: FnOnce() -> anyhow::Result<crate::db::HcomDb>,
+    DbF: FnOnce() -> anyhow::Result<crate::db::CommsDb>,
     NotifyF: FnOnce() -> anyhow::Result<crate::notify::NotifyServer>,
 {
     use anyhow::Context as _;
@@ -1798,13 +1798,13 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let test_id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = temp_dir.join(format!(
-            "test_hcom_pty_{}_{}.db",
+            "test_comms_pty_{}_{}.db",
             std::process::id(),
             test_id
         ));
 
         if with_notify_endpoints {
-            crate::db::HcomDb::open_at(&db_path).unwrap();
+            crate::db::CommsDb::open_at(&db_path).unwrap();
         } else {
             let _ = Connection::open(&db_path).unwrap();
         }
@@ -1905,7 +1905,7 @@ mod tests {
 
         let result = initialize_delivery_components(
             "test",
-            || crate::db::HcomDb::open_raw(&db_path),
+            || crate::db::CommsDb::open_raw(&db_path),
             || Err(anyhow!("Port already in use")),
         );
 
@@ -1927,7 +1927,7 @@ mod tests {
 
         let result = initialize_delivery_components(
             "test",
-            || crate::db::HcomDb::open_raw(&db_path),
+            || crate::db::CommsDb::open_raw(&db_path),
             crate::notify::NotifyServer::new,
         );
 
@@ -1949,7 +1949,7 @@ mod tests {
 
         let (db, notify) = initialize_delivery_components(
             "test",
-            || crate::db::HcomDb::open_raw(&db_path),
+            || crate::db::CommsDb::open_raw(&db_path),
             crate::notify::NotifyServer::new,
         )
         .expect("component init should succeed");

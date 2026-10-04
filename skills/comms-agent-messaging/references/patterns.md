@@ -14,15 +14,15 @@ Key logic:
 
 ```bash
 # Worker does task, sends result to reviewer
-hcom 1 claude --tag worker --go --headless \
-  --hcom-prompt "Do: ${task}. Send result: hcom send \"@reviewer-\" --thread ${thread} --intent inform -- \"RESULT: <answer>\". Then: hcom stop"
+comms 1 claude --tag worker --go --headless \
+  --comms-prompt "Do: ${task}. Send result: comms send \"@reviewer-\" --thread ${thread} --intent inform -- \"RESULT: <answer>\". Then: comms stop"
 
 # Reviewer acks worker, sends DONE to orchestrator
-hcom 1 claude --tag reviewer --go --headless \
-  --hcom-prompt "Wait for @worker-. Reply ACK. Send DONE to @bigboss. Then: hcom stop"
+comms 1 claude --tag reviewer --go --headless \
+  --comms-prompt "Wait for @worker-. Reply ACK. Send DONE to @bigboss. Then: comms stop"
 
 # Orchestrator waits for DONE
-hcom events --wait 120 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%DONE%'"
+comms events --wait 120 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%DONE%'"
 ```
 
 **Real event JSON from test run:**
@@ -43,13 +43,13 @@ Key logic:
 
 ```bash
 # Worker: does task, sends ROUND N DONE, listens for FIX/APPROVED
---hcom-prompt "Task: ${task}. Send ROUND 1 DONE to @reviewer-. If FIX feedback, fix and resend as ROUND 2 DONE. After APPROVED, send FINAL to @bigboss."
+--comms-prompt "Task: ${task}. Send ROUND 1 DONE to @reviewer-. If FIX feedback, fix and resend as ROUND 2 DONE. After APPROVED, send FINAL to @bigboss."
 
 # Reviewer: checks each round, sends APPROVED or FIX
---hcom-prompt "On ROUND N DONE: if correct send APPROVED, if wrong send FIX: <issue>."
+--comms-prompt "On ROUND N DONE: if correct send APPROVED, if wrong send FIX: <issue>."
 
 # Orchestrator waits for FINAL (after APPROVED)
-hcom events --wait 120 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%FINAL%'"
+comms events --wait 120 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%FINAL%'"
 ```
 
 **Key insight:** The FIX/APPROVED protocol creates a natural feedback loop. Workers self-correct based on reviewer feedback. Multiple rounds happen automatically.
@@ -67,18 +67,18 @@ Key logic:
 ```bash
 # Launch N contestants in a loop
 for i in 1 2 3; do
-  hcom 1 claude --tag "c${i}" --go --headless \
-    --hcom-prompt "Answer independently: ${task}. Send ONLY your answer: hcom send \"@judge-\" --thread ${thread} --intent inform -- \"C${i}: <answer>\". Then: hcom stop."
+  comms 1 claude --tag "c${i}" --go --headless \
+    --comms-prompt "Answer independently: ${task}. Send ONLY your answer: comms send \"@judge-\" --thread ${thread} --intent inform -- \"C${i}: <answer>\". Then: comms stop."
 done
 
 # Judge reads all answers via event query
---hcom-prompt "Wait for 3 answers. Check: hcom events --sql \"msg_thread='${thread}' AND msg_text LIKE 'C%'\" --last 10. Synthesize. Send VERDICT."
+--comms-prompt "Wait for 3 answers. Check: comms events --sql \"msg_thread='${thread}' AND msg_text LIKE 'C%'\" --last 10. Synthesize. Send VERDICT."
 
 # Orchestrator waits for VERDICT
-hcom events --wait 120 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%VERDICT%'"
+comms events --wait 120 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%VERDICT%'"
 ```
 
-**Key insight:** The judge uses `hcom events --sql` to query thread messages, reading all answers in one call. Agents run in parallel so N agents cost same wall-clock as 1.
+**Key insight:** The judge uses `comms events --sql` to query thread messages, reading all answers in one call. Agents run in parallel so N agents cost same wall-clock as 1.
 
 ---
 
@@ -92,18 +92,18 @@ Key logic:
 
 ```bash
 # Stage 1: Planner
-hcom 1 claude --tag plan --go --headless \
-  --hcom-prompt "Plan: ${task}. Send PLAN DONE."
+comms 1 claude --tag plan --go --headless \
+  --comms-prompt "Plan: ${task}. Send PLAN DONE."
 
 # Wait for plan, then launch stage 2 with transcript reference
-hcom events --wait 60 --sql "msg_thread='${thread}' AND msg_text LIKE '%PLAN DONE%'"
+comms events --wait 60 --sql "msg_thread='${thread}' AND msg_text LIKE '%PLAN DONE%'"
 
 # Stage 2: Executor reads planner's transcript
-hcom 1 claude --tag exec --go --headless \
-  --hcom-prompt "Read planner transcript: hcom transcript @${planner} --last 3. Execute the plan. Send EXEC DONE."
+comms 1 claude --tag exec --go --headless \
+  --comms-prompt "Read planner transcript: comms transcript @${planner} --last 3. Execute the plan. Send EXEC DONE."
 ```
 
-**Key insight:** `hcom transcript @name --full` is the context handoff mechanism. Each pipeline stage gets the complete work product of the previous stage. Use `--detailed` to include tool I/O (Bash output, file edits).
+**Key insight:** `comms transcript @name --full` is the context handoff mechanism. Each pipeline stage gets the complete work product of the previous stage. Use `--detailed` to include tool I/O (Bash output, file edits).
 
 ---
 
@@ -117,15 +117,15 @@ Key logic:
 
 ```bash
 # Codex waits for spec, implements
-hcom 1 codex --tag eng --go --headless \
-  --hcom-prompt "Wait for spec from @arch-. Implement it. Send IMPLEMENTED."
+comms 1 codex --tag eng --go --headless \
+  --comms-prompt "Wait for spec from @arch-. Implement it. Send IMPLEMENTED."
 
 # Claude designs spec, sends to Codex, waits for confirmation
-hcom 1 claude --tag arch --go --headless \
-  --hcom-prompt "Design spec: ${task}. Send SPEC to @eng-. Wait for IMPLEMENTED. Send APPROVED."
+comms 1 claude --tag arch --go --headless \
+  --comms-prompt "Design spec: ${task}. Send SPEC to @eng-. Wait for IMPLEMENTED. Send APPROVED."
 
 # Orchestrator waits for APPROVED
-hcom events --wait 180 --sql "msg_thread='${thread}' AND msg_text LIKE '%APPROVED%'"
+comms events --wait 180 --sql "msg_thread='${thread}' AND msg_text LIKE '%APPROVED%'"
 ```
 
 ---
@@ -140,15 +140,15 @@ Key logic:
 
 ```bash
 # Codex does the work
-hcom 1 codex --tag coder --go --headless \
-  --hcom-prompt "Do: ${task}. Send CODE DONE to @reviewer-."
+comms 1 codex --tag coder --go --headless \
+  --comms-prompt "Do: ${task}. Send CODE DONE to @reviewer-."
 
 # Claude reviews by reading Codex's transcript
-hcom 1 claude --tag reviewer --go --headless \
-  --hcom-prompt "Wait for CODE DONE. Read transcript: hcom transcript @${coder} --last 5 --full. Send REVIEWED: pass/fail."
+comms 1 claude --tag reviewer --go --headless \
+  --comms-prompt "Wait for CODE DONE. Read transcript: comms transcript @${coder} --last 5 --full. Send REVIEWED: pass/fail."
 ```
 
-**Key insight:** Claude reads Codex's complete transcript (including Bash output, file writes, command results) via `hcom transcript @name --full --detailed`. This enables deep code review without sharing files.
+**Key insight:** Claude reads Codex's complete transcript (including Bash output, file writes, command results) via `comms transcript @name --full --detailed`. This enables deep code review without sharing files.
 
 ---
 

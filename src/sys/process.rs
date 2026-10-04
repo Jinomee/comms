@@ -218,7 +218,7 @@ pub fn terminate_group(pid: u32) -> GroupSignal {
 ///
 /// Unix: `killpg(SIGKILL)`. Windows has no process groups in the POSIX sense, so
 /// this terminates the target PID **and all of its descendants** via a process
-/// snapshot ([`kill_tree_win`]). This matters because hcom records the PID of
+/// snapshot ([`kill_tree_win`]). This matters because comms records the PID of
 /// the launcher (e.g. the background `powershell` host), and the real agent runs
 /// as its child; killing only the recorded PID would orphan the agent.
 pub fn kill_group(pid: u32) -> GroupSignal {
@@ -286,7 +286,7 @@ pub fn kill_child_group(child: &mut std::process::Child) {
 
     #[cfg(windows)]
     {
-        // kill_tree_win_checked terminates `child` itself (with the hcom-kill
+        // kill_tree_win_checked terminates `child` itself (with the comms-kill
         // sentinel exit code 130, via terminate_win) and its whole descendant
         // tree. If root's own termination is confirmed, return rather than
         // falling through to child.kill() below: TerminateProcess only
@@ -372,8 +372,8 @@ fn terminate_win(pid: u32) -> bool {
         if handle.is_null() {
             return false;
         }
-        // Exit code 130 (128 + SIGINT) is the hcom sentinel for "externally
-        // killed via hcom kill". The pty proxy reads this back from child.wait()
+        // Exit code 130 (128 + SIGINT) is the comms sentinel for "externally
+        // killed via comms kill". The pty proxy reads this back from child.wait()
         // to set EXIT_WAS_KILLED before the delivery thread records exit status.
         let ok = TerminateProcess(handle, 130) != 0;
         CloseHandle(handle);
@@ -425,8 +425,8 @@ fn snapshot_parents() -> Option<std::collections::HashMap<u32, u32>> {
 ///
 /// On Windows, `Command` must enable handle inheritance for explicitly supplied
 /// child stdio (for example a background log file). Without an explicit handle
-/// list, that can also inherit the hcom CLI's own stdout/stderr pipes. A caller
-/// using `Command::output()` then waits forever for EOF after hcom exits because
+/// list, that can also inherit the comms CLI's own stdout/stderr pipes. A caller
+/// using `Command::output()` then waits forever for EOF after comms exits because
 /// the long-lived agent still owns duplicate pipe handles.
 pub fn spawn_detached(command: &mut Command) -> std::io::Result<std::process::Child> {
     detach_session(command);
@@ -765,7 +765,7 @@ mod tests {
     }
 
     // Reproduces the bug fixed above: kill_tree_win's terminate_win writes the
-    // hcom-kill sentinel exit code 130. A trailing child.kill() (a second,
+    // comms-kill sentinel exit code 130. A trailing child.kill() (a second,
     // competing TerminateProcess on the same PID) could overwrite it before
     // the OS settles on a final exit code.
     #[cfg(windows)]
@@ -777,7 +777,7 @@ mod tests {
         assert_eq!(
             status.code(),
             Some(130),
-            "kill_child_group must not let a second kill overwrite the hcom-kill sentinel"
+            "kill_child_group must not let a second kill overwrite the comms-kill sentinel"
         );
     }
 

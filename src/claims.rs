@@ -1,21 +1,21 @@
 //! Claims: soft, expiring locks on paths so agents editing one checkout in
 //! parallel don't collide.
 //!
-//! An agent claims globs (`hcom claim "src/auth/**"`); while a claim is live,
+//! An agent claims globs (`comms claim "src/auth/**"`); while a claim is live,
 //! file-edit hooks deny other agents' edits under it and point them at the
 //! holder. Claims expire after a TTL (renewed when the holder edits under
 //! them) and are ignored once the holder is gone, so a crashed agent never
 //! blocks anyone for long.
 //!
 //! Stored in the `kv` table under `comms_claim:` (no schema migration, so
-//! upstream hcom migrations merge cleanly).
+//! upstream comms migrations merge cleanly).
 
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::shared::constants::ST_INACTIVE;
 
 const KV_PREFIX: &str = "comms_claim:";
@@ -170,7 +170,7 @@ pub fn patterns_overlap(a: &str, b: &str) -> bool {
 }
 
 /// Holder and editor are the same agent, or parent and Claude subagent.
-fn related(db: &HcomDb, a: &str, b: &str) -> bool {
+fn related(db: &CommsDb, a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
@@ -183,14 +183,14 @@ fn related(db: &HcomDb, a: &str, b: &str) -> bool {
     parent_of(a).as_deref() == Some(b) || parent_of(b).as_deref() == Some(a)
 }
 
-fn holder_alive(db: &HcomDb, holder: &str) -> bool {
+fn holder_alive(db: &CommsDb, holder: &str) -> bool {
     if holder == crate::shared::constants::SENDER {
         return true; // the human
     }
     matches!(db.get_instance_full(holder), Ok(Some(row)) if row.status != ST_INACTIVE)
 }
 
-fn store(db: &HcomDb, claim: &Claim) -> Result<()> {
+fn store(db: &CommsDb, claim: &Claim) -> Result<()> {
     db.kv_set(
         &format!("{KV_PREFIX}{}", claim.id),
         Some(&serde_json::to_string(claim)?),
@@ -199,7 +199,7 @@ fn store(db: &HcomDb, claim: &Claim) -> Result<()> {
 
 /// Live claims. Expired claims and claims whose holder is gone are deleted;
 /// entries that don't parse are left alone (not ours to remove).
-pub fn active(db: &HcomDb, now: i64) -> Result<Vec<Claim>> {
+pub fn active(db: &CommsDb, now: i64) -> Result<Vec<Claim>> {
     let mut live = Vec::new();
     for (key, value) in db.kv_prefix(KV_PREFIX)? {
         let Ok(claim) = serde_json::from_str::<Claim>(&value) else {
@@ -217,7 +217,7 @@ pub fn active(db: &HcomDb, now: i64) -> Result<Vec<Claim>> {
 
 /// Claim each pattern (already normalized) for `holder`.
 pub fn claim(
-    db: &HcomDb,
+    db: &CommsDb,
     holder: &str,
     patterns: &[String],
     note: &str,
@@ -268,7 +268,7 @@ pub fn claim(
 
 /// Release `holder`'s claims on the given patterns, or all of them when
 /// `patterns` is empty. Returns the released claims.
-pub fn release(db: &HcomDb, holder: &str, patterns: &[String], now: i64) -> Result<Vec<Claim>> {
+pub fn release(db: &CommsDb, holder: &str, patterns: &[String], now: i64) -> Result<Vec<Claim>> {
     let mut released = Vec::new();
     for claim in active(db, now)? {
         if claim.holder != holder {
@@ -285,7 +285,7 @@ pub fn release(db: &HcomDb, holder: &str, patterns: &[String], now: i64) -> Resu
 /// The first live claim held by someone else (not `editor` or its
 /// parent/subagent) that covers one of `paths`.
 pub fn blocking_claim(
-    db: &HcomDb,
+    db: &CommsDb,
     editor: &str,
     paths: &[PathBuf],
     now: i64,
@@ -303,7 +303,7 @@ pub fn blocking_claim(
 }
 
 /// Extend `editor`'s own claims covering any of `paths` by their TTL.
-pub fn renew_for_edit(db: &HcomDb, editor: &str, paths: &[PathBuf], now: i64) -> Result<()> {
+pub fn renew_for_edit(db: &CommsDb, editor: &str, paths: &[PathBuf], now: i64) -> Result<()> {
     for mut claim in active(db, now)? {
         if claim.holder == editor && paths.iter().any(|p| claim.matches(p)) {
             claim.expires_at = now + claim.ttl_secs;
@@ -329,7 +329,7 @@ pub fn format_remaining(expires_at: i64, now: i64) -> String {
 /// Directory paths are shown relative to: the project root (parent of
 /// `.comms/`) when inside a `comms init` project, else `cwd`.
 pub fn display_base(cwd: &Path) -> PathBuf {
-    crate::paths::find_project_hcom_dir(cwd)
+    crate::paths::find_project_comms_dir(cwd)
         .and_then(|data| data.parent()?.parent().map(Path::to_path_buf))
         .map(|root| normalize_path(&root, cwd))
         .unwrap_or_else(|| normalize_path(cwd, cwd))
@@ -350,7 +350,7 @@ pub fn display_pattern(pattern: &str, base: &Path) -> String {
 /// Renews the editor's own claims on allowed edits. Also @mentions the
 /// holder so it learns someone needs the file. Never fails the hook: any
 /// DB error means "allow".
-pub fn check_edit(db: &HcomDb, editor: &str, raw_paths: &[&str], cwd: &Path) -> Option<String> {
+pub fn check_edit(db: &CommsDb, editor: &str, raw_paths: &[&str], cwd: &Path) -> Option<String> {
     if raw_paths.is_empty() {
         return None;
     }
@@ -368,19 +368,19 @@ pub fn check_edit(db: &HcomDb, editor: &str, raw_paths: &[&str], cwd: &Path) -> 
                 format!(" (\"{}\")", claim.note)
             };
             let left = format_remaining(claim.expires_at, now);
-            let hcom = crate::runtime_env::build_hcom_command();
+            let comms = crate::runtime_env::build_comms_command();
             let _ = db.send_system_message(
                 NOTICE_SENDER,
                 &format!(
                     "@{} {editor} was blocked from editing {shown}, which you claimed{note}. \
-                     Release it with `{hcom} release` when you're done, or reply to coordinate.",
+                     Release it with `{comms} release` when you're done, or reply to coordinate.",
                     claim.holder
                 ),
             );
             Some(format!(
                 "{shown} is claimed by {}{note}, {left} left. Don't edit it yet: ask them first, \
-                 e.g. `{hcom} send @{} -- can I edit {shown}?`, or work on something else. \
-                 See all claims with `{hcom} claims`.",
+                 e.g. `{comms} send @{} -- can I edit {shown}?`, or work on something else. \
+                 See all claims with `{comms} claims`.",
                 claim.holder, claim.holder
             ))
         }
@@ -460,15 +460,15 @@ mod tests {
         assert_eq!(display_pattern("/other/x", Path::new("/r")), "/other/x");
     }
 
-    fn test_db() -> HcomDb {
+    fn test_db() -> CommsDb {
         let dir = tempfile::tempdir().unwrap();
-        let db = HcomDb::open_raw(&dir.path().join("test.db")).unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("test.db")).unwrap();
         db.init_db().unwrap();
         std::mem::forget(dir);
         db
     }
 
-    fn add_instance(db: &HcomDb, name: &str, status: &str, parent: Option<&str>) {
+    fn add_instance(db: &CommsDb, name: &str, status: &str, parent: Option<&str>) {
         db.conn()
             .execute(
                 "INSERT INTO instances (name, tool, status, parent_name, created_at) VALUES (?, 'claude', ?, ?, 0)",

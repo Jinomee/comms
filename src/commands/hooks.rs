@@ -1,16 +1,16 @@
-//! `hcom hooks` command — add/remove/status for tool hooks.
+//! `comms hooks` command — add/remove/status for tool hooks.
 //!
 //!
 //! Manages hook installation across every released integration. Integrations
 //! without hooks are listed too, so asking about one gets an answer rather
 //! than "unknown tool".
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::hooks::runtime::{self, HookMode};
 use crate::shared::CommandContext;
 use crate::tool::Tool;
 
-/// Parsed arguments for `hcom hooks`.
+/// Parsed arguments for `comms hooks`.
 #[derive(clap::Parser, Debug)]
 #[command(name = "hooks", about = "Manage tool hooks")]
 pub struct HooksArgs {
@@ -113,7 +113,7 @@ fn cmd_hooks_status() -> i32 {
 
 fn no_hooks_message(tool: Tool, action: &str) -> String {
     format!(
-        "{} uses no hooks: hcom {} gets status and messages over its own connection; nothing to {action}.",
+        "{} uses no hooks: comms {} gets status and messages over its own connection; nothing to {action}.",
         tool.spec().label,
         tool.as_str()
     )
@@ -159,7 +159,7 @@ fn cmd_hooks_add(argv: &[String]) -> i32 {
             // Only report on an explicit request; `add all` skips silently.
             if tools.len() == 1 {
                 println!(
-                    "{} loads hcom's hooks per launch (hcom {}); nothing to install.",
+                    "{} loads comms's hooks per launch (comms {}); nothing to install.",
                     tool.spec().label,
                     tool.as_str()
                 );
@@ -218,7 +218,7 @@ fn cmd_hooks_add(argv: &[String]) -> i32 {
     if fail_count > 0 { 1 } else { 0 }
 }
 
-/// Remove hooks for specified tool(s). Called from both `hcom hooks remove` and `hcom reset hooks`.
+/// Remove hooks for specified tool(s). Called from both `comms hooks remove` and `comms reset hooks`.
 pub fn cmd_hooks_remove(argv: &[String]) -> i32 {
     // Determine which tools to remove.
     let tools: Vec<Tool> = if argv.is_empty() || (argv.len() == 1 && argv[0] == "all") {
@@ -280,7 +280,7 @@ fn detect_current_tool() -> &'static str {
     crate::shared::detect_current_tool_from_env()
 }
 
-pub fn cmd_hooks(_db: &HcomDb, args: &HooksArgs, _ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_hooks(_db: &CommsDb, args: &HooksArgs, _ctx: Option<&CommandContext>) -> i32 {
     let argv = &args.args;
     if argv.is_empty() {
         // No args = show status
@@ -302,7 +302,7 @@ pub fn cmd_hooks(_db: &HcomDb, args: &HooksArgs, _ctx: Option<&CommandContext>) 
         "remove" | "uninstall" => cmd_hooks_remove(&sub_argv),
         _ => {
             eprintln!("Error: Unknown hooks subcommand: {first}");
-            eprintln!("Usage: hcom hooks [status|add|remove] [tool]");
+            eprintln!("Usage: comms hooks [status|add|remove] [tool]");
             1
         }
     }

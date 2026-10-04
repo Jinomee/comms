@@ -5,13 +5,13 @@ use std::time::Instant;
 use serde_json::Value;
 
 use crate::bootstrap;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::instance_binding;
 use crate::instance_lifecycle as lifecycle;
 use crate::instances;
 use crate::log::{log_error, log_info};
 use crate::shared::ST_LISTENING;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 
 use crate::hooks::common;
 use crate::hooks::common::finalize_session;
@@ -27,7 +27,7 @@ fn has_flag(argv: &[String], flag: &str) -> bool {
     argv.iter().any(|a| a == flag)
 }
 
-pub(crate) fn upsert_plugin_notify_endpoint(db: &HcomDb, instance_name: &str, port: u16) {
+pub(crate) fn upsert_plugin_notify_endpoint(db: &CommsDb, instance_name: &str, port: u16) {
     if let Err(e) = db.upsert_notify_endpoint(instance_name, "plugin", port) {
         log_error(
             "native",
@@ -43,11 +43,11 @@ pub(crate) fn upsert_plugin_notify_endpoint(db: &HcomDb, instance_name: &str, po
     crate::notify::wake(db, instance_name, crate::notify::WakeKind::DELIVERY_LOOPS);
 }
 
-fn initialize_last_event_id(db: &HcomDb, instance_name: &str) {
+fn initialize_last_event_id(db: &CommsDb, instance_name: &str) {
     if let Ok(Some(existing)) = db.get_instance_full(instance_name)
         && existing.last_event_id == 0
     {
-        let launch_event_id: Option<i64> = std::env::var("HCOM_LAUNCH_EVENT_ID")
+        let launch_event_id: Option<i64> = std::env::var("COMMS_LAUNCH_EVENT_ID")
             .ok()
             .and_then(|s| s.parse().ok());
         let current_max = db.get_last_event_id();
@@ -61,18 +61,18 @@ fn initialize_last_event_id(db: &HcomDb, instance_name: &str) {
     }
 }
 
-fn instance_name_from_env(ctx: &HcomContext) -> Option<String> {
+fn instance_name_from_env(ctx: &CommsContext) -> Option<String> {
     ctx.raw_env
-        .get("HCOM_INSTANCE_NAME")
+        .get("COMMS_INSTANCE_NAME")
         .filter(|s| !s.is_empty())
         .cloned()
 }
 
-fn bootstrap_for(ctx: &HcomContext, db: &HcomDb, instance_name: &str) -> String {
+fn bootstrap_for(ctx: &CommsContext, db: &CommsDb, instance_name: &str) -> String {
     bootstrap::get_bootstrap(db, ctx, instance_name, "omp")
 }
 
-pub(crate) fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (i32, String) {
+pub(crate) fn handle_start(ctx: &CommsContext, db: &CommsDb, argv: &[String]) -> (i32, String) {
     // Plugin RPC returns JSON errors on exit 0 so the extension can handle
     // setup failures without Pi treating the hook itself as failed.
     let session_id = match parse_flag(argv, "--session-id") {
@@ -85,7 +85,7 @@ pub(crate) fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (
 
     let process_id = match &ctx.process_id {
         Some(pid) => pid.clone(),
-        None => return (0, r#"{"error":"HCOM_PROCESS_ID not set"}"#.to_string()),
+        None => return (0, r#"{"error":"COMMS_PROCESS_ID not set"}"#.to_string()),
     };
 
     let instance_name =
@@ -151,7 +151,7 @@ pub(crate) fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (
     (0, response.to_string())
 }
 
-pub(crate) fn handle_status(db: &HcomDb, argv: &[String]) -> (i32, String) {
+pub(crate) fn handle_status(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"error":"Missing --name or --status"}"#.to_string()),
@@ -184,7 +184,7 @@ pub(crate) fn handle_status(db: &HcomDb, argv: &[String]) -> (i32, String) {
     (0, r#"{"ok":true}"#.to_string())
 }
 
-fn handle_read(db: &HcomDb, argv: &[String]) -> (i32, String) {
+fn handle_read(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"error":"Missing --name"}"#.to_string()),
@@ -247,7 +247,7 @@ fn handle_read(db: &HcomDb, argv: &[String]) -> (i32, String) {
     )
 }
 
-fn handle_beforetool(db: &HcomDb, argv: &[String]) -> (i32, String) {
+fn handle_beforetool(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"decision":"allow"}"#.to_string()),
@@ -262,7 +262,7 @@ fn handle_beforetool(db: &HcomDb, argv: &[String]) -> (i32, String) {
     (0, r#"{"decision":"allow"}"#.to_string())
 }
 
-pub(crate) fn handle_stop(db: &HcomDb, argv: &[String]) -> (i32, String) {
+pub(crate) fn handle_stop(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"error":"Missing --name"}"#.to_string()),
@@ -279,9 +279,9 @@ pub(crate) fn handle_stop(db: &HcomDb, argv: &[String]) -> (i32, String) {
 
 pub fn dispatch_omp_hook(hook_name: &str, argv: &[String]) -> (i32, String) {
     let start = Instant::now();
-    let ctx = HcomContext::from_os();
-    crate::paths::ensure_hcom_directories_at(&ctx.hcom_dir);
-    let db = match HcomDb::open() {
+    let ctx = CommsContext::from_os();
+    crate::paths::ensure_comms_directories_at(&ctx.comms_dir);
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(e) => {
             log_error(

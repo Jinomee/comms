@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# PRO/CON debaters (fresh or existing agents) + judge evaluate a topic in shared hcom thread.
+# PRO/CON debaters (fresh or existing agents) + judge evaluate a topic in shared comms thread.
 #
 # Two modes:
 # 1. --spawn: Launch fresh PRO/CON instances with debate-specific system prompts
 # 2. --workers: Use existing instances, they pick their own positions dynamically
 #
 # Usage:
-#   hcom run debate "AI will replace programmers" --spawn
-#   hcom run debate "tabs vs spaces" -w sity,offu
-#   hcom run debate "microservices vs monolith" --spawn --rounds 4
+#   comms run debate "AI will replace programmers" --spawn
+#   comms run debate "tabs vs spaces" -w sity,offu
+#   comms run debate "microservices vs monolith" --spawn --rounds 4
 
 set -euo pipefail
 
@@ -18,7 +18,7 @@ cleanup() {
   if [[ ${#LAUNCHED_NAMES[@]} -gt 0 ]]; then
     echo "Cleaning up ${#LAUNCHED_NAMES[@]} launched agents..." >&2
     for name in "${LAUNCHED_NAMES[@]}"; do
-      hcom stop "$name" --go 2>/dev/null || true
+      comms stop "$name" --go 2>/dev/null || true
     done
   fi
 }
@@ -33,7 +33,7 @@ track_launch() {
 
 usage() {
   cat <<'EOF'
-Usage: hcom run debate [OPTIONS] TOPIC
+Usage: comms run debate [OPTIONS] TOPIC
 
 Launch a structured debate between AI instances.
 
@@ -56,9 +56,9 @@ Options:
   -h, --help              Show this help
 
 Examples:
-  hcom run debate "AI will replace programmers" --spawn
-  hcom run debate "tabs vs spaces" -w sity,offu
-  hcom run debate "microservices vs monolith" --spawn --rounds 4
+  comms run debate "AI will replace programmers" --spawn
+  comms run debate "tabs vs spaces" -w sity,offu
+  comms run debate "microservices vs monolith" --spawn --rounds 4
 EOF
   exit 0
 }
@@ -197,11 +197,11 @@ Argue IN FAVOR of this proposition. A judge will coordinate the debate.
 All messages use --thread ${thread}. You can see your opponent's arguments directly.
 
 Wait for the judge to start, then present your opening argument when prompted.
-Use: hcom send \"@judge- @con- [your argument]\" --thread ${thread} --intent inform"
+Use: comms send \"@judge- @con- [your argument]\" --thread ${thread} --intent inform"
 
-  launch_out=$(hcom 1 "$tool" --tag pro --go \
-    --hcom-system-prompt "$PRO_SYSTEM" \
-    --hcom-prompt "$pro_prompt" \
+  launch_out=$(comms 1 "$tool" --tag pro --go \
+    --comms-system-prompt "$PRO_SYSTEM" \
+    --comms-prompt "$pro_prompt" \
     ${bg_flag} 2>&1)
   track_launch "$launch_out"
 
@@ -215,18 +215,18 @@ Argue AGAINST this proposition. A judge will coordinate the debate.
 All messages use --thread ${thread}. You can see your opponent's arguments directly.
 
 Wait for the judge to start, then present your argument when prompted.
-Use: hcom send \"@judge- @pro- [your argument]\" --thread ${thread} --intent inform"
+Use: comms send \"@judge- @pro- [your argument]\" --thread ${thread} --intent inform"
 
-  launch_out=$(hcom 1 "$tool" --tag con --go \
-    --hcom-system-prompt "$CON_SYSTEM" \
-    --hcom-prompt "$con_prompt" \
+  launch_out=$(comms 1 "$tool" --tag con --go \
+    --comms-system-prompt "$CON_SYSTEM" \
+    --comms-prompt "$con_prompt" \
     ${bg_flag} 2>&1)
   track_launch "$launch_out"
 
   echo "CON debater launched ($tool)"
 
   # Judge prompt for spawn mode (structured, PRO/CON pre-assigned)
-  judge_prompt="You are the judge for a structured debate. Use hcom to coordinate.
+  judge_prompt="You are the judge for a structured debate. Use comms to coordinate.
 
 THREAD: ${thread}
 TOPIC: ${topic}
@@ -246,16 +246,16 @@ PROCEDURE:
 
 1. WAIT FOR READY
    Check for ready confirmations:
-   hcom events --last 10 --sql \"msg_thread='${thread}'\"
+   comms events --last 10 --sql \"msg_thread='${thread}'\"
 
 2. OPENING STATEMENTS
    Ask PRO for opening argument (CC both debaters):
-   hcom send \"@pro- @con- PRO: Present your opening argument IN FAVOR of: ${topic}\" --thread ${thread} --intent request
-   Wait: hcom events --wait ${timeout} --sql \"msg_thread='${thread}'\"
+   comms send \"@pro- @con- PRO: Present your opening argument IN FAVOR of: ${topic}\" --thread ${thread} --intent request
+   Wait: comms events --wait ${timeout} --sql \"msg_thread='${thread}'\"
 
    Then ask CON:
-   hcom send \"@pro- @con- CON: Present your opening argument AGAINST: ${topic}. You can see PRO's argument above.\" --thread ${thread} --intent request
-   Wait: hcom events --wait ${timeout} --sql \"msg_thread='${thread}'\"
+   comms send \"@pro- @con- CON: Present your opening argument AGAINST: ${topic}. You can see PRO's argument above.\" --thread ${thread} --intent request
+   Wait: comms events --wait ${timeout} --sql \"msg_thread='${thread}'\"
 
 3. REBUTTALS (${rounds} rounds)
    For each round:
@@ -264,7 +264,7 @@ PROCEDURE:
    - Provide brief feedback
 
 4. FINAL JUDGMENT
-   hcom send \"@pro- @con- VERDICT: [WINNER or TIE]
+   comms send \"@pro- @con- VERDICT: [WINNER or TIE]
 
    PRO strengths: ...
    PRO weaknesses: ...
@@ -293,7 +293,7 @@ else
   # Validate workers exist
   for w in "${worker_arr[@]}"; do
     w=$(echo "$w" | xargs)  # trim
-    hcom list "$w" --json $name_arg >/dev/null 2>&1 || {
+    comms list "$w" --json $name_arg >/dev/null 2>&1 || {
       echo "Error: instance '$w' not found" >&2
       exit 1
     }
@@ -319,13 +319,13 @@ else
 
   for w in "${worker_arr[@]}"; do
     w=$(echo "$w" | xargs)
-    hcom send "@${w}" --thread "${thread}" --intent request $name_arg -- \
+    comms send "@${w}" --thread "${thread}" --intent request $name_arg -- \
       "You will debate: '${topic}'. Thread: '${thread}'. When the judge asks for positions, decide if you're FOR or AGAINST. Say 'ready' to confirm." 2>/dev/null
   done
   echo "Sent prep to ${#worker_arr[@]} debaters"
 
   # Judge prompt for workers mode (dynamic positions)
-  judge_prompt="You are the judge for a structured debate. Use hcom to coordinate.
+  judge_prompt="You are the judge for a structured debate. Use comms to coordinate.
 
 THREAD: ${thread}
 TOPIC: ${topic}
@@ -344,14 +344,14 @@ PROCEDURE:
 
 1. WAIT FOR READY
    Check for ready confirmations:
-   hcom events --last 10 --sql \"msg_thread='${thread}'\"
+   comms events --last 10 --sql \"msg_thread='${thread}'\"
 
 2. OPENING STATEMENTS
    Ask all debaters to state their position and opening argument:
-   hcom send \"${debaters_mentions} State whether you are FOR or AGAINST: ${topic}. Then give your opening argument (2-3 paragraphs).\" --thread ${thread} --intent request
+   comms send \"${debaters_mentions} State whether you are FOR or AGAINST: ${topic}. Then give your opening argument (2-3 paragraphs).\" --thread ${thread} --intent request
 
    Wait for all ${#worker_arr[@]} responses:
-   hcom events --wait ${timeout} --sql \"msg_thread='${thread}' AND msg_from IN (${workers_sql})\"
+   comms events --wait ${timeout} --sql \"msg_thread='${thread}' AND msg_from IN (${workers_sql})\"
 
 3. REBUTTALS (${rounds} rounds)
    For each round, prompt each debater to respond to opponents.
@@ -367,9 +367,9 @@ Begin now."
 fi
 
 # Launch judge
-launch_out=$(hcom 1 "$tool" --tag judge --go \
-  --hcom-system-prompt "$JUDGE_SYSTEM" \
-  --hcom-prompt "$judge_prompt" \
+launch_out=$(comms 1 "$tool" --tag judge --go \
+  --comms-system-prompt "$JUDGE_SYSTEM" \
+  --comms-prompt "$judge_prompt" \
   ${bg_flag} 2>&1)
 track_launch "$launch_out"
 
@@ -380,7 +380,7 @@ trap - ERR INT TERM
 
 echo
 echo "Watch debate:"
-echo "  hcom events --wait 600 --sql \"msg_thread='${thread}'\""
+echo "  comms events --wait 600 --sql \"msg_thread='${thread}'\""
 echo
 echo "Or in TUI:"
-echo "  hcom"
+echo "  comms"

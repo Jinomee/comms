@@ -4,15 +4,15 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: hcom run onidle <watch-agent> <target> <text> [OPTIONS]
+Usage: comms run onidle <watch-agent> <target> <text> [OPTIONS]
 
 Waits until <watch-agent> is idle (listening). If it is already idle, fires
 immediately. What fires depends on <target>:
 
-  agent name (dero)   `hcom term inject dero "<text>" --enter`
-  tool keyword (agy)  `hcom agy --hcom-prompt "<text>"`  (launches a new agent)
+  agent name (dero)   `comms term inject dero "<text>" --enter`
+  tool keyword (agy)  `comms agy --comms-prompt "<text>"`  (launches a new agent)
 
-Tool keywords are whatever `hcom <kw> --help` documents as a launcher —
+Tool keywords are whatever `comms <kw> --help` documents as a launcher —
 claude, codex, gemini, opencode, kilo, pi, omp, antigravity/agy, cursor-agent,
 kimi, copilot. Tool keywords win over same-named agents.
 
@@ -23,9 +23,9 @@ Options:
   -h, --help      Show this help
 
 Examples:
-  hcom run onidle koda dero 'koda finished — take over the review'
-  hcom run onidle koda agy 'review what koda just landed'
-  hcom run onidle koda omp 'ping' --timeout 120
+  comms run onidle koda dero 'koda finished — take over the review'
+  comms run onidle koda agy 'review what koda just landed'
+  comms run onidle koda omp 'ping' --timeout 120
 
 Exit codes: 0 fired, 1 error, 2 timed out.
 EOF
@@ -69,13 +69,13 @@ fi
 
 say() { (( quiet )) || echo "$@"; }
 
-# Is $target a launch keyword? Ask hcom instead of hardcoding a tool list that
-# would rot: every launcher's help opens with a `hcom [N] <kw>` usage line, and
+# Is $target a launch keyword? Ask comms instead of hardcoding a tool list that
+# would rot: every launcher's help opens with a `comms [N] <kw>` usage line, and
 # plain commands (send, list, ...) do not.
 is_launch_keyword() {
   local out
-  out="$(hcom "$1" --help 2>&1)" || return 1
-  grep -qE '^  hcom \[N\] ' <<<"$out"
+  out="$(comms "$1" --help 2>&1)" || return 1
+  grep -qE '^  comms \[N\] ' <<<"$out"
 }
 
 if is_launch_keyword "$target"; then
@@ -92,20 +92,20 @@ fi
 check=("$watch")
 [[ "$mode" == "inject" ]] && check+=("$target")
 for agent in "${check[@]}"; do
-  if ! hcom list "$agent" status "${name_arg[@]}" >/dev/null 2>&1; then
-    echo "Not an agent or tool keyword: $agent (see \`hcom list\`)" >&2
+  if ! comms list "$agent" status "${name_arg[@]}" >/dev/null 2>&1; then
+    echo "Not an agent or tool keyword: $agent (see \`comms list\`)" >&2
     exit 1
   fi
 done
 
-status_of() { hcom list "$1" status "${name_arg[@]}" 2>/dev/null || echo gone; }
+status_of() { comms list "$1" status "${name_arg[@]}" 2>/dev/null || echo gone; }
 
 # Per-agent detail line. status_detail is last in the template because it holds
 # raw shell commands that themselves contain `|`.
-# awk must not `exit` early here: closing the pipe early kills `hcom list` with
+# awk must not `exit` early here: closing the pipe early kills `comms list` with
 # SIGPIPE, which under `set -o pipefail` takes the whole script down.
 info_of() {
-  hcom list --format '{name}|{base_name}|{tool}|{status}|{status_context}|{status_age_seconds}|{status_detail}' \
+  comms list --format '{name}|{base_name}|{tool}|{status}|{status_context}|{status_age_seconds}|{status_detail}' \
     "${name_arg[@]}" 2>/dev/null |
     awk -F'|' -v want="$1" '($1==want || $2==want) && !seen {print; seen=1}'
 }
@@ -166,7 +166,7 @@ describe "$watch"
 say "watch   $DESC"
 watch_seen="$DESC_KEY"
 if [[ "$mode" == "launch" ]]; then
-  say "target  $target — launch a new agent: hcom $target --hcom-prompt ..."
+  say "target  $target — launch a new agent: comms $target --comms-prompt ..."
 else
   describe "$target"
   say "target  $DESC  ← inject${enter:+ + enter}"
@@ -217,7 +217,7 @@ while :; do
   # The status re-check at the top of the loop is what actually decides —
   # --wait has a 10s lookback that can replay an already-stale idle event, so
   # debounce a matched wake to avoid spinning through that window.
-  if hcom events --idle "$watch" --wait "$remaining" "${name_arg[@]}" >/dev/null 2>&1; then
+  if comms events --idle "$watch" --wait "$remaining" "${name_arg[@]}" >/dev/null 2>&1; then
     sleep 1
   fi
 done
@@ -225,12 +225,12 @@ done
 waited=$(( $(date +%s) - started ))
 if [[ "$mode" == "launch" ]]; then
   say "fired   $watch idle after ${waited}s — launching $target"
-  hcom "$target" --hcom-prompt "$text" "${name_arg[@]}"
+  comms "$target" --comms-prompt "$text" "${name_arg[@]}"
 else
   say "fired   $watch idle after ${waited}s — injecting into $target"
   if [[ -n "$enter" ]]; then
-    hcom term inject "$target" "$text" --enter
+    comms term inject "$target" "$text" --enter
   else
-    hcom term inject "$target" "$text"
+    comms term inject "$target" "$text"
   fi
 fi

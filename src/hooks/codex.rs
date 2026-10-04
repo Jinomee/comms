@@ -20,21 +20,21 @@ use std::time::UNIX_EPOCH;
 use serde_json::Value;
 use toml_edit::{DocumentMut, Item};
 
-use crate::db::{HcomDb, InstanceRow};
+use crate::db::{CommsDb, InstanceRow};
 use crate::hooks::{HookPayload, HookResult, common, family};
 use crate::instance_binding;
 use crate::instance_lifecycle as lifecycle;
 use crate::instances;
 use crate::log;
 use crate::paths;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 use crate::shared::{ST_ACTIVE, ST_BLOCKED, ST_LISTENING};
 
-use super::common::SAFE_HCOM_COMMANDS;
+use super::common::SAFE_COMMS_COMMANDS;
 use super::runtime::{self, LaunchCtx, LegacyFile, PerRunAdapter, RuntimeInjection};
 use anyhow::{Context as _, Result as AnyResult, bail};
 
-const HCOM_TRIGGER: &str = "<hcom>";
+const COMMS_TRIGGER: &str = "<comms>";
 // `fork` is its own SessionStart source since Codex 0.155 (earlier releases
 // reported forks as `startup`); without it a forked session never binds hooks.
 //
@@ -203,9 +203,9 @@ fn merged_per_run_hooks(ctx: &LaunchCtx) -> AnyResult<(Vec<String>, toml::Value)
         let Some(array) = entry.as_array_mut() else {
             bail!("Codex -c hooks.{event} must be an array");
         };
-        let hcom_group: toml::Value =
+        let comms_group: toml::Value =
             toml::from_str(&format!("value = {}", json_to_toml_literal(group)))?;
-        array.extend(hcom_group["value"].as_array().unwrap().iter().cloned());
+        array.extend(comms_group["value"].as_array().unwrap().iter().cloned());
     }
     Ok((kept, hooks))
 }
@@ -240,7 +240,7 @@ fn json_to_toml_literal(value: &Value) -> String {
 fn prepare_per_run(ctx: &LaunchCtx) -> AnyResult<RuntimeInjection> {
     let (mut args, mut hooks) = merged_per_run_hooks(ctx)?;
     // Codex merges hooks.state per key across the user and session-flag layers
-    // (codex-rs/hooks/src/config_rules.rs), so only hcom's entries and the
+    // (codex-rs/hooks/src/config_rules.rs), so only comms's entries and the
     // caller's own -c state belong here. Copying config.toml's state would pin
     // a launch-time snapshot above any trust the user grants mid-session.
     let mut state = match hooks.as_table_mut().unwrap().remove("state") {
@@ -293,17 +293,17 @@ fn prepare_per_run(ctx: &LaunchCtx) -> AnyResult<RuntimeInjection> {
             })
             .map(|entry| {
                 Ok(CodexHookTrustEntry {
-                    key: entry.key.context("Codex hcom session hook lacks key")?,
+                    key: entry.key.context("Codex comms session hook lacks key")?,
                     command: entry.command.unwrap(),
                     current_hash: entry
                         .current_hash
-                        .context("Codex hcom session hook lacks currentHash")?,
+                        .context("Codex comms session hook lacks currentHash")?,
                 })
             })
             .collect::<AnyResult<_>>()?;
         if owned.len() != CODEX_HOOK_COMMANDS.len() {
             bail!(
-                "Codex hooks/list found {} of {} hcom session hooks",
+                "Codex hooks/list found {} of {} comms session hooks",
                 owned.len(),
                 CODEX_HOOK_COMMANDS.len()
             );
@@ -345,7 +345,7 @@ fn ensure_per_run_permissions(ctx: &LaunchCtx) -> AnyResult<()> {
     if !ok {
         bail!(
             "Cannot sync {}",
-            codex_rules_path_at(&home).join("hcom.rules").display()
+            codex_rules_path_at(&home).join("comms.rules").display()
         );
     }
     Ok(())
@@ -364,17 +364,17 @@ fn cleanup_legacy_per_run(ctx: &LaunchCtx) -> AnyResult<()> {
     )
 }
 
-/// Remove a legacy install: hcom's handlers in hooks.json, the config.toml
+/// Remove a legacy install: comms's handlers in hooks.json, the config.toml
 /// `hooks.state` entries that trusted them, a pre-hooks `codex-notify`
 /// callback, and the trust metadata file.
-/// hcom never declared hooks in config.toml, so its hook tables are left alone.
-/// State keys are removed only when they named an hcom handler position or are
+/// comms never declared hooks in config.toml, so its hook tables are left alone.
+/// State keys are removed only when they named an comms handler position or are
 /// recorded in the metadata; a user's own hooks in the same file keep their trust.
 fn cleanup_codex_hooks_in_dir(home: &Path) -> AnyResult<()> {
     let hooks_path = codex_hooks_path_at(home);
     let config_path = codex_config_path_at(home);
-    let metadata_path = home.join(HCOM_HOOK_TRUST_METADATA_FILE);
-    let fix_hooks = runtime::FIX_REMOVE_HCOM_HOOKS;
+    let metadata_path = home.join(COMMS_HOOK_TRUST_METADATA_FILE);
+    let fix_hooks = runtime::FIX_REMOVE_COMMS_HOOKS;
     // A config.toml failure stops cleanup before hooks.json is rewritten (user
     // trust keys must move first), so the fix covers hooks.json too.
     let fix_config = format!(
@@ -382,8 +382,8 @@ fn cleanup_codex_hooks_in_dir(home: &Path) -> AnyResult<()> {
         hooks_path.display()
     );
 
-    let mut hcom_positions = HashSet::new();
-    // User handlers after an hcom one shift left when it is removed; their
+    let mut comms_positions = HashSet::new();
+    // User handlers after an comms one shift left when it is removed; their
     // trust keys follow them so the user's hooks stay trusted.
     let mut moved: HashMap<HandlerPosition, HandlerPosition> = HashMap::new();
     let mut cleaned_hooks = None;
@@ -391,13 +391,13 @@ fn cleanup_codex_hooks_in_dir(home: &Path) -> AnyResult<()> {
         Ok(source) => {
             let mut hooks: Value = serde_json::from_str(&source)
                 .with_context(|| LegacyFile::read(&hooks_path, fix_hooks))?;
-            hcom_positions = handler_positions(&hooks, is_hcom_handler)
+            comms_positions = handler_positions(&hooks, is_comms_handler)
                 .into_iter()
                 .collect();
-            if !hcom_positions.is_empty() {
-                let user_before = handler_positions(&hooks, |h| !is_hcom_handler(h));
-                remove_hcom_hooks_from_json(&mut hooks);
-                remove_legacy_hcom_cmd_hooks_from_json(&mut hooks);
+            if !comms_positions.is_empty() {
+                let user_before = handler_positions(&hooks, |h| !is_comms_handler(h));
+                remove_comms_hooks_from_json(&mut hooks);
+                remove_legacy_comms_cmd_hooks_from_json(&mut hooks);
                 // Removal keeps the remaining handlers in order.
                 let user_after = handler_positions(&hooks, |_| true);
                 if user_before.len() == user_after.len() {
@@ -416,7 +416,7 @@ fn cleanup_codex_hooks_in_dir(home: &Path) -> AnyResult<()> {
         }
     }
 
-    // The metadata only names extra stale keys, and hcom deletes it below, so
+    // The metadata only names extra stale keys, and comms deletes it below, so
     // an unparseable one is treated as empty rather than blocking the launch.
     let mut recorded_keys = HashSet::new();
     match std::fs::read_to_string(&metadata_path) {
@@ -448,10 +448,10 @@ fn cleanup_codex_hooks_in_dir(home: &Path) -> AnyResult<()> {
                 let mut stale = Vec::new();
                 let mut renames = Vec::new();
                 for (key, _) in state.iter() {
-                    let Some(position) = hcom_hooks_json_state_position(key, &hooks_path) else {
+                    let Some(position) = comms_hooks_json_state_position(key, &hooks_path) else {
                         continue;
                     };
-                    if hcom_positions.contains(&position) {
+                    if comms_positions.contains(&position) {
                         stale.push(key.to_string());
                     } else if let Some(new) = moved.get(&position) {
                         renames.push((key.to_string(), rekey_state_position(key, new)));
@@ -473,8 +473,8 @@ fn cleanup_codex_hooks_in_dir(home: &Path) -> AnyResult<()> {
                 }
                 changed = !stale.is_empty() || !renames.is_empty();
             }
-            // Pre-hooks hcom installed a `codex-notify` callback; leave unrelated notify alone.
-            if config.get("notify").is_some_and(is_hcom_legacy_notify) {
+            // Pre-hooks comms installed a `codex-notify` callback; leave unrelated notify alone.
+            if config.get("notify").is_some_and(is_comms_legacy_notify) {
                 config.remove("notify");
                 changed = true;
             }
@@ -510,10 +510,10 @@ fn cleanup_codex_hooks_in_dir(home: &Path) -> AnyResult<()> {
     }
 }
 
-/// hcom wrote `notify` as its command prefix (`hcom`, `uvx hcom`, or an hcom
+/// comms wrote `notify` as its command prefix (`comms`, `uvx comms`, or an comms
 /// executable path) followed by a separate `codex-notify` argument, as an
 /// array or one string. Match that shape, not substrings of a user's path.
-fn is_hcom_legacy_notify(item: &Item) -> bool {
+fn is_comms_legacy_notify(item: &Item) -> bool {
     let Some(value) = item.as_value() else {
         return false;
     };
@@ -533,7 +533,7 @@ fn is_hcom_legacy_notify(item: &Item) -> bool {
             .strip_suffix(".exe")
             .or_else(|| name.strip_suffix(".py"))
             .unwrap_or(name);
-        stem.eq_ignore_ascii_case("hcom")
+        stem.eq_ignore_ascii_case("comms")
     })
 }
 
@@ -541,12 +541,12 @@ fn is_hcom_legacy_notify(item: &Item) -> bool {
 /// form Codex uses for `hooks.state` keys.
 type HandlerPosition = (String, usize, usize);
 
-fn is_hcom_handler(handler: &Value) -> bool {
+fn is_comms_handler(handler: &Value) -> bool {
     handler
         .get("command")
         .and_then(Value::as_str)
-        .is_some_and(is_hcom_codex_command)
-        || is_legacy_hcom_codex_cmd_entry(handler)
+        .is_some_and(is_comms_codex_command)
+        || is_legacy_comms_codex_cmd_entry(handler)
 }
 
 /// Positions of the handlers `select` accepts, in document order.
@@ -575,7 +575,7 @@ fn rekey_state_position(key: &str, (label, group, handler): &HandlerPosition) ->
     format!("{source}:{label}:{group}:{handler}")
 }
 
-const HCOM_TOOL_NAMES: &[&str] = &[
+const COMMS_TOOL_NAMES: &[&str] = &[
     "claude",
     "gemini",
     "codex",
@@ -583,12 +583,12 @@ const HCOM_TOOL_NAMES: &[&str] = &[
     "antigravity",
     "agy",
 ];
-const HCOM_HOOK_TRUST_METADATA_FILE: &str = "hcom-hook-trust.toml";
+const COMMS_HOOK_TRUST_METADATA_FILE: &str = "comms-hook-trust.toml";
 #[cfg(not(test))]
 const CODEX_APP_SERVER_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(not(test))]
 const CODEX_APP_SERVER_STDERR_LIMIT: usize = 8192;
-type CodexHookHandler = fn(&HcomDb, &HcomContext, &HookPayload) -> HookResult;
+type CodexHookHandler = fn(&CommsDb, &CommsContext, &HookPayload) -> HookResult;
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 struct CodexHookTrustEntry {
@@ -686,7 +686,11 @@ fn normalize_codex_transcript_path(path: &str) -> String {
     }
 }
 
-fn resolve_instance_codex(db: &HcomDb, ctx: &HcomContext, session_id: &str) -> Option<InstanceRow> {
+fn resolve_instance_codex(
+    db: &CommsDb,
+    ctx: &CommsContext,
+    session_id: &str,
+) -> Option<InstanceRow> {
     instance_binding::resolve_instance_from_binding(
         db,
         Some(session_id).filter(|s| !s.is_empty()),
@@ -695,8 +699,8 @@ fn resolve_instance_codex(db: &HcomDb, ctx: &HcomContext, session_id: &str) -> O
 }
 
 fn resolve_codex_instance(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
 ) -> Option<InstanceRow> {
     let session_id = payload.session_id.as_deref().unwrap_or("");
@@ -704,8 +708,8 @@ fn resolve_codex_instance(
 }
 
 fn update_codex_position(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
     instance_name: &str,
 ) {
@@ -744,7 +748,7 @@ fn update_codex_position(
 /// Show the delivery in the TUI while also giving it to the model.
 /// Codex renders systemMessage as hook output and keeps additionalContext
 /// out of the TUI; only additionalContext enters model context.
-fn prepare_codex_delivery(db: &HcomDb, instance_name: &str) -> Option<HookResult> {
+fn prepare_codex_delivery(db: &CommsDb, instance_name: &str) -> Option<HookResult> {
     common::prepare_pending_messages(db, instance_name).map(|prepared| HookResult::Allow {
         system_message: Some(prepared.formatted.clone()),
         additional_context: Some(prepared.formatted),
@@ -753,8 +757,8 @@ fn prepare_codex_delivery(db: &HcomDb, instance_name: &str) -> Option<HookResult
 }
 
 fn resolve_and_update_codex_instance(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     payload: &HookPayload,
 ) -> Option<InstanceRow> {
     let instance = resolve_codex_instance(db, ctx, payload)?;
@@ -762,11 +766,11 @@ fn resolve_and_update_codex_instance(
     Some(instance)
 }
 
-fn set_prompt_active(db: &HcomDb, instance_name: &str) {
+fn set_prompt_active(db: &CommsDb, instance_name: &str) {
     lifecycle::set_status(db, instance_name, ST_ACTIVE, "prompt", Default::default());
 }
 
-fn handle_sessionstart(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_sessionstart(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let session_id = match payload.session_id.as_deref() {
         Some(sid) if !sid.is_empty() => sid,
         _ => return hook_noop(),
@@ -805,7 +809,7 @@ fn handle_sessionstart(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) ->
     hook_noop()
 }
 
-fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_userpromptsubmit(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_and_update_codex_instance(db, ctx, payload) {
         Some(instance) => instance,
         None => return hook_noop(),
@@ -817,8 +821,8 @@ fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    if prompt.trim() != HCOM_TRIGGER {
-        // A real prompt (not an hcom wake) is human input for this agent.
+    if prompt.trim() != COMMS_TRIGGER {
+        // A real prompt (not an comms wake) is human input for this agent.
         crate::turn_budget::reset_for(db, &instance.name);
         set_prompt_active(db, &instance.name);
         return hook_noop();
@@ -833,7 +837,7 @@ fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload
 }
 
 /// Block an `apply_patch` that touches a path another agent claimed.
-fn claim_block(db: &HcomDb, payload: &HookPayload, instance_name: &str) -> Option<HookResult> {
+fn claim_block(db: &CommsDb, payload: &HookPayload, instance_name: &str) -> Option<HookResult> {
     if payload.tool_name != "apply_patch" {
         return None;
     }
@@ -845,7 +849,7 @@ fn claim_block(db: &HcomDb, payload: &HookPayload, instance_name: &str) -> Optio
     })
 }
 
-fn handle_pretooluse(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_pretooluse(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_and_update_codex_instance(db, ctx, payload) {
         Some(instance) => instance,
         None => return hook_noop(),
@@ -884,7 +888,7 @@ fn is_approval_block(instance: &InstanceRow) -> bool {
     instance.status == ST_BLOCKED && instance.status_context == "pty:approval"
 }
 
-fn handle_posttooluse(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_posttooluse(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_and_update_codex_instance(db, ctx, payload) {
         Some(instance) => instance,
         None => return hook_noop(),
@@ -906,7 +910,7 @@ fn handle_posttooluse(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> 
     prepare_codex_delivery(db, &instance.name).unwrap_or_else(hook_noop)
 }
 
-fn handle_stop(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_stop(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_and_update_codex_instance(db, ctx, payload) {
         Some(instance) => instance,
         None => return hook_noop(),
@@ -918,7 +922,7 @@ fn handle_stop(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookRes
 }
 
 /// Esc (or an aborted approval) ends the turn without Stop.
-fn handle_interrupt(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_interrupt(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_and_update_codex_instance(db, ctx, payload) {
         Some(instance) => instance,
         None => return hook_noop(),
@@ -947,7 +951,7 @@ fn get_codex_handler(hook_name: &str) -> Option<CodexHookHandler> {
     }
 }
 
-fn dispatch_result_to_stdout(db: &HcomDb, hook_name: &str, result: HookResult) -> i32 {
+fn dispatch_result_to_stdout(db: &CommsDb, hook_name: &str, result: HookResult) -> i32 {
     match result {
         HookResult::Allow {
             additional_context,
@@ -1014,7 +1018,7 @@ pub fn dispatch_codex_hook_native(hook_name: &str) -> i32 {
         }
     };
 
-    let db = match HcomDb::open() {
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(e) => {
             log::log_warn(
@@ -1026,7 +1030,7 @@ pub fn dispatch_codex_hook_native(hook_name: &str) -> i32 {
         }
     };
 
-    let ctx = HcomContext::from_os();
+    let ctx = CommsContext::from_os();
     if !common::hook_gate_check(&ctx, &db) {
         return 0;
     }
@@ -1119,7 +1123,7 @@ fn lexically_normalized(path: &Path) -> PathBuf {
 /// Codex passes hook source paths through `AbsolutePathBuf::from_absolute_path`
 /// (codex-rs/utils/absolute-path/src/lib.rs:58), which absolutizes lexically but
 /// does not resolve symlinks, so a `sourcePath` from Codex can differ from
-/// hcom's own `codex_hooks_path_at()` by a `.`/`..` component, a verbatim
+/// comms's own `codex_hooks_path_at()` by a `.`/`..` component, a verbatim
 /// Windows prefix, or by one side having been canonicalized. Compare lexically
 /// first and only then pay for canonicalization.
 fn paths_equivalent(a: &Path, b: &Path) -> bool {
@@ -1132,9 +1136,9 @@ fn paths_equivalent(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// The `(event_label, group, handler)` a `hooks.state` key names inside hcom's
+/// The `(event_label, group, handler)` a `hooks.state` key names inside comms's
 /// hooks.json, or None when the key names another source or event.
-fn hcom_hooks_json_state_position(key: &str, hooks_path: &Path) -> Option<(String, usize, usize)> {
+fn comms_hooks_json_state_position(key: &str, hooks_path: &Path) -> Option<(String, usize, usize)> {
     let mut parts = key.rsplitn(4, ':');
     let (Some(handler_index), Some(group_index), Some(event_label), Some(key_source)) =
         (parts.next(), parts.next(), parts.next(), parts.next())
@@ -1154,7 +1158,7 @@ fn hcom_hooks_json_state_position(key: &str, hooks_path: &Path) -> Option<(Strin
 }
 
 fn build_codex_hook_command(command: &str) -> String {
-    let mut parts = crate::runtime_env::get_hcom_prefix();
+    let mut parts = crate::runtime_env::get_comms_prefix();
     parts.push(command.to_string());
     parts.join(" ")
 }
@@ -1184,9 +1188,9 @@ fn build_expected_hook_json() -> Value {
     )]))
 }
 
-/// hcom's hook commands are `<hcom prefix> codex-<event>`. Matching the last
+/// comms's hook commands are `<comms prefix> codex-<event>`. Matching the last
 /// word alone would also claim a user's own `/usr/local/bin/codex-stop`.
-fn is_hcom_codex_command(command: &str) -> bool {
+fn is_comms_codex_command(command: &str) -> bool {
     let mut words = command.split_whitespace().rev();
     let Some(last) = words.next() else {
         return false;
@@ -1194,10 +1198,10 @@ fn is_hcom_codex_command(command: &str) -> bool {
     CODEX_HOOK_COMMANDS
         .iter()
         .any(|(_, suffix, _)| last == *suffix)
-        && words.any(|word| word.contains("hcom"))
+        && words.any(|word| word.contains("comms"))
 }
 
-fn remove_hcom_hooks_from_json(existing: &mut Value) {
+fn remove_comms_hooks_from_json(existing: &mut Value) {
     let Some(hooks_obj) = existing.get_mut("hooks").and_then(|v| v.as_object_mut()) else {
         return;
     };
@@ -1211,7 +1215,7 @@ fn remove_hcom_hooks_from_json(existing: &mut Value) {
                 hooks_arr.retain(|h| {
                     !h.get("command")
                         .and_then(|v| v.as_str())
-                        .is_some_and(is_hcom_codex_command)
+                        .is_some_and(is_comms_codex_command)
                 });
             }
         }
@@ -1229,20 +1233,20 @@ fn remove_hcom_hooks_from_json(existing: &mut Value) {
     }
 }
 
-/// Returns true if `hook` is a legacy hcom Codex entry written in the old
+/// Returns true if `hook` is a legacy comms Codex entry written in the old
 /// `"type":"cmd"` / `"cmd"` format used before Codex 0.129.
-fn is_legacy_hcom_codex_cmd_entry(hook: &Value) -> bool {
+fn is_legacy_comms_codex_cmd_entry(hook: &Value) -> bool {
     hook.get("type").and_then(|v| v.as_str()) == Some("cmd")
         && hook
             .get("cmd")
             .and_then(|v| v.as_str())
-            .is_some_and(is_hcom_codex_command)
+            .is_some_and(is_comms_codex_command)
 }
 
-/// Remove recognized legacy `"cmd"`-keyed hcom hook entries.
+/// Remove recognized legacy `"cmd"`-keyed comms hook entries.
 /// Only called when Codex >= CODEX_HOOKS_FEATURE_RENAME_VERSION, which is when
 /// the current `"command"`-keyed format is known to be supported.
-fn remove_legacy_hcom_cmd_hooks_from_json(existing: &mut Value) {
+fn remove_legacy_comms_cmd_hooks_from_json(existing: &mut Value) {
     let Some(hooks_obj) = existing.get_mut("hooks").and_then(|v| v.as_object_mut()) else {
         return;
     };
@@ -1252,7 +1256,7 @@ fn remove_legacy_hcom_cmd_hooks_from_json(existing: &mut Value) {
         };
         for group in groups_arr.iter_mut() {
             if let Some(hooks_arr) = group.get_mut("hooks").and_then(|v| v.as_array_mut()) {
-                hooks_arr.retain(|h| !is_legacy_hcom_codex_cmd_entry(h));
+                hooks_arr.retain(|h| !is_legacy_comms_codex_cmd_entry(h));
             }
         }
         groups_arr.retain(|group| {
@@ -1336,7 +1340,7 @@ fn fetch_codex_hook_list_with_overrides(
     #[cfg(test)]
     {
         let _ = (cwd, codex_home, overrides);
-        if let Ok(value) = std::env::var("HCOM_TEST_CODEX_HOOKS_LIST_JSON") {
+        if let Ok(value) = std::env::var("COMMS_TEST_CODEX_HOOKS_LIST_JSON") {
             if value == "__fail__" {
                 return Err("test hook list failure".to_string());
             }
@@ -1385,8 +1389,8 @@ fn fetch_codex_hook_list_with_overrides(
             "id": 1,
             "params": {
                 "clientInfo": {
-                    "name": "hcom",
-                    "title": "hcom",
+                    "name": "comms",
+                    "title": "comms",
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "capabilities": { "experimentalApi": true }
@@ -1496,7 +1500,7 @@ fn read_jsonrpc_response(rx: &mpsc::Receiver<String>, id: i64) -> Result<Value, 
 
 fn codex_cli_version_output_for_hook_trust() -> Result<String, String> {
     #[cfg(test)]
-    if let Ok(version) = std::env::var("HCOM_TEST_CODEX_CLI_VERSION") {
+    if let Ok(version) = std::env::var("COMMS_TEST_CODEX_CLI_VERSION") {
         return Ok(version);
     }
 
@@ -1520,26 +1524,26 @@ fn codex_cli_version_output_for_hook_trust() -> Result<String, String> {
 
     #[cfg(test)]
     {
-        Err("HCOM_TEST_CODEX_CLI_VERSION not set".to_string())
+        Err("COMMS_TEST_CODEX_CLI_VERSION not set".to_string())
     }
 }
 
 fn build_codex_rules() -> String {
-    let prefix = crate::runtime_env::get_hcom_prefix();
+    let prefix = crate::runtime_env::get_comms_prefix();
     let prefix_parts: String = prefix
         .iter()
         .map(|p| format!("\"{}\"", p))
         .collect::<Vec<_>>()
         .join(", ");
 
-    let mut rules = vec!["# hcom integration - auto-approve safe commands".to_string()];
-    for cmd in SAFE_HCOM_COMMANDS {
+    let mut rules = vec!["# comms integration - auto-approve safe commands".to_string()];
+    for cmd in SAFE_COMMS_COMMANDS {
         rules.push(format!(
             "prefix_rule(pattern=[{}, \"{}\"], decision=\"allow\")",
             prefix_parts, cmd
         ));
     }
-    for tool in HCOM_TOOL_NAMES {
+    for tool in COMMS_TOOL_NAMES {
         rules.push(format!(
             "prefix_rule(pattern=[{}, \"{}\", \"--help\"], decision=\"allow\")",
             prefix_parts, tool
@@ -1554,7 +1558,7 @@ fn build_codex_rules() -> String {
 
 fn setup_codex_execpolicy_at(codex_home: &Path) -> bool {
     let rules_dir = codex_rules_path_at(codex_home);
-    let rules_file = rules_dir.join("hcom.rules");
+    let rules_file = rules_dir.join("comms.rules");
     let rule_content = build_codex_rules();
 
     if rules_file.exists()
@@ -1568,7 +1572,7 @@ fn setup_codex_execpolicy_at(codex_home: &Path) -> bool {
 }
 
 fn remove_codex_execpolicy_at(codex_home: &Path) -> bool {
-    let rules_file = codex_rules_path_at(codex_home).join("hcom.rules");
+    let rules_file = codex_rules_path_at(codex_home).join("comms.rules");
     if rules_file.exists() {
         std::fs::remove_file(&rules_file).is_ok()
     } else {
@@ -1577,7 +1581,7 @@ fn remove_codex_execpolicy_at(codex_home: &Path) -> bool {
 }
 
 fn remove_codex_hooks_from_dir(base: &std::path::Path) -> bool {
-    let rules_file = base.join("rules").join("hcom.rules");
+    let rules_file = base.join("rules").join("comms.rules");
     // A file that doesn't parse is the user's to fix; cleanup leaves it
     // untouched and the failure is reported.
     let mut ok = match cleanup_codex_hooks_in_dir(base) {
@@ -1593,14 +1597,14 @@ fn remove_codex_hooks_from_dir(base: &std::path::Path) -> bool {
     ok
 }
 
-/// Remove hcom hooks from Codex config.
+/// Remove comms hooks from Codex config.
 ///
 /// Cleans the default (~/.codex), env-var (CODEX_HOME), and legacy
-/// `<HCOM_DIR parent>/.codex` paths.
+/// `<COMMS_DIR parent>/.codex` paths.
 pub fn remove_codex_hooks() -> bool {
     let mut dirs = crate::runtime_env::tool_config_cleanup_dirs(".codex", "CODEX_HOME");
     // Codex uses the platform profile on Windows, unlike HOME-preferring tools.
-    // Keep the old HOME path in the cleanup list for installs made by older hcom.
+    // Keep the old HOME path in the cleanup list for installs made by older comms.
     let mut ctx = LaunchCtx::ambient(crate::tool::Tool::Codex, false);
     ctx.env
         .retain(|key, _| !key.eq_ignore_ascii_case("CODEX_HOME"));
@@ -1692,7 +1696,7 @@ mod tests {
     #[test]
     #[serial]
     fn failed_per_run_preparation_leaves_legacy_hooks_untouched() {
-        let (_tmp, _hcom_dir, _home, _guard) = isolated_test_env();
+        let (_tmp, _comms_dir, _home, _guard) = isolated_test_env();
         let codex_home = tempfile::tempdir().unwrap();
         let hooks_path = codex_home.path().join("hooks.json");
         let legacy = serde_json::to_vec(&build_expected_hook_json()).unwrap();
@@ -1747,27 +1751,27 @@ mod tests {
     }
 
     #[test]
-    fn per_run_cleanup_removes_only_hcom_legacy_notify() {
+    fn per_run_cleanup_removes_only_comms_legacy_notify() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
         for (notify, removed) in [
             (
-                "notify = \"hcom internal codex-notify --name luna\"\n",
+                "notify = \"comms internal codex-notify --name luna\"\n",
                 true,
             ),
             (
-                "notify = [\"hcom\", \"internal\", \"codex-notify\"]\n",
+                "notify = [\"comms\", \"internal\", \"codex-notify\"]\n",
                 true,
             ),
             ("notify = \"some-other-notify-tool\"\n", false),
             ("notify = \"other-tool codex-notify\"\n", false),
-            ("notify = [\"uvx\", \"hcom\", \"codex-notify\"]\n", true),
-            ("notify = [\"C:/dev/hcom.exe\", \"codex-notify\"]\n", true),
+            ("notify = [\"uvx\", \"comms\", \"codex-notify\"]\n", true),
+            ("notify = [\"C:/dev/comms.exe\", \"codex-notify\"]\n", true),
             (
-                "notify = [\"/home/alice/hcom-tools/codex-notify.sh\"]\n",
+                "notify = [\"/home/alice/comms-tools/codex-notify.sh\"]\n",
                 false,
             ),
-            ("notify = [\"my-hcom-wrapper\", \"codex-notify\"]\n", false),
+            ("notify = [\"my-comms-wrapper\", \"codex-notify\"]\n", false),
         ] {
             std::fs::write(&config_path, format!("model = 'gpt-5'\n{notify}")).unwrap();
             cleanup_codex_hooks_in_dir(dir.path()).unwrap();
@@ -1780,14 +1784,14 @@ mod tests {
     #[test]
     fn per_run_cleanup_discards_malformed_trust_metadata() {
         let dir = tempfile::tempdir().unwrap();
-        let metadata_path = dir.path().join(HCOM_HOOK_TRUST_METADATA_FILE);
+        let metadata_path = dir.path().join(COMMS_HOOK_TRUST_METADATA_FILE);
         std::fs::write(&metadata_path, "[broken").unwrap();
         cleanup_codex_hooks_in_dir(dir.path()).unwrap();
         assert!(!metadata_path.exists());
     }
 
     #[test]
-    fn per_run_cleanup_removes_only_hcom_trust_state() {
+    fn per_run_cleanup_removes_only_comms_trust_state() {
         let dir = tempfile::tempdir().unwrap();
         let hooks_path = dir.path().join("hooks.json");
         let config_path = dir.path().join("config.toml");
@@ -1795,7 +1799,7 @@ mod tests {
             &hooks_path,
             serde_json::json!({"hooks": {"Stop": [
                 {"hooks": [{"type": "command", "command": "user-stop"}]},
-                {"hooks": [{"type": "command", "command": "hcom codex-stop"}]},
+                {"hooks": [{"type": "command", "command": "comms codex-stop"}]},
             ]}})
             .to_string(),
         )
@@ -1804,7 +1808,7 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                "# keep me\nmodel = 'gpt-5'\n\n[hooks.state]\n'foreign:stop:0:0' = {{ trusted_hash = 'keep' }}\n'{}' = {{ trusted_hash = 'user' }}\n'{}' = {{ trusted_hash = 'hcom' }}\n",
+                "# keep me\nmodel = 'gpt-5'\n\n[hooks.state]\n'foreign:stop:0:0' = {{ trusted_hash = 'keep' }}\n'{}' = {{ trusted_hash = 'user' }}\n'{}' = {{ trusted_hash = 'comms' }}\n",
                 key(0),
                 key(1)
             ),
@@ -1843,10 +1847,10 @@ mod tests {
         std::fs::write(
             &hooks_path,
             serde_json::json!({"hooks": {"Stop": [
-                {"hooks": [{"type": "command", "command": "hcom codex-stop"}]},
+                {"hooks": [{"type": "command", "command": "comms codex-stop"}]},
                 {"hooks": [
                     {"type": "command", "command": "user-a"},
-                    {"type": "command", "command": "hcom codex-stop"},
+                    {"type": "command", "command": "comms codex-stop"},
                     {"type": "command", "command": "user-b"},
                 ]},
             ]}})
@@ -1859,7 +1863,7 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                "[hooks.state]\n'{}' = {{ trusted_hash = 'hcom0' }}\n'{}' = {{ trusted_hash = 'a' }}\n'{}' = {{ trusted_hash = 'hcom1' }}\n'{}' = {{ trusted_hash = 'b' }}\n",
+                "[hooks.state]\n'{}' = {{ trusted_hash = 'comms0' }}\n'{}' = {{ trusted_hash = 'a' }}\n'{}' = {{ trusted_hash = 'comms1' }}\n'{}' = {{ trusted_hash = 'b' }}\n",
                 key(0, 0),
                 key(1, 0),
                 key(1, 1),
@@ -1878,18 +1882,18 @@ mod tests {
     }
 
     #[test]
-    fn hcom_command_match_requires_hcom_prefix() {
-        assert!(is_hcom_codex_command("hcom codex-stop"));
-        assert!(is_hcom_codex_command("/old/bin/hcom codex-stop"));
-        assert!(is_hcom_codex_command("uvx hcom codex-stop"));
-        assert!(!is_hcom_codex_command("/usr/local/bin/codex-stop"));
-        assert!(!is_hcom_codex_command("hcom codex-stop --extra"));
+    fn comms_command_match_requires_comms_prefix() {
+        assert!(is_comms_codex_command("comms codex-stop"));
+        assert!(is_comms_codex_command("/old/bin/comms codex-stop"));
+        assert!(is_comms_codex_command("uvx comms codex-stop"));
+        assert!(!is_comms_codex_command("/usr/local/bin/codex-stop"));
+        assert!(!is_comms_codex_command("comms codex-stop --extra"));
     }
 
     #[test]
     fn test_apply_patch_under_foreign_claim_is_blocked() {
         let dir = tempfile::tempdir().unwrap();
-        let db = HcomDb::open_raw(&dir.path().join("t.db")).unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("t.db")).unwrap();
         db.init_db().unwrap();
         for name in ["luna", "nova"] {
             db.conn()
@@ -1930,7 +1934,7 @@ mod tests {
             "UserPromptSubmit",
             serde_json::json!({
                 "session_id": "sess-1",
-                "prompt": "<hcom>",
+                "prompt": "<comms>",
             }),
         );
         assert_eq!(payload.session_id.as_deref(), Some("sess-1"));
@@ -2025,7 +2029,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_mixed_group_remove_preserves_user_hooks() {
-        let (_tmp, _hcom_dir, _home, _guard) = isolated_test_env();
+        let (_tmp, _comms_dir, _home, _guard) = isolated_test_env();
         let hooks_path = get_codex_hooks_path();
         let config_path = get_codex_config_path();
         std::fs::create_dir_all(hooks_path.parent().unwrap()).unwrap();
@@ -2039,7 +2043,7 @@ mod tests {
                         "matcher": "Bash",
                         "hooks": [
                             {"type": "command", "command": "user-remove-hook"},
-                            {"type": "command", "command": "/old/bin/hcom codex-posttooluse"}
+                            {"type": "command", "command": "/old/bin/comms codex-posttooluse"}
                         ]
                     }]
                 }
@@ -2060,25 +2064,25 @@ mod tests {
         );
         assert!(
             !content.contains("codex-posttooluse"),
-            "hcom hook was not removed"
+            "comms hook was not removed"
         );
     }
 
     #[test]
     #[serial]
     fn test_remove_codex_noop_when_no_hooks_json() {
-        let (_tmp, _hcom_dir, _home, _guard) = isolated_test_env();
+        let (_tmp, _comms_dir, _home, _guard) = isolated_test_env();
         assert!(remove_codex_hooks());
     }
 
     #[test]
     #[serial]
     fn per_run_cleanup_removes_project_local_legacy_hooks() {
-        let (_tmp, _hcom_dir, home, _guard) = isolated_test_env();
+        let (_tmp, _comms_dir, home, _guard) = isolated_test_env();
         let workspace = home.join("workspace");
         let legacy_dir = workspace.join(".codex");
         std::fs::create_dir_all(&legacy_dir).unwrap();
-        unsafe { std::env::set_var("HCOM_DIR", workspace.join(".hcom")) };
+        unsafe { std::env::set_var("COMMS_DIR", workspace.join(".comms")) };
         let mut hooks = build_expected_hook_json();
         hooks["hooks"]["SessionStart"]
             .as_array_mut()
@@ -2098,7 +2102,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn remove_codex_hooks_cleans_active_hcom_dir_local_path() {
+    fn remove_codex_hooks_cleans_active_comms_dir_local_path() {
         let _guard = EnvGuard::new();
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
@@ -2108,7 +2112,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", workspace.join(".hcom"));
+            std::env::set_var("COMMS_DIR", workspace.join(".comms"));
             std::env::remove_var("CODEX_HOME");
         }
         std::fs::write(
@@ -2116,10 +2120,10 @@ mod tests {
             serde_json::to_string_pretty(&build_expected_hook_json()).unwrap(),
         )
         .unwrap();
-        std::fs::write(local_dir.join("rules/hcom.rules"), "allow").unwrap();
+        std::fs::write(local_dir.join("rules/comms.rules"), "allow").unwrap();
 
         assert!(remove_codex_hooks());
-        assert!(!local_dir.join("rules/hcom.rules").exists());
+        assert!(!local_dir.join("rules/comms.rules").exists());
         if local_dir.join("hooks.json").exists() {
             let content = std::fs::read_to_string(local_dir.join("hooks.json")).unwrap();
             assert!(!content.contains("codex-"));

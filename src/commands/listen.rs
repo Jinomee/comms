@@ -1,4 +1,4 @@
-//! `hcom listen` command — block and receive messages.
+//! `comms listen` command — block and receive messages.
 //!
 //!
 //! Supports: message-wait mode, --timeout, --json, --sql filter mode.
@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::cli_context::InlineBatch;
 use crate::cli_context::format_envelope_prefix;
 use crate::core::filters::{EventFilterArgs, build_sql_from_flags, resolve_filter_names};
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::identity;
 use crate::identity::get_display_name;
 use crate::instance_lifecycle::{StatusUpdate, set_status};
@@ -19,7 +19,7 @@ use crate::instances;
 use crate::notify::NotifyServer;
 use crate::shared::{CommandContext, ST_ACTIVE, ST_INACTIVE, ST_LISTENING};
 
-/// Parsed arguments for `hcom listen`.
+/// Parsed arguments for `comms listen`.
 #[derive(clap::Parser, Debug)]
 #[command(name = "listen", about = "Wait for events matching filters")]
 pub struct ListenArgs {
@@ -46,9 +46,9 @@ pub struct ListenArgs {
 ///
 /// Deliberately leaves `wait_timeout` alone: that column is the instance's
 /// persistent idle-wait setting (read by the Claude Stop-hook poll and
-/// `hcom config -i`), not a per-call value. A listen timeout written there
+/// `comms config -i`), not a per-call value. A listen timeout written there
 /// would outlive this call and shorten every later idle wait (#132).
-fn update_heartbeat(db: &HcomDb, instance_name: &str) {
+fn update_heartbeat(db: &CommsDb, instance_name: &str) {
     let now = crate::shared::time::now_epoch_i64();
 
     let mut updates = serde_json::Map::new();
@@ -58,7 +58,7 @@ fn update_heartbeat(db: &HcomDb, instance_name: &str) {
 
 /// Format messages as text for model consumption.
 fn format_messages_text(
-    db: &HcomDb,
+    db: &CommsDb,
     messages: &[crate::db::Message],
     instance_name: &str,
 ) -> String {
@@ -86,7 +86,7 @@ fn format_messages_text(
 }
 
 /// One `--json` line per delivered message. `reply_id` is the value for
-/// `hcom send --reply-to`: the local event id, or `<origin_id>:<DEVICE>` for a
+/// `comms send --reply-to`: the local event id, or `<origin_id>:<DEVICE>` for a
 /// relayed message. `event_id` is always the local row id.
 fn message_json(msg: &crate::db::Message) -> String {
     serde_json::json!({
@@ -105,7 +105,7 @@ fn message_json(msg: &crate::db::Message) -> String {
 /// command. This is deliberately not an `exit:*` context: a quiet poll is not
 /// a process exit, and exit contexts are reaped after 60s regardless of PID.
 fn set_listen_done_status(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     instance_data: &serde_json::Value,
     context: &str,
@@ -135,10 +135,10 @@ fn expand_sql_preset(sql: &str) -> Result<String, &'static str> {
     ))
 }
 
-/// Main entry point for `hcom listen` command.
+/// Main entry point for `comms listen` command.
 ///
 /// Returns exit code (0 = success, 1 = error, 130 = interrupted).
-pub fn cmd_listen(db: &HcomDb, args: &ListenArgs, ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_listen(db: &CommsDb, args: &ListenArgs, ctx: Option<&CommandContext>) -> i32 {
     let explicit_name = ctx.and_then(|c| c.explicit_name.as_deref());
 
     // Resolve identity
@@ -171,7 +171,7 @@ pub fn cmd_listen(db: &HcomDb, args: &ListenArgs, ctx: Option<&CommandContext>) 
                 eprintln!("Error: {e}");
             } else {
                 eprintln!("Error: --name required (no identity context)");
-                eprintln!("Usage: hcom listen --name <name> [--timeout N]");
+                eprintln!("Usage: comms listen --name <name> [--timeout N]");
             }
             return 1;
         }
@@ -233,7 +233,7 @@ pub fn cmd_listen(db: &HcomDb, args: &ListenArgs, ctx: Option<&CommandContext>) 
 
     let instance_data = identity.instance_data.as_ref();
     if instance_data.is_none() {
-        eprintln!("Error: hcom not started for '{instance_name}'.");
+        eprintln!("Error: comms not started for '{instance_name}'.");
         return 1;
     }
 
@@ -290,7 +290,7 @@ pub fn cmd_listen(db: &HcomDb, args: &ListenArgs, ctx: Option<&CommandContext>) 
         .flatten()
         .is_none()
     {
-        eprintln!("[You have been disconnected from HCOM]");
+        eprintln!("[You have been disconnected from COMMS]");
         return 0;
     }
 
@@ -331,7 +331,7 @@ pub fn cmd_listen(db: &HcomDb, args: &ListenArgs, ctx: Option<&CommandContext>) 
 
 #[allow(clippy::too_many_arguments)]
 fn listen_loop(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     timeout: f64,
     json_output: bool,
@@ -353,7 +353,7 @@ fn listen_loop(
         if db.get_instance_full(instance_name).ok().flatten().is_none() {
             if !json_output {
                 eprintln!(
-                    "\n[Disconnected: HCOM stopped for {instance_name}. Unless told otherwise, stop work and end your turn now]"
+                    "\n[Disconnected: COMMS stopped for {instance_name}. Unless told otherwise, stop work and end your turn now]"
                 );
             }
             return 0;
@@ -378,7 +378,7 @@ fn listen_loop(
                 )
             };
             if let Err(e) = batch.emit(db, instance_name, &output, false) {
-                eprintln!("hcom: {e}");
+                eprintln!("comms: {e}");
                 set_listen_done_status(db, instance_name, instance_data, "delivery failed");
                 return 1;
             }
@@ -441,7 +441,7 @@ fn listen_loop(
 
 /// Listen with SQL filter — uses temp subscription.
 fn listen_with_filter(
-    db: &HcomDb,
+    db: &CommsDb,
     sql_filter: &str,
     instance_name: &str,
     timeout: f64,
@@ -554,7 +554,7 @@ fn listen_with_filter(
 
 #[allow(clippy::too_many_arguments)]
 fn filter_listen_loop(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     sub_id: &str,
     timeout: f64,
@@ -588,7 +588,7 @@ fn filter_listen_loop(
         // Check if stopped
         if db.get_instance_full(instance_name).ok().flatten().is_none() {
             if !json_output {
-                eprintln!("\n[Disconnected: HCOM stopped for {instance_name}]");
+                eprintln!("\n[Disconnected: COMMS stopped for {instance_name}]");
             }
             return 0;
         }
@@ -602,7 +602,7 @@ fn filter_listen_loop(
             crate::cli_context::claim_inline_delivery();
             let sub_tag = format!("[sub:{sub_id}]");
             let is_match =
-                |m: &crate::db::Message| m.from == "[hcom-events]" && m.text.contains(&sub_tag);
+                |m: &crate::db::Message| m.from == "[comms-events]" && m.text.contains(&sub_tag);
             let matched = batch.messages.iter().find(|m| is_match(m));
             let others: Vec<crate::db::Message> = batch
                 .messages
@@ -645,7 +645,7 @@ fn filter_listen_loop(
             }
             flush(&mut run, &mut output);
             if let Err(e) = batch.emit(db, instance_name, &output, false) {
-                eprintln!("hcom: {e}");
+                eprintln!("comms: {e}");
                 set_listen_done_status(db, instance_name, instance_data, "delivery failed");
                 return 1;
             }
@@ -718,17 +718,17 @@ mod tests {
         crate::hooks::test_helpers::EnvGuard,
     );
 
-    fn setup_test_db() -> (HcomDb, PathBuf, TestEnv) {
+    fn setup_test_db() -> (CommsDb, PathBuf, TestEnv) {
         use std::sync::atomic::AtomicU64;
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let env = crate::hooks::test_helpers::isolated_test_env();
         let db_path = std::env::temp_dir().join(format!(
-            "test_hcom_listen_{}_{}.db",
+            "test_comms_listen_{}_{}.db",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
-        let db = HcomDb::open_at(&db_path).unwrap();
+        let db = CommsDb::open_at(&db_path).unwrap();
         (db, db_path, env)
     }
 
@@ -743,11 +743,11 @@ mod tests {
         ListenArgs::try_parse_from(["listen"].iter().chain(extra)).unwrap()
     }
 
-    fn row(db: &HcomDb) -> crate::db::InstanceRow {
+    fn row(db: &CommsDb) -> crate::db::InstanceRow {
         db.get_instance_full("luna").unwrap().unwrap()
     }
 
-    /// #132: a short `hcom listen` must not become the instance's persistent
+    /// #132: a short `comms listen` must not become the instance's persistent
     /// idle-wait timeout, in message mode or filter mode.
     #[test]
     #[serial]
@@ -800,7 +800,7 @@ mod tests {
         assert_eq!(cmd_listen(&db, &listen_args(&["20"]), Some(&ctx)), 0);
         assert_eq!(row(&db).wait_timeout, Some(86400));
 
-        // An unset timeout stays unset so the global HCOM_TIMEOUT still applies.
+        // An unset timeout stays unset so the global COMMS_TIMEOUT still applies.
         db.conn()
             .execute(
                 "UPDATE instances SET wait_timeout = NULL WHERE name = 'luna'",
@@ -822,7 +822,7 @@ mod tests {
         }
     }
 
-    fn backdate_status(db: &HcomDb, secs: i64) {
+    fn backdate_status(db: &CommsDb, secs: i64) {
         db.conn()
             .execute(
                 "UPDATE instances SET status_time = ? WHERE name = 'luna'",
@@ -831,7 +831,7 @@ mod tests {
             .unwrap();
     }
 
-    fn cleanup_keeps_luna(db: &HcomDb) -> bool {
+    fn cleanup_keeps_luna(db: &CommsDb) -> bool {
         crate::instance_lifecycle::cleanup_stale_instances(db, 3600, 3600);
         db.get_instance_full("luna").unwrap().is_some()
     }

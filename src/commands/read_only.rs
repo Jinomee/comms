@@ -1,14 +1,14 @@
-//! `--read-only` launch flag: start a live agent that can read, run hcom,
+//! `--read-only` launch flag: start a live agent that can read, run comms,
 //! and talk, but not edit files.
 //!
 //! Kept out of the shared launch-flag parser on purpose (it is a fork-only
 //! feature); `launch::parse_launch_argv` peels it off before that parser runs.
 //!
 //! - claude: edit tools are disallowed. Bash stays available because agents
-//!   send messages with `hcom send` (shell edits are still possible; claims
+//!   send messages with `comms send` (shell edits are still possible; claims
 //!   are the guard for that).
-//! - codex: `--sandbox read-only`. hcom's own dir stays writable via
-//!   `codex_preprocessing::ensure_hcom_writable`.
+//! - codex: `--sandbox read-only`. comms's own dir stays writable via
+//!   `codex_preprocessing::ensure_comms_writable`.
 
 use anyhow::{Result, bail};
 
@@ -18,7 +18,7 @@ pub const FLAG: &str = "--read-only";
 
 const CLAUDE_EDIT_TOOLS: &str = "Edit,Write,MultiEdit,NotebookEdit";
 
-/// Remove `--read-only` from the hcom-flag section (before any `--`).
+/// Remove `--read-only` from the comms-flag section (before any `--`).
 /// Returns whether it was present and the remaining args.
 pub fn take_flag(args: &[String]) -> (bool, Vec<String>) {
     let mut found = false;

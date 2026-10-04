@@ -1,14 +1,14 @@
 //! Kimi Code CLI transcript parser.
 //!
 //! Reads a session's `wire.jsonl` (the kimi-code wire log) and normalizes it
-//! into the tool-agnostic `Exchange` format used by hcom.
+//! into the tool-agnostic `Exchange` format used by comms.
 //!
 //! `wire.jsonl` is a streaming event log — one JSON object per line, tagged by
 //! `type`. A conversational turn is structured as:
 //!   - `turn.prompt` — `{input:[{type:"text",text}], origin}` — the submitted prompt
 //!   - `context.append_message` — persisted messages. Only `role:"user"` is
 //!     persisted live (assistant content is streamed, see below). The `origin`
-//!     distinguishes real input (`user`) from hcom hook deliveries
+//!     distinguishes real input (`user`) from comms hook deliveries
 //!     (`hook_result`, `system_trigger`).
 //!   - `context.append_loop_event` — carries the assistant turn:
 //!       - `event.type:"content.part"` → `part:{type:"text"|"think", …}`
@@ -82,8 +82,8 @@ pub fn parse_kimi_wire_jsonl(
                 if m.get("role").and_then(Value::as_str) != Some("user") {
                     continue;
                 }
-                // hcom messages arrive as hook-injected user messages; prefer
-                // their (unwrapped) content over the bare `<hcom>` trigger that
+                // comms messages arrive as hook-injected user messages; prefer
+                // their (unwrapped) content over the bare `<comms>` trigger that
                 // turn.prompt recorded.
                 let origin = m
                     .get("origin")
@@ -274,18 +274,18 @@ mod tests {
     fn extracts_assistant_text_from_loop_events() {
         let lines = vec![
             json!({"type": "metadata", "protocol_version": "1.3"}).to_string(),
-            turn_prompt("what is hcom?"),
+            turn_prompt("what is comms?"),
             content_part(json!({"type": "think", "think": "pondering"})),
-            content_part(json!({"type": "text", "text": "hcom is a comms tool."})),
+            content_part(json!({"type": "text", "text": "comms is a comms tool."})),
             json!({"type": "usage.record", "usage": {}}).to_string(),
         ];
         let jsonl = make_temp_jsonl(&lines);
 
         let ex = parse_kimi_wire_jsonl(jsonl.path(), 10, false).unwrap();
         assert_eq!(ex.len(), 1);
-        assert_eq!(ex[0].user, "what is hcom?");
+        assert_eq!(ex[0].user, "what is comms?");
         // The core regression: assistant text must be extracted (not "(no response)").
-        assert_eq!(ex[0].action, "hcom is a comms tool.");
+        assert_eq!(ex[0].action, "comms is a comms tool.");
     }
 
     #[test]
@@ -345,15 +345,15 @@ mod tests {
     }
 
     #[test]
-    fn hcom_delivery_uses_hook_message_not_trigger() {
-        // hcom delivery: the trigger is `<hcom>` but the real message arrives as
+    fn comms_delivery_uses_hook_message_not_trigger() {
+        // comms delivery: the trigger is `<comms>` but the real message arrives as
         // a hook_result user message — the transcript should show the message.
         let lines = vec![
-            turn_prompt("<hcom>"),
-            append_user(json!({"kind": "user"}), "<hcom>"),
+            turn_prompt("<comms>"),
+            append_user(json!({"kind": "user"}), "<comms>"),
             append_user(
                 json!({"kind": "hook_result", "event": "UserPromptSubmit"}),
-                "<hook_result hook_event=\"UserPromptSubmit\">\n<hcom>[request #1] bigboss → me: ping</hcom>\n</hook_result>",
+                "<hook_result hook_event=\"UserPromptSubmit\">\n<comms>[request #1] bigboss → me: ping</comms>\n</hook_result>",
             ),
             content_part(json!({"type": "text", "text": "pong"})),
         ];
@@ -361,7 +361,7 @@ mod tests {
 
         let ex = parse_kimi_wire_jsonl(jsonl.path(), 10, false).unwrap();
         assert_eq!(ex.len(), 1);
-        assert_eq!(ex[0].user, "<hcom>[request #1] bigboss → me: ping</hcom>");
+        assert_eq!(ex[0].user, "<comms>[request #1] bigboss → me: ping</comms>");
         assert_eq!(ex[0].action, "pong");
     }
 

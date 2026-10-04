@@ -30,7 +30,7 @@ pub enum HookCategory {
 pub struct HookInfo {
     /// Hook event name as the tool sees it (e.g., "Stop", "PostToolUse").
     pub event_name: &'static str,
-    /// hcom subcommand suffix (e.g., "poll", "post", "sessionstart").
+    /// comms subcommand suffix (e.g., "poll", "post", "sessionstart").
     pub command_suffix: &'static str,
     /// Tool matcher pattern (e.g., "Bash|Task|Write|Edit" for PreToolUse).
     pub matcher: &'static str,

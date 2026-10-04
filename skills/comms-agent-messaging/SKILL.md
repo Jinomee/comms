@@ -1,0 +1,192 @@
+---
+name: comms-agent-messaging
+description: >
+  Multi-agent communication for AI coding tools. Agents message, watch,
+  and spawn each other across terminals. Use when setting up comms,
+  troubleshooting delivery, or writing multi-agent scripts.
+---
+
+# comms — multi-agent communication for AI coding tools
+
+AI agents running in separate terminals are isolated. comms connects them via hooks and a shared database so they can message, watch, and spawn each other in real-time.
+
+```bash
+curl -fsSL https://github.com/jinomee/comms/releases/latest/download/comms-installer.sh | sh
+comms claude       # or: comms gemini, comms codex, comms opencode, comms kilo, comms pi, comms omp, comms agy, comms cursor-agent, comms kimi, comms copilot, comms grok
+comms              # TUI dashboard
+```
+
+---
+
+## what humans can do
+
+tell any agent:
+
+> send a message to claude
+
+> when codex goes idle send it the next task
+
+> watch gemini's file edits, review each and send feedback if any bugs
+
+> fork yourself to investigate the bug and report back
+
+> find which agent worked on terminal_id code, resume them and ask why it sucks
+
+---
+
+## what agents can do
+
+**Message** each other in real-time, bundle context for handoffs.
+
+**Observe** each other: transcripts, file edits, terminal screens, command history.
+
+**Subscribe** to each other: notify on status changes, file edits, specific events. React automatically.
+
+**Spawn**, **fork**, **resume**, **kill** each other, in any terminal emulator.
+
+run `comms --help` for full command syntax and flags.
+
+---
+
+## tool support
+
+| tool | delivery | connect |
+|------|----------|---------|
+| claude code (incl. subagents) | automatic | `comms claude` |
+| gemini cli (>= 0.26.0) | automatic | `comms gemini` |
+| codex | automatic | `comms codex` |
+| opencode | automatic | `comms opencode` |
+| kilo code | automatic | `comms kilo` |
+| antigravity | automatic | `comms agy` |
+| cursor | automatic | `comms cursor-agent` |
+| copilot | automatic | `comms copilot` |
+| grok build | automatic | `comms grok` |
+| any other ai tool | manual via `comms listen` | `comms start` (run inside tool) |
+
+session binding (comms transcript, comms r/f by session id) happens on first message or first prompt for all comms-launched tools.
+
+---
+
+## setup
+
+if the user invokes this skill without arguments:
+
+1. run `comms status` — if "command not found", install first:
+   ```bash
+   curl -fsSL https://github.com/jinomee/comms/releases/latest/download/comms-installer.sh | sh
+   ```
+2. run `comms hooks add` to install hooks for all detected tools
+3. restart the AI tool for hooks to activate
+
+| status output | meaning | action |
+|---------------|---------|--------|
+| command not found | not installed | install via `brew install jinomee/comms/comms`, the curl installer above, or `pip install comms` |
+| `[~] claude` | tool exists, hooks not installed | `comms hooks add` then restart |
+| `[✓] claude` | hooks installed | ready |
+| `[✗] claude` | tool not found | install the AI tool first |
+
+---
+
+## troubleshooting
+
+### "comms not working"
+
+```bash
+comms status          # check installation
+comms hooks status    # check hooks specifically
+comms relay status    # check cross-device relay
+```
+
+hooks missing? `comms hooks add` then restart tool.
+
+still broken?
+```bash
+comms reset all && comms hooks add
+# close all ai tool windows
+comms claude          # fresh start
+```
+
+### "messages not arriving"
+
+| symptom | diagnosis | fix |
+|---------|-----------|-----|
+| agent not in `comms list` | agent stopped or never bound | relaunch or wait for binding |
+| message sent but not delivered | check `comms events --last 5` | verify @mention matches agent name/tag |
+| message reaches more than one agent | duplicate base name across tags | target the full `@tag-name` to hit exactly one |
+| messages leaking between workflows | no thread isolation | always use `--thread` |
+
+### intent system
+
+agents follow these rules from their bootstrap:
+- `--intent request` -> agent always responds
+- `--intent inform` -> agent responds only if useful
+- `--intent ack` -> agent does not respond
+
+### sandbox / permission issues
+
+```bash
+export COMMS_DIR="$PWD/.comms"     # project-local mode
+comms hooks add                   # installs to project dir
+```
+
+---
+
+## workflow scripting
+
+place scripts in `~/.comms/scripts/` as `.sh` or `.py`. run with `comms run <name> "task"`. see `references/script-template.md` for the full annotated template, or run `comms run docs --scripts` inside an agent.
+
+### key rules
+
+- **never use `sleep`** — use `comms events --wait` or `comms listen`
+- **never hardcode agent names** — parse from `grep '^Names: '` in launch output
+- **always use `--thread`** — without it, messages leak across workflows
+- **always use `trap cleanup ERR INT TERM`** — orphan headless agents run indefinitely
+- **always use `comms kill` for cleanup** (not `stop`) — kill also closes the terminal pane
+- **always forward `--name`** — comms injects it, scripts must propagate it
+- **always use `--go`** on launch commands — without it, scripts hang on confirmation prompt (`comms kill` never prompts, so `--go` is optional there)
+
+### agent topologies
+
+| topology | agents | pattern |
+|----------|--------|---------|
+| worker-reviewer | 2 | worker sends result, reviewer reads transcript, sends APPROVED/FIX |
+| pipeline | N sequential | each stage reads previous via `comms transcript`, signals via thread |
+| ensemble | N+1 (judge) | N agents answer independently, judge reads all via `comms events --sql` |
+| hub-spoke | 1+N | coordinator broadcasts to `@tag-`, workers report back |
+| reactive | N | `comms events sub` triggers agent actions on file edits/status changes |
+
+---
+
+## files
+
+| what | location |
+|------|----------|
+| database | `~/.comms/comms.db` |
+| config | `~/.comms/config.toml` |
+| logs | `~/.comms/.tmp/logs/` |
+| user scripts | `~/.comms/scripts/` |
+
+with `COMMS_DIR` set, uses that path instead of `~/.comms`.
+
+---
+
+## reference files
+
+| file | when to read |
+|------|-------------|
+| `references/patterns.md` | writing multi-agent scripts — 6 tested patterns with full code and real event JSON |
+| `references/cross-tool.md` | claude + codex + gemini + opencode + kilo + pi + omp + antigravity + cursor + kimi + copilot + grok collaboration details and per-tool quirks |
+| `references/gotchas.md` | debugging scripts — timing, message delivery, intent system, cleanup |
+| `references/script-template.md` | writing a new script from scratch — full template with commentary |
+| `references/scripts/` | 6 tested, working example scripts |
+
+---
+
+## more info
+
+```bash
+comms --help              # all commands
+comms <command> --help    # command details
+```
+
+github: https://github.com/jinomee/comms

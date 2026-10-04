@@ -1,4 +1,4 @@
-//! Core modules for hcom — shared logic used by hooks, CLI commands, and TUI.
+//! Core modules for comms — shared logic used by hooks, CLI commands, and TUI.
 //!
 //! - `helpers`: Input validation (scope, intent, mentions, group routing)
 //! - `filters`: Composable event filter system (parse flags → SQL WHERE)

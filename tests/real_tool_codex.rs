@@ -7,7 +7,7 @@
 //! `codex` binary at a localhost mock of the OpenAI Responses API and scripts
 //! every turn as `text/event-stream`. The external oracle (the real codex binary
 //! parsing real SSE and driving its real hook/PTY plumbing) lives outside the
-//! repo, so the test cannot be gamed by editing hcom to match it.
+//! repo, so the test cannot be gamed by editing comms to match it.
 //!
 //! The full lifecycle runs through the shared [`support::real_tool`] runner so
 //! Codex and Claude assert one tool-independent contract; the Codex-specific
@@ -26,7 +26,7 @@ use support::codex_mock::{
     CodexCase, MockResponses, Reply, completed, created, escalated_shell_call, message, sse,
 };
 use support::real_tool::{inject_prompt_until, require_pinned};
-use support::{Hcom, parse_launch_names, unique_suffix};
+use support::{Comms, parse_launch_names, unique_suffix};
 
 #[test]
 #[ignore = "requires the pinned real @openai/codex binary"]
@@ -35,19 +35,19 @@ fn real_codex_full_lifecycle_send_fork_kill_resume_and_cleanup() {
     support::real_tool::run_full_lifecycle(CodexCase);
 }
 
-/// Codex's approval gate is hcom's only PTY-driven block path, and
+/// Codex's approval gate is comms's only PTY-driven block path, and
 /// `blocked(pty:approval)` only latches when a message is pending behind a
 /// visible approval prompt. This drives that exact race: with Codex configured
 /// for workspace-write and on-request approvals, a scripted shell call that
 /// asks to run outside the sandbox raises Codex's approval prompt, an inbound
-/// hcom message is held while the prompt is up, then a real approval
+/// comms message is held while the prompt is up, then a real approval
 /// keystroke must both run the command and release the held message.
 ///
 /// Detection does NOT rely on Codex's OSC9 notification. Codex 0.139 only writes
 /// `\x1b]9;Approval requested…` when its `auto` backend selects OSC9 (Ghostty/
 /// iTerm2/Kitty/Warp/WezTerm only) AND the terminal is unfocused — neither holds
-/// under hcom's headless PTY, so Codex falls back to the Bel backend and emits
-/// no OSC9. hcom instead scrapes the approval surface from the terminal
+/// under comms's headless PTY, so Codex falls back to the Bel backend and emits
+/// no OSC9. comms instead scrapes the approval surface from the terminal
 /// (`src/pty/screen.rs`), publishes the `pty:approval` block / `pty:approval_cleared`
 /// release as status events (`publish_approval_status`), and clears the gate
 /// synchronously when an injected keystroke answers the prompt
@@ -57,14 +57,14 @@ fn real_codex_full_lifecycle_send_fork_kill_resume_and_cleanup() {
 #[ignore = "requires the pinned real @openai/codex binary"]
 #[serial]
 fn real_codex_approval_gate_blocks_pending_message_then_clears_on_approval() {
-    let h = Hcom::new();
+    let h = Comms::new();
     require_pinned(&h, &CodexCase);
 
     let suffix = unique_suffix();
-    let token = format!("HCOM_CODEX_APPROVAL_{suffix}");
-    let gated_token = format!("HCOM_CODEX_GATED_{suffix}");
-    let message_token = format!("HCOM_CODEX_HELD_{suffix}");
-    let sender_process_id = format!("hcom-codex-approver-{suffix}");
+    let token = format!("COMMS_CODEX_APPROVAL_{suffix}");
+    let gated_token = format!("COMMS_CODEX_GATED_{suffix}");
+    let message_token = format!("COMMS_CODEX_HELD_{suffix}");
+    let sender_process_id = format!("comms-codex-approver-{suffix}");
     let sender = h.start_listening_with_process_id(&sender_process_id);
 
     let approval_result = h.workspace.join("approval-result.txt");
@@ -110,7 +110,7 @@ fn real_codex_approval_gate_blocks_pending_message_then_clears_on_approval() {
 
     h.prepare_codex_config(&mock.base_url());
 
-    // Permission policy comes from Codex's native config, without hcom flags.
+    // Permission policy comes from Codex's native config, without comms flags.
     let config_path = h.codex_home.join("config.toml");
     let config = std::fs::read_to_string(&config_path).unwrap();
     std::fs::write(
@@ -208,7 +208,7 @@ fn real_codex_approval_gate_blocks_pending_message_then_clears_on_approval() {
         "held-message send failed: stdout={send_stdout} stderr={send_stderr}"
     );
 
-    // hcom must flip the instance to blocked(pty:approval) once the held message
+    // comms must flip the instance to blocked(pty:approval) once the held message
     // is queued behind the visible prompt — driven by the terminal scrape, not
     // Codex's (absent) OSC9 notification.
     h.eventually(
@@ -334,7 +334,7 @@ fn real_codex_approval_gate_blocks_pending_message_then_clears_on_approval() {
         Duration::from_secs(40),
         || {
             let saw = mock.requests().iter().any(|body| {
-                body.contains(&message_token) && body.contains("<hcom>") && body.contains(&sender)
+                body.contains(&message_token) && body.contains("<comms>") && body.contains(&sender)
             });
             if saw { Ok(Some(())) } else { Ok(None) }
         },

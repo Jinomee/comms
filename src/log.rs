@@ -11,15 +11,15 @@ const MAX_BYTES: u64 = 8_000_000;
 /// Default number of backup files to keep (.log.1, .log.2, .log.3).
 const DEFAULT_BACKUPS: u32 = 3;
 
-/// Read backup count from HCOM_LOG_BACKUPS env, falling back to default.
+/// Read backup count from COMMS_LOG_BACKUPS env, falling back to default.
 fn log_backups() -> u32 {
-    std::env::var("HCOM_LOG_BACKUPS")
+    std::env::var("COMMS_LOG_BACKUPS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(DEFAULT_BACKUPS)
 }
 
-const LOG_FILE: &str = "hcom.log";
+const LOG_FILE: &str = "comms.log";
 
 /// ISO 8601 timestamp for log entries.
 fn timestamp_now() -> String {
@@ -27,7 +27,7 @@ fn timestamp_now() -> String {
 }
 
 /// Rotate log file if over size limit.
-/// hcom.log -> hcom.log.1 -> hcom.log.2 -> hcom.log.3 (oldest deleted).
+/// comms.log -> comms.log.1 -> comms.log.2 -> comms.log.3 (oldest deleted).
 fn rotate_if_needed(path: &std::path::Path) {
     let size = match fs::metadata(path) {
         Ok(m) => m.len(),
@@ -54,7 +54,7 @@ fn rotate_if_needed(path: &std::path::Path) {
     let _ = fs::rename(path, path.with_file_name(format!("{}.1", LOG_FILE)));
 }
 
-/// Log a structured event to the hcom log file.
+/// Log a structured event to the comms log file.
 ///
 /// Uses manual serde_json writes for full control over field ordering and
 /// optional fields.

@@ -1,9 +1,9 @@
-//! `hcom send` command — send messages to hcom instances.
+//! `comms send` command — send messages to comms instances.
 
 use std::io::{IsTerminal, Read as IoRead};
 
 use crate::cli_context::InlineBatch;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::db::subscriptions::create_request_watches;
 use crate::identity;
 use crate::messages::{
@@ -29,14 +29,14 @@ Inline bundle (attach structured context):
     --files <paths>                Comma-separated file paths
     --transcript <ranges>          Format: 3-14:normal,6:full,22-30:detailed
     --extends <id>                 Parent bundle (optional)
-  See 'hcom bundle --help' for bundle details
+  See 'comms bundle --help' for bundle details
 
 Examples:
-    hcom send @luna -- Hello there!
-    hcom send @luna @nova --intent request -- Can you help?
-    hcom send -- Broadcast message to everyone
-    echo 'Complex message' | hcom send @luna
-    hcom send @luna <<'EOF'
+    comms send @luna -- Hello there!
+    comms send @luna @nova --intent request -- Can you help?
+    comms send -- Broadcast message to everyone
+    echo 'Complex message' | comms send @luna
+    comms send @luna <<'EOF'
     Multi-line message with special chars
     EOF";
 
@@ -50,7 +50,7 @@ fn parse_positional(s: &str) -> Result<String, String> {
     }
 }
 
-/// Parsed arguments for `hcom send`.
+/// Parsed arguments for `comms send`.
 #[derive(clap::Parser, Debug)]
 #[command(
     name = "send",
@@ -221,7 +221,7 @@ impl SendArgs {
 /// Get formatted recipient feedback showing who received the message.
 ///
 /// `thread` is set when delivery was limited to that thread's members.
-fn get_recipient_feedback(db: &HcomDb, delivered_to: &[String], thread: Option<&str>) -> String {
+fn get_recipient_feedback(db: &CommsDb, delivered_to: &[String], thread: Option<&str>) -> String {
     if delivered_to.is_empty() {
         return match thread {
             Some(thread) => {
@@ -255,7 +255,7 @@ struct ResolvedDelivery {
     is_thread_resolved: bool,
 }
 
-fn deliverable_instances(db: &HcomDb) -> Result<Vec<InstanceInfo>, String> {
+fn deliverable_instances(db: &CommsDb) -> Result<Vec<InstanceInfo>, String> {
     let rows = db
         .conn()
         .prepare(
@@ -278,7 +278,7 @@ fn deliverable_instances(db: &HcomDb) -> Result<Vec<InstanceInfo>, String> {
 }
 
 fn resolve_delivery(
-    db: &HcomDb,
+    db: &CommsDb,
     identity: &SenderIdentity,
     message: &str,
     envelope: Option<&MessageEnvelope>,
@@ -354,7 +354,7 @@ fn build_scope_data(
     scope_data
 }
 
-fn print_broadcast_preview(db: &HcomDb, delivered_to: &[String]) {
+fn print_broadcast_preview(db: &CommsDb, delivered_to: &[String]) {
     let count = delivered_to.len();
     let names: Vec<String> = delivered_to
         .iter()
@@ -380,14 +380,14 @@ fn print_broadcast_preview(db: &HcomDb, delivered_to: &[String]) {
     println!("Did you mean to send this to everyone?");
     println!("Broadcasts can wake many terminals and spend many agents' context/tools.");
     println!("\nAdd --go after send and run again to proceed:");
-    println!("  hcom send --go ...\n");
+    println!("  comms send --go ...\n");
 }
 
 ///
 /// Validates message, computes scope, logs event, notifies all instances.
 /// Returns the logged event ID and delivered_to list (base names).
 pub fn send_message(
-    db: &HcomDb,
+    db: &CommsDb,
     identity: &SenderIdentity,
     message: &str,
     envelope: Option<&MessageEnvelope>,
@@ -502,7 +502,7 @@ pub fn send_message(
 }
 
 /// Resolve reply_to to local event ID. Returns None if not found or ambiguous.
-fn resolve_reply_to_local(db: &HcomDb, reply_to: &str) -> Option<i64> {
+fn resolve_reply_to_local(db: &CommsDb, reply_to: &str) -> Option<i64> {
     let reply_to = reply_to.trim();
     if reply_to.is_empty() {
         return None;
@@ -549,7 +549,7 @@ fn resolve_reply_to_local(db: &HcomDb, reply_to: &str) -> Option<i64> {
 }
 
 /// Get thread from an event (for --reply-to thread inheritance).
-fn get_thread_from_event(db: &HcomDb, event_id: i64) -> Option<String> {
+fn get_thread_from_event(db: &CommsDb, event_id: i64) -> Option<String> {
     db.conn()
         .query_row(
             "SELECT json_extract(data, '$.thread') FROM events WHERE id = ?",
@@ -561,7 +561,7 @@ fn get_thread_from_event(db: &HcomDb, event_id: i64) -> Option<String> {
 }
 
 /// Get intent from an event (for ack-on-ack prevention).
-fn get_intent_from_event(db: &HcomDb, event_id: i64) -> Option<String> {
+fn get_intent_from_event(db: &CommsDb, event_id: i64) -> Option<String> {
     db.conn()
         .query_row(
             "SELECT json_extract(data, '$.intent') FROM events WHERE id = ?",
@@ -673,7 +673,7 @@ fn resolve_message(
             .join(" ")
     };
     Err(format!(
-        "No message provided.\nUse: hcom send {targets_str} -- your message\n Or: echo 'msg' | hcom send {targets_str}"
+        "No message provided.\nUse: comms send {targets_str} -- your message\n Or: echo 'msg' | comms send {targets_str}"
     ))
 }
 
@@ -731,7 +731,7 @@ fn process_positionals(positionals: &[String]) -> (Vec<String>, Option<String>) 
 
 /// After a failed send, say which requested targets are stopped (and when) so
 /// the sender can resume them instead of guessing at typos.
-fn print_stopped_target_hints(db: &HcomDb, explicit_targets: &[String], message: &str) {
+fn print_stopped_target_hints(db: &CommsDb, explicit_targets: &[String], message: &str) {
     let targets = if explicit_targets.is_empty() {
         crate::shared::constants::extract_mentions(message)
     } else {
@@ -740,7 +740,7 @@ fn print_stopped_target_hints(db: &HcomDb, explicit_targets: &[String], message:
     for target in targets {
         if let Some(stopped) = identity::last_stopped(db, &target) {
             eprintln!(
-                "  @{target} {} — resume: hcom r {}",
+                "  @{target} {} — resume: comms r {}",
                 stopped.summary(),
                 stopped.display_name()
             );
@@ -748,10 +748,10 @@ fn print_stopped_target_hints(db: &HcomDb, explicit_targets: &[String], message:
     }
 }
 
-/// Reject `hcom send hi` / `hcom send luna`: a lone bare word with no `@` and
+/// Reject `comms send hi` / `comms send luna`: a lone bare word with no `@` and
 /// no `--` is as likely a target missing its `@` as a broadcast, and guessing
 /// broadcast interrupts every agent. Quoted phrases stay broadcasts.
-fn ambiguous_bare_word_error(db: &HcomDb, targets: &[String], word: &str) -> Option<String> {
+fn ambiguous_bare_word_error(db: &CommsDb, targets: &[String], word: &str) -> Option<String> {
     if !targets.is_empty() || word.split_whitespace().nth(1).is_some() {
         return None;
     }
@@ -759,20 +759,20 @@ fn ambiguous_bare_word_error(db: &HcomDb, targets: &[String], word: &str) -> Opt
         format!("Error: '{word}' is ambiguous: a target needs '@', a broadcast needs '--'");
     if identity::resolve_display_name_or_stopped(db, word).is_some() {
         msg.push_str(&format!(
-            "\nDid you mean @{word}? hcom send @{word} -- <message>"
+            "\nDid you mean @{word}? comms send @{word} -- <message>"
         ));
     } else {
         msg.push_str(&format!(
-            "\n  Direct:    hcom send @name -- {word}\n  Broadcast: hcom send -- {word}"
+            "\n  Direct:    comms send @name -- {word}\n  Broadcast: comms send -- {word}"
         ));
     }
     Some(msg)
 }
 
-/// Main entry point for `hcom send` command.
+/// Main entry point for `comms send` command.
 ///
 /// Returns exit code (0 = success, 1 = error).
-pub fn cmd_send(db: &HcomDb, args: &SendArgs, ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_send(db: &CommsDb, args: &SendArgs, ctx: Option<&CommandContext>) -> i32 {
     // ── Resolve --from name ──
     let from_name = args.sender_name();
 
@@ -1108,7 +1108,7 @@ pub fn cmd_send(db: &HcomDb, args: &SendArgs, ctx: Option<&CommandContext>) -> i
                 }
                 bundle_lines.push(String::new());
                 bundle_lines.push("View bundle:".to_string());
-                bundle_lines.push(format!("  hcom bundle cat {bundle_id}"));
+                bundle_lines.push(format!("  comms bundle cat {bundle_id}"));
 
                 message = format!("{}\n\n{}", message.trim_end(), bundle_lines.join("\n"));
             }
@@ -1223,10 +1223,10 @@ pub fn cmd_send(db: &HcomDb, args: &SendArgs, ctx: Option<&CommandContext>) -> i
         let sender_name = &sender_identity.name;
         println!();
         println!(
-            "[hcom] Note: '--name {sender_name}' was stripped from the end of your message body."
+            "[comms] Note: '--name {sender_name}' was stripped from the end of your message body."
         );
         println!("  Correct syntax (--name goes BEFORE --):");
-        println!("    hcom send --name {sender_name} @target -- your message");
+        println!("    comms send --name {sender_name} @target -- your message");
         println!("  To send '--name {sender_name}' as literal text, don't put it at the very end.");
     }
 
@@ -1237,7 +1237,7 @@ pub fn cmd_send(db: &HcomDb, args: &SendArgs, ctx: Option<&CommandContext>) -> i
         && !db.get_unread_messages(&receiver.name).is_empty()
     {
         println!(
-            "[hcom] new message(s) arrived — run: hcom listen --name {}",
+            "[comms] new message(s) arrived — run: comms listen --name {}",
             receiver.name
         );
     }
@@ -1257,7 +1257,7 @@ pub fn cmd_send(db: &HcomDb, args: &SendArgs, ctx: Option<&CommandContext>) -> i
 
 /// Format messages for hook display (no ANSI).
 fn format_messages_for_hook(
-    db: &HcomDb,
+    db: &CommsDb,
     messages: &[&crate::db::Message],
     instance_name: &str,
 ) -> String {
@@ -1539,22 +1539,22 @@ mod tests {
         assert!(msg.is_none());
     }
 
-    fn setup_test_db() -> (HcomDb, PathBuf, TestEnv) {
+    fn setup_test_db() -> (CommsDb, PathBuf, TestEnv) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
         // send_message() reaches the process-global relay notification path,
-        // so its ambient HCOM_DIR must live as long as the test DB.
+        // so its ambient COMMS_DIR must live as long as the test DB.
         let env = crate::hooks::test_helpers::isolated_test_env();
         let temp_dir = std::env::temp_dir();
         let test_id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = temp_dir.join(format!(
-            "test_hcom_send_{}_{}.db",
+            "test_comms_send_{}_{}.db",
             std::process::id(),
             test_id
         ));
 
-        let db = HcomDb::open_at(&db_path).unwrap();
+        let db = CommsDb::open_at(&db_path).unwrap();
         (db, db_path, env)
     }
 
@@ -1843,7 +1843,7 @@ mod tests {
     }
 
     fn insert_imported_remote_message(
-        db: &HcomDb,
+        db: &CommsDb,
         local_id: i64,
         origin_id: serde_json::Value,
         short: &str,

@@ -5,10 +5,10 @@ import { dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { createServer, type Server } from "node:net";
 
-const HCOM_DIR = process.env.HCOM_DIR || `${homedir()}/.hcom`;
-const LOG_PATH = `${HCOM_DIR}/.tmp/logs/hcom.log`;
+const COMMS_DIR = process.env.COMMS_DIR || `${homedir()}/.comms`;
+const LOG_PATH = `${COMMS_DIR}/.tmp/logs/comms.log`;
 
-type HcomResult = {
+type CommsResult = {
 	code: number;
 	stdout: string;
 	stderr: string;
@@ -34,11 +34,11 @@ function log(
 	} catch {}
 }
 
-const HCOM_TIMEOUT_MS = 1800;
+const COMMS_TIMEOUT_MS = 1800;
 
-function hcom(args: string[]): Promise<HcomResult> {
+function comms(args: string[]): Promise<CommsResult> {
 	return new Promise((resolve) => {
-		const child = spawn("hcom", args, { stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn("comms", args, { stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "";
 		let stderr = "";
 		let settled = false;
@@ -53,7 +53,7 @@ function hcom(args: string[]): Promise<HcomResult> {
 				child.kill("SIGTERM");
 			} catch {}
 			finish(124);
-		}, HCOM_TIMEOUT_MS);
+		}, COMMS_TIMEOUT_MS);
 		timer.unref?.();
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
@@ -82,21 +82,21 @@ function formatMessagesForInjection(messages: any[], recipientName: string): str
 				: `[new message #${m.event_id}]`;
 		return `${prefix} ${m.from} -> ${recipientName}: ${m.message}`;
 	});
-	if (messages.length === 1) return `<hcom>${parts[0]}</hcom>`;
-	return `<hcom>[${messages.length} new messages] | ${parts.join(" | ")}</hcom>`;
+	if (messages.length === 1) return `<comms>${parts[0]}</comms>`;
+	return `<comms>[${messages.length} new messages] | ${parts.join(" | ")}</comms>`;
 }
 
 function isBodylessWake(text: string): boolean {
 	const trimmed = text.trim();
-	return trimmed === "<hcom>" || trimmed === "<hcom></hcom>";
+	return trimmed === "<comms>" || trimmed === "<comms></comms>";
 }
 
 // Same-process latch: OMP task subagents load a fresh extension instance in the
 // parent Node process (SessionShutdownEvent has no sessionId). The first binder
-// owns hcom identity; nested instances skip bind/stop so dispose cannot soft-stop
+// owns comms identity; nested instances skip bind/stop so dispose cannot soft-stop
 // the parent (lefo / task repro). ExtensionContext does not expose taskDepth.
-const IDENTITY_REGISTRY_KEY = Symbol.for("hcom.omp.identity");
-const IDENTITY_OWNER_ENV = "HCOM_OMP_IDENTITY_OWNER";
+const IDENTITY_REGISTRY_KEY = Symbol.for("comms.omp.identity");
+const IDENTITY_OWNER_ENV = "COMMS_OMP_IDENTITY_OWNER";
 
 type OmpIdentityRegistry = {
 	owner: string | null;
@@ -123,7 +123,7 @@ function clearIdentityOwnership(): void {
 	syncIdentityOwnerEnv(null);
 }
 
-export default function hcomExtension(pi: ExtensionAPI) {
+export default function commsExtension(pi: ExtensionAPI) {
 	let instanceName: string | null = null;
 	let sessionId: string | null = null;
 	let ownsIdentity = false;
@@ -205,7 +205,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 	async function bindIdentity(ctx: ExtensionContext): Promise<void> {
 		currentCtx = ctx;
 		if (instanceName || bindingPromise) return bindingPromise ?? Promise.resolve();
-		if (process.env.HCOM_LAUNCHED !== "1") return;
+		if (process.env.COMMS_LAUNCHED !== "1") return;
 		const skipReason = nestedSkipReason();
 		if (skipReason) {
 			nestedOptOut = true;
@@ -233,7 +233,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 				const args = ["omp-start", "--session-id", sid, "--cwd", ctx.cwd];
 				if (transcriptPath) args.push("--transcript-path", transcriptPath);
 				if (port) args.push("--notify-port", String(port));
-				const result = await hcom(args);
+				const result = await comms(args);
 				if (result.code !== 0) {
 					stopNotifyServer();
 					log("WARN", "plugin.bind_failed", null, { exit_code: result.code, stderr: result.stderr.slice(0, 300) });
@@ -269,7 +269,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 
 	async function fetchPending(): Promise<{ messages: any[]; maxId: number } | null> {
 		if (!instanceName) return null;
-		const result = await hcom(["omp-read", "--name", instanceName]);
+		const result = await comms(["omp-read", "--name", instanceName]);
 		if (result.code !== 0) {
 			log("WARN", "plugin.delivery_read_failed", instanceName, { exit_code: result.code, stderr: result.stderr.slice(0, 300) });
 			return null;
@@ -365,7 +365,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		const ackId = pendingAckId;
 		const generation = bindingGeneration;
 		const attempt = (async (): Promise<boolean> => {
-			const result = await hcom(["omp-read", "--name", ackInstance, "--ack", "--up-to", String(ackId)]);
+			const result = await comms(["omp-read", "--name", ackInstance, "--ack", "--up-to", String(ackId)]);
 			if (result.code !== 0) {
 				log("WARN", "plugin.delivery_ack_failed", ackInstance, {
 					acked_to: ackId,
@@ -398,7 +398,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		const args = ["omp-status", "--name", instanceName, "--status", status];
 		if (context) args.push("--context", context);
 		if (detail) args.push("--detail", detail);
-		await hcom(args);
+		await comms(args);
 		lastReportedStatusKey = statusKey(status, context, detail);
 	}
 
@@ -494,7 +494,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 			const stopName = instanceName;
 			let softStopOk = false;
 			try {
-				const result = await hcom(["omp-stop", "--name", stopName, "--reason", reason, "--soft"]);
+				const result = await comms(["omp-stop", "--name", stopName, "--reason", reason, "--soft"]);
 				if (result.code === 0) {
 					softStopOk = true;
 				} else {
@@ -575,7 +575,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 			}
 			return { handled: true };
 		}
-		await reportStatus(ctx, "active", event.text.trim() === "<hcom>" ? "trigger" : "prompt");
+		await reportStatus(ctx, "active", event.text.trim() === "<comms>" ? "trigger" : "prompt");
 		return {};
 	});
 
@@ -584,7 +584,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		await bindIdentity(ctx);
 		if (!instanceName) return undefined;
 		// Ack the bodyless-wake transform here. The input handler sets pendingAckId
-		// and returns { text } for a bare <hcom>; omp applies that transform INLINE
+		// and returns { text } for a bare <comms>; omp applies that transform INLINE
 		// and submits it (input-controller.ts) — it never re-emits an input event
 		// with source "extension", so the input handler's extension-ack branch is
 		// dead for the transform path. before_agent_start fires for the submitted
@@ -599,7 +599,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		log("DEBUG", "plugin.hidden_bootstrap", instanceName, { bootstrap_len: bootstrapText.length });
 		return {
 			message: {
-				customType: "hcom-bootstrap",
+				customType: "comms-bootstrap",
 				content: bootstrapText,
 				display: false,
 			},
@@ -611,7 +611,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		await bindIdentity(ctx);
 		if (!instanceName) return undefined;
 		await reportStatus(ctx, "active", `tool:${event.toolName}`, String((event.input as any)?.path ?? (event.input as any)?.command ?? ""));
-		const result = await hcom([
+		const result = await comms([
 			"omp-beforetool",
 			"--name",
 			instanceName,
@@ -623,7 +623,7 @@ export default function hcomExtension(pi: ExtensionAPI) {
 		try {
 			const json = JSON.parse(result.stdout || "{}");
 			if (json.decision === "block") {
-				return { block: true, reason: String(json.reason || "Blocked by hcom") };
+				return { block: true, reason: String(json.reason || "Blocked by comms") };
 			}
 		} catch {}
 		return undefined;

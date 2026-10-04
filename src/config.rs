@@ -1,8 +1,8 @@
 //! Configuration management — central config system used by all modules.
 //!
 //! Two config layers:
-//! - `Config`: Runtime env vars (HCOM_DIR, HCOM_INSTANCE_NAME, etc.) — startup-only, used by router/client
-//! - `HcomConfig`: User config from TOML + env vars — all 20 user-facing settings with validation
+//! - `Config`: Runtime env vars (COMMS_DIR, COMMS_INSTANCE_NAME, etc.) — startup-only, used by router/client
+//! - `CommsConfig`: User config from TOML + env vars — all 20 user-facing settings with validation
 
 use regex::Regex;
 use std::collections::HashMap;
@@ -17,17 +17,17 @@ use crate::paths;
 /// Global configuration instance, lazily initialized and resettable for tests.
 static CONFIG: Mutex<Option<Config>> = Mutex::new(None);
 
-/// Configuration loaded from HCOM_* environment variables.
+/// Configuration loaded from COMMS_* environment variables.
 ///
 /// All environment variable access should go through this struct
 /// rather than calling env::var directly.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// HCOM directory (HCOM_DIR or ~/.hcom)
-    pub hcom_dir: PathBuf,
-    /// Instance name (HCOM_INSTANCE_NAME)
+    /// COMMS directory (COMMS_DIR or ~/.comms)
+    pub comms_dir: PathBuf,
+    /// Instance name (COMMS_INSTANCE_NAME)
     pub instance_name: Option<String>,
-    /// Process ID for daemon binding (HCOM_PROCESS_ID)
+    /// Process ID for daemon binding (COMMS_PROCESS_ID)
     pub process_id: Option<String>,
 }
 
@@ -62,36 +62,36 @@ impl Config {
 
         let env_map: HashMap<String, String> = env::vars().collect();
         let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let (hcom_dir, _) = paths::resolve_hcom_dir_from_env(&env_map, &cwd);
+        let (comms_dir, _) = paths::resolve_comms_dir_from_env(&env_map, &cwd);
 
-        // Unit tests must never inherit a real hcom data directory. Raw path
-        // semantics are tested through `resolve_hcom_dir_from_env` directly, so
+        // Unit tests must never inherit a real comms data directory. Raw path
+        // semantics are tested through `resolve_comms_dir_from_env` directly, so
         // global Config accepts only roots a test fixture explicitly registered
         // as disposable — not merely "it lives under $TMPDIR", since a real DB
         // can sit under the temp tree too. Anything else redirects to a
         // process-local throwaway. Production builds do not compile this branch.
         //
         // Redirect rather than panic on an unregistered dir: countless tests
-        // read Config with no HCOM_DIR set and no isolation installed, and must
+        // read Config with no COMMS_DIR set and no isolation installed, and must
         // land on a safe throwaway instead of aborting. Every explicit consumer
         // registers its root, so the fallback is a backstop, never the norm.
         #[cfg(test)]
-        let hcom_dir = {
-            if paths::test_roots::is_registered(&hcom_dir) {
-                hcom_dir
+        let comms_dir = {
+            if paths::test_roots::is_registered(&comms_dir) {
+                comms_dir
             } else {
-                test_default_hcom_dir()
+                test_default_comms_dir()
             }
         };
 
-        let instance_name = env::var("HCOM_INSTANCE_NAME")
+        let instance_name = env::var("COMMS_INSTANCE_NAME")
             .ok()
             .filter(|s| !s.is_empty());
 
-        let process_id = env::var("HCOM_PROCESS_ID").ok().filter(|s| !s.is_empty());
+        let process_id = env::var("COMMS_PROCESS_ID").ok().filter(|s| !s.is_empty());
 
         Self {
-            hcom_dir,
+            comms_dir,
             instance_name,
             process_id,
         }
@@ -99,19 +99,19 @@ impl Config {
 }
 
 /// Process-local fallback for unit tests that do not install an isolated
-/// `HCOM_DIR`. Reusing one directory per test binary preserves Config's normal
+/// `COMMS_DIR`. Reusing one directory per test binary preserves Config's normal
 /// process-wide semantics. Backed by a retained `TempDir` so it gets a unique,
 /// uncontended name and is registered as a disposable root for the redirect.
 #[cfg(test)]
-fn test_default_hcom_dir() -> PathBuf {
+fn test_default_comms_dir() -> PathBuf {
     use std::sync::OnceLock;
 
     static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
     DIR.get_or_init(|| {
         let dir = tempfile::Builder::new()
-            .prefix("hcom-test-default-")
+            .prefix("comms-test-default-")
             .tempdir()
-            .expect("create test-default hcom dir");
+            .expect("create test-default comms dir");
         paths::test_roots::register(dir.path());
         dir
     })
@@ -119,7 +119,7 @@ fn test_default_hcom_dir() -> PathBuf {
     .to_path_buf()
 }
 
-/// Bidirectional mapping: HcomConfig field name <-> TOML dotted path.
+/// Bidirectional mapping: CommsConfig field name <-> TOML dotted path.
 pub(crate) const TOML_KEY_MAP: &[(&str, &str)] = &[
     ("terminal", "terminal.active"),
     ("tag", "launch.tag"),
@@ -160,42 +160,42 @@ pub(crate) fn toml_path_for_field(field_name: &str) -> Option<&'static str> {
         .map(|(_, path)| *path)
 }
 
-/// Mapping: HcomConfig field name -> HCOM_* env var key.
+/// Mapping: CommsConfig field name -> COMMS_* env var key.
 const FIELD_TO_ENV: &[(&str, &str)] = &[
-    ("timeout", "HCOM_TIMEOUT"),
-    ("subagent_timeout", "HCOM_SUBAGENT_TIMEOUT"),
-    ("terminal", "HCOM_TERMINAL"),
-    ("hints", "HCOM_HINTS"),
-    ("notes", "HCOM_NOTES"),
-    ("tag", "HCOM_TAG"),
-    ("claude_args", "HCOM_CLAUDE_ARGS"),
-    ("gemini_args", "HCOM_GEMINI_ARGS"),
-    ("codex_args", "HCOM_CODEX_ARGS"),
-    ("gemini_system_prompt", "HCOM_GEMINI_SYSTEM_PROMPT"),
-    ("codex_system_prompt", "HCOM_CODEX_SYSTEM_PROMPT"),
-    ("opencode_args", "HCOM_OPENCODE_ARGS"),
-    ("kilo_args", "HCOM_KILO_ARGS"),
-    ("pi_args", "HCOM_PI_ARGS"),
-    ("omp_args", "HCOM_OMP_ARGS"),
-    ("cursor_args", "HCOM_CURSOR_ARGS"),
-    ("kimi_args", "HCOM_KIMI_ARGS"),
-    ("copilot_args", "HCOM_COPILOT_ARGS"),
-    ("grok_args", "HCOM_GROK_ARGS"),
-    ("relay", "HCOM_RELAY"),
-    ("relay_id", "HCOM_RELAY_ID"),
-    ("relay_token", "HCOM_RELAY_TOKEN"),
+    ("timeout", "COMMS_TIMEOUT"),
+    ("subagent_timeout", "COMMS_SUBAGENT_TIMEOUT"),
+    ("terminal", "COMMS_TERMINAL"),
+    ("hints", "COMMS_HINTS"),
+    ("notes", "COMMS_NOTES"),
+    ("tag", "COMMS_TAG"),
+    ("claude_args", "COMMS_CLAUDE_ARGS"),
+    ("gemini_args", "COMMS_GEMINI_ARGS"),
+    ("codex_args", "COMMS_CODEX_ARGS"),
+    ("gemini_system_prompt", "COMMS_GEMINI_SYSTEM_PROMPT"),
+    ("codex_system_prompt", "COMMS_CODEX_SYSTEM_PROMPT"),
+    ("opencode_args", "COMMS_OPENCODE_ARGS"),
+    ("kilo_args", "COMMS_KILO_ARGS"),
+    ("pi_args", "COMMS_PI_ARGS"),
+    ("omp_args", "COMMS_OMP_ARGS"),
+    ("cursor_args", "COMMS_CURSOR_ARGS"),
+    ("kimi_args", "COMMS_KIMI_ARGS"),
+    ("copilot_args", "COMMS_COPILOT_ARGS"),
+    ("grok_args", "COMMS_GROK_ARGS"),
+    ("relay", "COMMS_RELAY"),
+    ("relay_id", "COMMS_RELAY_ID"),
+    ("relay_token", "COMMS_RELAY_TOKEN"),
     // NOTE: `relay_psk` is deliberately NOT in FIELD_TO_ENV. `to_env_dict` feeds
     // `build_launch_env`, which injects these vars into every spawned agent
     // child. The PSK is forge/decrypt authority for the entire relay group —
     // it must never cross a process boundary via environment. Relay fields are
     // file-only on load already (see `is_relay_field` in `load_from_sources`),
     // so env-var override was never the mechanism for configuring the PSK.
-    ("relay_enabled", "HCOM_RELAY_ENABLED"),
-    ("auto_approve", "HCOM_AUTO_APPROVE"),
-    ("auto_subscribe", "HCOM_AUTO_SUBSCRIBE"),
-    ("name_export", "HCOM_NAME_EXPORT"),
-    ("auto_trust_workspace", "HCOM_AUTO_TRUST_WORKSPACE"),
-    ("title_mode", "HCOM_TITLE_MODE"),
+    ("relay_enabled", "COMMS_RELAY_ENABLED"),
+    ("auto_approve", "COMMS_AUTO_APPROVE"),
+    ("auto_subscribe", "COMMS_AUTO_SUBSCRIBE"),
+    ("name_export", "COMMS_NAME_EXPORT"),
+    ("auto_trust_workspace", "COMMS_AUTO_TRUST_WORKSPACE"),
+    ("title_mode", "COMMS_TITLE_MODE"),
 ];
 
 /// Relay fields — file-only, no env var override.
@@ -214,9 +214,9 @@ use crate::shared::terminal_presets::TERMINAL_PRESETS;
 
 /// TOML file header comment.
 const TOML_HEADER: &str = "\
-# hcom configuration
-# Help: hcom config --help
-# Docs: hcom run docs
+# comms configuration
+# Help: comms config --help
+# Docs: comms run docs
 ";
 
 /// Get value from nested TOML table using dotted path (e.g., "launch.claude.args").
@@ -249,13 +249,13 @@ fn set_nested(table: &mut toml::Value, dotted_path: &str, value: toml::Value) {
     }
 }
 
-/// Validation errors from HcomConfig construction.
+/// Validation errors from CommsConfig construction.
 #[derive(Debug, Clone)]
-pub struct HcomConfigError {
+pub struct CommsConfigError {
     pub errors: HashMap<String, String>,
 }
 
-impl std::fmt::Display for HcomConfigError {
+impl std::fmt::Display for CommsConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.errors.is_empty() {
             write!(f, "Invalid config")
@@ -269,12 +269,12 @@ impl std::fmt::Display for HcomConfigError {
     }
 }
 
-impl std::error::Error for HcomConfigError {}
+impl std::error::Error for CommsConfigError {}
 
-/// HCOM user configuration with validation.
+/// COMMS user configuration with validation.
 /// Load priority: env var → config.toml → defaults.
 #[derive(Clone, Debug, PartialEq)]
-pub struct HcomConfig {
+pub struct CommsConfig {
     pub timeout: i64,
     pub subagent_timeout: i64,
     pub terminal: String,
@@ -305,13 +305,13 @@ pub struct HcomConfig {
     pub name_export: String,
     pub auto_trust_workspace: bool,
     /// Terminal-title behavior: `"combined"` (default) shows
-    /// `{icon} name - {tool's live title}`, `"label"` shows hcom's
+    /// `{icon} name - {tool's live title}`, `"label"` shows comms's
     /// `{icon} name [tool]` only, `"off"` leaves the tool's own title untouched.
     /// See [`crate::shared::TitleMode`].
     pub title_mode: String,
 }
 
-impl Default for HcomConfig {
+impl Default for CommsConfig {
     fn default() -> Self {
         Self {
             timeout: 86400,
@@ -347,7 +347,7 @@ impl Default for HcomConfig {
     }
 }
 
-impl HcomConfig {
+impl CommsConfig {
     /// Normalize fields before validation (case normalization, legacy values).
     pub fn normalize(&mut self) {
         // Resolve old terminal casing (WezTerm→wezterm, Alacritty→alacritty)
@@ -571,7 +571,7 @@ impl HcomConfig {
         Ok(())
     }
 
-    /// Effective HCOM_TIMEOUT (idle poll timeout for non-PTY instances), falling
+    /// Effective COMMS_TIMEOUT (idle poll timeout for non-PTY instances), falling
     /// back to 120s if config can't be loaded. Used both by the Stop-hook poll
     /// fallback and by registration so freshly created rows already carry the
     /// resolved value instead of relying on the (never-NULL) schema default.
@@ -583,12 +583,12 @@ impl HcomConfig {
     ///
     /// `env_override`: If Some, use this map for env var lookups instead of std::env.
     /// Used in daemon mode where os.environ is stale.
-    pub fn load(env_override: Option<&HashMap<String, String>>) -> Result<Self, HcomConfigError> {
+    pub fn load(env_override: Option<&HashMap<String, String>>) -> Result<Self, CommsConfigError> {
         let toml_path = paths::config_toml_path();
 
         if !toml_path.exists() {
-            let hcom_dir = &Config::get().hcom_dir;
-            let config_env_path = hcom_dir.join("config.env");
+            let comms_dir = &Config::get().comms_dir;
+            let config_env_path = comms_dir.join("config.env");
             if config_env_path.exists() {
                 // Legacy config.env exists — migration to config.toml not yet done.
                 // Don't write default config.toml here or we'd silently lose the
@@ -613,8 +613,8 @@ impl HcomConfig {
     fn load_from_sources(
         file_config: &HashMap<String, TomlFieldValue>,
         env_override: Option<&HashMap<String, String>>,
-    ) -> Result<Self, HcomConfigError> {
-        let mut config = HcomConfig::default();
+    ) -> Result<Self, CommsConfigError> {
+        let mut config = CommsConfig::default();
 
         let is_relay_field = |field: &str| -> bool { RELAY_FIELDS.contains(&field) };
 
@@ -719,13 +719,13 @@ impl HcomConfig {
         // Validate
         let errors = config.collect_errors();
         if !errors.is_empty() {
-            return Err(HcomConfigError { errors });
+            return Err(CommsConfigError { errors });
         }
 
         Ok(config)
     }
 
-    /// Convert to HCOM_* env var dict (for persistence/display). Relay secret
+    /// Convert to COMMS_* env var dict (for persistence/display). Relay secret
     /// material (the PSK) is never emitted here — see `FIELD_TO_ENV` for why.
     pub fn to_env_dict(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
@@ -740,12 +740,12 @@ impl HcomConfig {
         map
     }
 
-    /// Build from HCOM_* env var dict. Returns validated config.
-    pub fn from_env_dict(data: &HashMap<String, String>) -> Result<Self, HcomConfigError> {
-        let mut config = HcomConfig::default();
+    /// Build from COMMS_* env var dict. Returns validated config.
+    pub fn from_env_dict(data: &HashMap<String, String>) -> Result<Self, CommsConfigError> {
+        let mut config = CommsConfig::default();
         let mut errors: HashMap<String, String> = HashMap::new();
 
-        // Build reverse map: HCOM_* key -> field name
+        // Build reverse map: COMMS_* key -> field name
         let env_to_field: HashMap<&str, &str> = FIELD_TO_ENV.iter().map(|&(f, e)| (e, f)).collect();
 
         for (env_key, value) in data {
@@ -757,13 +757,13 @@ impl HcomConfig {
         }
 
         if !errors.is_empty() {
-            return Err(HcomConfigError { errors });
+            return Err(CommsConfigError { errors });
         }
 
         // Run validation
         let validation_errors = config.collect_errors();
         if !validation_errors.is_empty() {
-            return Err(HcomConfigError {
+            return Err(CommsConfigError {
                 errors: validation_errors,
             });
         }
@@ -869,10 +869,13 @@ pub fn load_toml_config(path: &std::path::Path) -> HashMap<String, TomlFieldValu
     result
 }
 
-/// Write config.toml from HcomConfig using toml_edit to preserve comments and formatting.
+/// Write config.toml from CommsConfig using toml_edit to preserve comments and formatting.
 /// If the file already exists, parses it and surgically updates only changed keys.
 /// If the file doesn't exist, writes a fresh default with the header comment.
-pub fn save_toml_config(config: &HcomConfig, presets: Option<&toml::Value>) -> std::io::Result<()> {
+pub fn save_toml_config(
+    config: &CommsConfig,
+    presets: Option<&toml::Value>,
+) -> std::io::Result<()> {
     use toml_edit::DocumentMut;
 
     let toml_path = paths::config_toml_path();
@@ -1379,7 +1382,7 @@ fn is_falsy(s: &str) -> bool {
 /// Structured snapshot of config state for load/save operations.
 #[derive(Clone, Debug)]
 pub struct ConfigSnapshot {
-    pub core: HcomConfig,
+    pub core: CommsConfig,
 }
 
 /// Load config snapshot from files (no env overrides — file contents only).
@@ -1389,7 +1392,7 @@ pub fn load_config_snapshot() -> ConfigSnapshot {
     if !toml_path.exists() {
         // Check for legacy config.env before writing defaults — don't overwrite
         // user settings that haven't been migrated yet.
-        let config_env_path = Config::get().hcom_dir.join("config.env");
+        let config_env_path = Config::get().comms_dir.join("config.env");
         if !config_env_path.exists() {
             let _ = write_default_config();
         }
@@ -1401,12 +1404,12 @@ pub fn load_config_snapshot() -> ConfigSnapshot {
         HashMap::new()
     };
 
-    // Build HcomConfig from file values only (no env)
-    let core = match HcomConfig::load_from_sources(&file_config, Some(&HashMap::new())) {
+    // Build CommsConfig from file values only (no env)
+    let core = match CommsConfig::load_from_sources(&file_config, Some(&HashMap::new())) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{e}");
-            HcomConfig::default()
+            CommsConfig::default()
         }
     };
 
@@ -1415,7 +1418,7 @@ pub fn load_config_snapshot() -> ConfigSnapshot {
 
 /// Write default config.toml + env file.
 pub fn write_default_config() -> std::io::Result<()> {
-    let config = HcomConfig::default();
+    let config = CommsConfig::default();
     save_toml_config(&config, None)?;
     save_env_file(&HashMap::new())
 }
@@ -1427,7 +1430,7 @@ const DEFAULT_ENV_VARS: &[&str] = &[
     "GEMINI_MODEL",
 ];
 
-/// Load non-HCOM env vars from env file.
+/// Load non-COMMS env vars from env file.
 pub fn load_env_extras(path: &std::path::Path) -> HashMap<String, String> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -1442,7 +1445,7 @@ pub fn load_env_extras(path: &std::path::Path) -> HashMap<String, String> {
         }
         if let Some((key, value)) = line.split_once('=') {
             let key = key.trim();
-            if !key.is_empty() && !key.starts_with("HCOM_") {
+            if !key.is_empty() && !key.starts_with("COMMS_") {
                 result.insert(key.to_string(), parse_env_value(value));
             }
         }
@@ -1450,9 +1453,9 @@ pub fn load_env_extras(path: &std::path::Path) -> HashMap<String, String> {
     result
 }
 
-/// Write env passthrough file (non-HCOM vars only).
+/// Write env passthrough file (non-COMMS vars only).
 pub fn save_env_file(extras: &HashMap<String, String>) -> std::io::Result<()> {
-    let env_path = Config::get().hcom_dir.join("env");
+    let env_path = Config::get().comms_dir.join("env");
 
     if let Some(parent) = env_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1463,13 +1466,13 @@ pub fn save_env_file(extras: &HashMap<String, String>) -> std::io::Result<()> {
     // Always include default placeholders
     let mut all_keys: Vec<String> = DEFAULT_ENV_VARS.iter().map(|s| s.to_string()).collect();
     for key in extras.keys() {
-        if !all_keys.contains(key) && !key.starts_with("HCOM_") {
+        if !all_keys.contains(key) && !key.starts_with("COMMS_") {
             all_keys.push(key.clone());
         }
     }
 
     for key in &all_keys {
-        if key.starts_with("HCOM_") {
+        if key.starts_with("COMMS_") {
             continue;
         }
         let value = extras.get(key.as_str()).map(|s| s.as_str()).unwrap_or("");
@@ -1604,74 +1607,74 @@ mod tests {
     // resolves the base dir from USERPROFILE and treats "/x" as drive-relative.
     #[test]
     #[serial]
-    fn test_guard_redirects_non_temp_hcom_dir() {
+    fn test_guard_redirects_non_temp_comms_dir() {
         let _guard = EnvGuard::new();
-        let unsafe_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".hcom-unsafe-test");
+        let unsafe_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".comms-unsafe-test");
         unsafe {
-            env::set_var("HCOM_DIR", &unsafe_dir);
+            env::set_var("COMMS_DIR", &unsafe_dir);
         }
         Config::reset();
         Config::init();
 
-        let actual = Config::get().hcom_dir;
+        let actual = Config::get().comms_dir;
         assert_ne!(actual, unsafe_dir);
         assert!(actual.starts_with(env::temp_dir()), "actual={actual:?}");
     }
 
     #[test]
     #[serial]
-    fn test_guard_allows_registered_hcom_dir() {
+    fn test_guard_allows_registered_comms_dir() {
         let _guard = EnvGuard::new();
         let temp = tempfile::tempdir().unwrap();
-        let expected = temp.path().join(".hcom");
+        let expected = temp.path().join(".comms");
         // A fixture must claim the root before Config will keep it.
         paths::test_roots::register(temp.path());
         unsafe {
-            env::set_var("HCOM_DIR", &expected);
+            env::set_var("COMMS_DIR", &expected);
         }
         Config::reset();
         Config::init();
 
-        assert_eq!(Config::get().hcom_dir, expected);
+        assert_eq!(Config::get().comms_dir, expected);
     }
 
     #[test]
     #[serial]
-    fn test_guard_redirects_unregistered_temp_hcom_dir() {
+    fn test_guard_redirects_unregistered_temp_comms_dir() {
         // Geography is not ownership: a temp path no fixture registered is not
         // trusted, even though it sits under $TMPDIR. This is the finding-3
-        // guarantee that a real hcom DB happening to live under /tmp is not
+        // guarantee that a real comms DB happening to live under /tmp is not
         // waved through.
         let _guard = EnvGuard::new();
         let temp = tempfile::tempdir().unwrap();
-        let unregistered = temp.path().join(".hcom");
+        let unregistered = temp.path().join(".comms");
         unsafe {
-            env::set_var("HCOM_DIR", &unregistered);
+            env::set_var("COMMS_DIR", &unregistered);
         }
         Config::reset();
         Config::init();
 
-        assert_ne!(Config::get().hcom_dir, unregistered);
+        assert_ne!(Config::get().comms_dir, unregistered);
     }
 
     #[cfg(unix)]
     #[test]
     #[serial]
-    fn test_guard_rejects_temp_symlink_to_non_temp_hcom_dir() {
+    fn test_guard_rejects_temp_symlink_to_non_temp_comms_dir() {
         use std::os::unix::fs::symlink;
 
         let _guard = EnvGuard::new();
         let temp = tempfile::tempdir().unwrap();
         let link = temp.path().join("outside");
         symlink(env!("CARGO_MANIFEST_DIR"), &link).unwrap();
-        let unsafe_dir = link.join(".hcom");
+        let unsafe_dir = link.join(".comms");
         unsafe {
-            env::set_var("HCOM_DIR", &unsafe_dir);
+            env::set_var("COMMS_DIR", &unsafe_dir);
         }
         Config::reset();
         Config::init();
 
-        let actual = Config::get().hcom_dir;
+        let actual = Config::get().comms_dir;
         assert_ne!(actual, unsafe_dir);
         assert!(actual.starts_with(env::temp_dir()), "actual={actual:?}");
     }
@@ -1681,27 +1684,27 @@ mod tests {
     fn test_raw_resolution_and_db_open_do_not_share_mutable_escape_state() {
         use std::sync::{Arc, Barrier};
 
-        let (_dir, hcom_dir, _home, _guard) = isolated_test_env();
+        let (_dir, comms_dir, _home, _guard) = isolated_test_env();
         let barrier = Arc::new(Barrier::new(2));
         let raw_barrier = Arc::clone(&barrier);
         let db_barrier = Arc::clone(&barrier);
-        let raw_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".hcom-resolution-test");
-        let expected_db = hcom_dir.join("hcom.db");
+        let raw_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".comms-resolution-test");
+        let expected_db = comms_dir.join("comms.db");
 
         let resolver = std::thread::spawn(move || {
             let env = HashMap::from([(
-                "HCOM_DIR".to_string(),
+                "COMMS_DIR".to_string(),
                 raw_path.to_string_lossy().into_owned(),
             )]);
             raw_barrier.wait();
             let (resolved, explicit) =
-                paths::resolve_hcom_dir_from_env(&env, std::path::Path::new("/worktree"));
+                paths::resolve_comms_dir_from_env(&env, std::path::Path::new("/worktree"));
             assert_eq!(resolved, raw_path);
             assert!(explicit);
         });
         let db_open = std::thread::spawn(move || {
             db_barrier.wait();
-            let db = crate::db::HcomDb::open().unwrap();
+            let db = crate::db::CommsDb::open().unwrap();
             assert_eq!(db.path(), expected_db);
         });
 
@@ -1711,23 +1714,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn test_default_config_uses_home_hcom() {
+    fn test_default_config_uses_home_comms() {
         let env = HashMap::from([("HOME".to_string(), "/home/test".to_string())]);
         let (actual, explicit) =
-            paths::resolve_hcom_dir_from_env(&env, std::path::Path::new("/worktree"));
+            paths::resolve_comms_dir_from_env(&env, std::path::Path::new("/worktree"));
 
-        assert_eq!(actual, PathBuf::from("/home/test/.hcom"));
+        assert_eq!(actual, PathBuf::from("/home/test/.comms"));
         assert!(!explicit);
     }
 
     #[cfg(unix)]
     #[test]
-    fn test_hcom_dir_overrides_home() {
-        let env = HashMap::from([("HCOM_DIR".to_string(), "/custom/hcom".to_string())]);
+    fn test_comms_dir_overrides_home() {
+        let env = HashMap::from([("COMMS_DIR".to_string(), "/custom/comms".to_string())]);
         let (actual, explicit) =
-            paths::resolve_hcom_dir_from_env(&env, std::path::Path::new("/worktree"));
+            paths::resolve_comms_dir_from_env(&env, std::path::Path::new("/worktree"));
 
-        assert_eq!(actual, PathBuf::from("/custom/hcom"));
+        assert_eq!(actual, PathBuf::from("/custom/comms"));
         assert!(explicit);
     }
 
@@ -1735,7 +1738,7 @@ mod tests {
     #[serial]
     fn test_instance_name_some_when_set() {
         Config::reset();
-        with_env("HCOM_INSTANCE_NAME", "test-instance", || {
+        with_env("COMMS_INSTANCE_NAME", "test-instance", || {
             Config::init();
             let config = Config::get();
             assert_eq!(config.instance_name, Some("test-instance".to_string()));
@@ -1746,7 +1749,7 @@ mod tests {
     #[serial]
     fn test_instance_name_none_when_unset() {
         Config::reset();
-        without_env(&["HCOM_INSTANCE_NAME"], || {
+        without_env(&["COMMS_INSTANCE_NAME"], || {
             Config::init();
             let config = Config::get();
             assert_eq!(config.instance_name, None);
@@ -1757,7 +1760,7 @@ mod tests {
     #[serial]
     fn test_process_id_some_when_set() {
         Config::reset();
-        with_env("HCOM_PROCESS_ID", "pid-123", || {
+        with_env("COMMS_PROCESS_ID", "pid-123", || {
             Config::init();
             let config = Config::get();
             assert_eq!(config.process_id, Some("pid-123".to_string()));
@@ -1768,7 +1771,7 @@ mod tests {
     #[serial]
     fn test_process_id_none_when_unset() {
         Config::reset();
-        without_env(&["HCOM_PROCESS_ID"], || {
+        without_env(&["COMMS_PROCESS_ID"], || {
             Config::init();
             let config = Config::get();
             assert_eq!(config.process_id, None);
@@ -1779,37 +1782,37 @@ mod tests {
     #[serial]
     fn test_reset_allows_reinit() {
         Config::reset();
-        with_env("HCOM_INSTANCE_NAME", "first", || {
+        with_env("COMMS_INSTANCE_NAME", "first", || {
             Config::init();
             assert_eq!(Config::get().instance_name, Some("first".to_string()));
         });
 
         Config::reset();
-        with_env("HCOM_INSTANCE_NAME", "second", || {
+        with_env("COMMS_INSTANCE_NAME", "second", || {
             Config::init();
             assert_eq!(Config::get().instance_name, Some("second".to_string()));
         });
     }
 
     #[test]
-    fn test_hcom_dir_tilde_expansion() {
+    fn test_comms_dir_tilde_expansion() {
         let home = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let env = HashMap::from([
             ("HOME".to_string(), home.to_string_lossy().into_owned()),
-            ("HCOM_DIR".to_string(), "~/.hcom".to_string()),
+            ("COMMS_DIR".to_string(), "~/.comms".to_string()),
         ]);
         let (actual, explicit) =
-            paths::resolve_hcom_dir_from_env(&env, std::path::Path::new("/worktree"));
+            paths::resolve_comms_dir_from_env(&env, std::path::Path::new("/worktree"));
 
-        assert_eq!(actual, home.join(".hcom"));
+        assert_eq!(actual, home.join(".comms"));
         assert!(explicit);
     }
 
     #[test]
-    fn test_hcom_dir_relative_resolved_to_absolute() {
+    fn test_comms_dir_relative_resolved_to_absolute() {
         let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let env = HashMap::from([("HCOM_DIR".to_string(), "relative/path".to_string())]);
-        let (actual, explicit) = paths::resolve_hcom_dir_from_env(&env, &cwd);
+        let env = HashMap::from([("COMMS_DIR".to_string(), "relative/path".to_string())]);
+        let (actual, explicit) = paths::resolve_comms_dir_from_env(&env, &cwd);
 
         assert_eq!(actual, cwd.join("relative/path"));
         assert!(explicit);
@@ -1817,18 +1820,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn test_hcom_dir_absolute_stays_absolute() {
-        let env = HashMap::from([("HCOM_DIR".to_string(), "/absolute/hcom".to_string())]);
+    fn test_comms_dir_absolute_stays_absolute() {
+        let env = HashMap::from([("COMMS_DIR".to_string(), "/absolute/comms".to_string())]);
         let (actual, explicit) =
-            paths::resolve_hcom_dir_from_env(&env, std::path::Path::new("/worktree"));
+            paths::resolve_comms_dir_from_env(&env, std::path::Path::new("/worktree"));
 
-        assert_eq!(actual, PathBuf::from("/absolute/hcom"));
+        assert_eq!(actual, PathBuf::from("/absolute/comms"));
         assert!(explicit);
     }
 
     #[test]
-    fn test_hcom_config_defaults() {
-        let mut config = HcomConfig::default();
+    fn test_comms_config_defaults() {
+        let mut config = CommsConfig::default();
         assert_eq!(config.timeout, 86400);
         assert_eq!(config.subagent_timeout, 30);
         assert_eq!(config.terminal, "default");
@@ -1840,10 +1843,10 @@ mod tests {
     }
 
     #[test]
-    fn test_hcom_config_validation_timeout() {
-        let mut config = HcomConfig {
+    fn test_comms_config_validation_timeout() {
+        let mut config = CommsConfig {
             timeout: 0,
-            ..HcomConfig::default()
+            ..CommsConfig::default()
         };
         let errors = config.collect_errors();
         assert!(errors.contains_key("timeout"));
@@ -1858,10 +1861,10 @@ mod tests {
     }
 
     #[test]
-    fn test_hcom_config_validation_tag() {
-        let mut config = HcomConfig {
+    fn test_comms_config_validation_tag() {
+        let mut config = CommsConfig {
             tag: "valid-tag".to_string(),
-            ..HcomConfig::default()
+            ..CommsConfig::default()
         };
         assert!(!config.collect_errors().contains_key("tag"));
 
@@ -1873,10 +1876,10 @@ mod tests {
     }
 
     #[test]
-    fn test_hcom_config_validation_shell_args() {
-        let mut config = HcomConfig {
+    fn test_comms_config_validation_shell_args() {
+        let mut config = CommsConfig {
             claude_args: "--model opus".to_string(),
-            ..HcomConfig::default()
+            ..CommsConfig::default()
         };
         assert!(!config.collect_errors().contains_key("claude_args"));
 
@@ -1885,10 +1888,10 @@ mod tests {
     }
 
     #[test]
-    fn test_hcom_config_validation_auto_subscribe() {
-        let mut config = HcomConfig {
+    fn test_comms_config_validation_auto_subscribe() {
+        let mut config = CommsConfig {
             auto_subscribe: "collision,created".to_string(),
-            ..HcomConfig::default()
+            ..CommsConfig::default()
         };
         assert!(!config.collect_errors().contains_key("auto_subscribe"));
 
@@ -1898,9 +1901,9 @@ mod tests {
 
     #[test]
     fn test_terminal_case_normalization() {
-        let mut config = HcomConfig {
+        let mut config = CommsConfig {
             terminal: "WezTerm".to_string(),
-            ..HcomConfig::default()
+            ..CommsConfig::default()
         };
         let errors = config.collect_errors();
         assert!(!errors.contains_key("terminal"));
@@ -1925,9 +1928,9 @@ mod tests {
 
     #[test]
     fn test_terminal_custom_command_requires_script() {
-        let mut config = HcomConfig {
+        let mut config = CommsConfig {
             terminal: "my-terminal -e bash {script}".to_string(),
-            ..HcomConfig::default()
+            ..CommsConfig::default()
         };
         assert!(!config.collect_errors().contains_key("terminal"));
 
@@ -1941,7 +1944,7 @@ mod tests {
         // Finding 17: presets are now validated against the host platform, so
         // only assert presets that are actually supported here.
         let platform = crate::shared::platform::platform_name();
-        let mut config = HcomConfig::default();
+        let mut config = CommsConfig::default();
         for preset in &[
             "kitty",
             "wezterm",
@@ -1968,16 +1971,16 @@ mod tests {
         // Finding 17: a built-in preset not available on the host platform
         // (here, "wttab" is Windows-only) must be rejected at validation time,
         // not just silently accepted and left to fail at launch.
-        let mut config = HcomConfig {
+        let mut config = CommsConfig {
             terminal: "wttab".to_string(),
-            ..HcomConfig::default()
+            ..CommsConfig::default()
         };
         assert!(config.collect_errors().contains_key("terminal"));
     }
 
     #[test]
     fn test_set_field_bool_coercion() {
-        let mut config = HcomConfig::default();
+        let mut config = CommsConfig::default();
 
         config.set_field("auto_approve", "0").unwrap();
         assert!(!config.auto_approve);
@@ -2014,15 +2017,15 @@ mod tests {
 
     #[test]
     fn test_to_env_dict_roundtrip() {
-        let config = HcomConfig::default();
+        let config = CommsConfig::default();
         let dict = config.to_env_dict();
 
-        assert_eq!(dict.get("HCOM_TIMEOUT"), Some(&"86400".to_string()));
-        assert_eq!(dict.get("HCOM_TERMINAL"), Some(&"default".to_string()));
-        assert_eq!(dict.get("HCOM_AUTO_APPROVE"), Some(&"1".to_string()));
-        assert_eq!(dict.get("HCOM_RELAY_ENABLED"), Some(&"1".to_string()));
+        assert_eq!(dict.get("COMMS_TIMEOUT"), Some(&"86400".to_string()));
+        assert_eq!(dict.get("COMMS_TERMINAL"), Some(&"default".to_string()));
+        assert_eq!(dict.get("COMMS_AUTO_APPROVE"), Some(&"1".to_string()));
+        assert_eq!(dict.get("COMMS_RELAY_ENABLED"), Some(&"1".to_string()));
 
-        let roundtrip = HcomConfig::from_env_dict(&dict).unwrap();
+        let roundtrip = CommsConfig::from_env_dict(&dict).unwrap();
         assert_eq!(config, roundtrip);
     }
 
@@ -2033,12 +2036,12 @@ mod tests {
         // process's environment, so anything emitted here crosses a
         // process boundary. The PSK must stay file-only — verified by
         // checking that even a populated field is suppressed.
-        let config = HcomConfig {
+        let config = CommsConfig {
             relay_psk: "an-example-secret-value-xxxxxxxxxxxxxxxxxxxxxxxx".to_string(),
             ..Default::default()
         };
         let dict = config.to_env_dict();
-        assert!(!dict.contains_key("HCOM_RELAY_PSK"));
+        assert!(!dict.contains_key("COMMS_RELAY_PSK"));
         for v in dict.values() {
             assert!(
                 !v.contains("an-example-secret-value"),
@@ -2051,8 +2054,8 @@ mod tests {
     fn test_load_from_sources_empty() {
         let file_config = HashMap::new();
         let env = HashMap::new();
-        let config = HcomConfig::load_from_sources(&file_config, Some(&env)).unwrap();
-        assert_eq!(config, HcomConfig::default());
+        let config = CommsConfig::load_from_sources(&file_config, Some(&env)).unwrap();
+        assert_eq!(config, CommsConfig::default());
     }
 
     #[test]
@@ -2063,7 +2066,7 @@ mod tests {
         file_config.insert("relay_enabled".to_string(), TomlFieldValue::Bool(false));
 
         let env = HashMap::new();
-        let config = HcomConfig::load_from_sources(&file_config, Some(&env)).unwrap();
+        let config = CommsConfig::load_from_sources(&file_config, Some(&env)).unwrap();
 
         assert_eq!(config.timeout, 3600);
         assert_eq!(config.tag, "test");
@@ -2078,9 +2081,9 @@ mod tests {
             TomlFieldValue::Str("label".to_string()),
         );
         let mut env = HashMap::new();
-        env.insert("HCOM_TITLE_MODE".to_string(), "off".to_string());
+        env.insert("COMMS_TITLE_MODE".to_string(), "off".to_string());
 
-        let config = HcomConfig::load_from_sources(&file_config, Some(&env)).unwrap();
+        let config = CommsConfig::load_from_sources(&file_config, Some(&env)).unwrap();
         assert_eq!(config.title_mode, "off");
     }
 
@@ -2094,9 +2097,9 @@ mod tests {
         );
 
         let mut env = HashMap::new();
-        env.insert("HCOM_TAG".to_string(), "env-tag".to_string());
+        env.insert("COMMS_TAG".to_string(), "env-tag".to_string());
 
-        let config = HcomConfig::load_from_sources(&file_config, Some(&env)).unwrap();
+        let config = CommsConfig::load_from_sources(&file_config, Some(&env)).unwrap();
 
         assert_eq!(config.timeout, 3600); // From file (no env override)
         assert_eq!(config.tag, "env-tag"); // Env wins over file
@@ -2112,11 +2115,11 @@ mod tests {
 
         let mut env = HashMap::new();
         env.insert(
-            "HCOM_RELAY".to_string(),
+            "COMMS_RELAY".to_string(),
             "mqtt://env.example.com".to_string(),
         );
 
-        let config = HcomConfig::load_from_sources(&file_config, Some(&env)).unwrap();
+        let config = CommsConfig::load_from_sources(&file_config, Some(&env)).unwrap();
 
         // Relay fields should come from file, not env
         assert_eq!(config.relay, "mqtt://file.example.com");
@@ -2131,7 +2134,7 @@ mod tests {
         );
 
         let env = HashMap::new();
-        let config = HcomConfig::load_from_sources(&file_config, Some(&env)).unwrap();
+        let config = CommsConfig::load_from_sources(&file_config, Some(&env)).unwrap();
         assert_eq!(config.timeout, 7200);
     }
 
@@ -2144,7 +2147,7 @@ mod tests {
         );
 
         let env = HashMap::new();
-        let config = HcomConfig::load_from_sources(&file_config, Some(&env)).unwrap();
+        let config = CommsConfig::load_from_sources(&file_config, Some(&env)).unwrap();
         assert!(!config.auto_approve);
     }
 
@@ -2154,18 +2157,18 @@ mod tests {
         file_config.insert("terminal".to_string(), TomlFieldValue::Str("".to_string()));
 
         let env = HashMap::new();
-        let config = HcomConfig::load_from_sources(&file_config, Some(&env)).unwrap();
+        let config = CommsConfig::load_from_sources(&file_config, Some(&env)).unwrap();
         assert_eq!(config.terminal, "default");
     }
 
     #[test]
     fn test_toml_roundtrip() {
-        let config = HcomConfig {
+        let config = CommsConfig {
             timeout: 3600,
             tag: "dev".to_string(),
             auto_approve: false,
             relay: "mqtt://test.com".to_string(),
-            ..HcomConfig::default()
+            ..CommsConfig::default()
         };
 
         let toml_table = config.to_toml_table();
@@ -2186,7 +2189,8 @@ mod tests {
             }
         }
 
-        let roundtrip = HcomConfig::load_from_sources(&file_config, Some(&HashMap::new())).unwrap();
+        let roundtrip =
+            CommsConfig::load_from_sources(&file_config, Some(&HashMap::new())).unwrap();
         assert_eq!(config, roundtrip);
     }
 
@@ -2305,7 +2309,7 @@ auto_approve = false
 
     #[test]
     fn test_get_field_all_fields() {
-        let config = HcomConfig::default();
+        let config = CommsConfig::default();
         // All 20 fields should be gettable
         for &(field, _) in FIELD_TO_ENV {
             assert!(
@@ -2329,17 +2333,17 @@ auto_approve = false
 
         assert_eq!(
             actual, expected,
-            "HcomConfig *_args env vars must match IntegrationSpec.launch.args_env"
+            "CommsConfig *_args env vars must match IntegrationSpec.launch.args_env"
         );
     }
 
     #[test]
-    fn test_hcom_config_validation_error_display() {
+    fn test_comms_config_validation_error_display() {
         let errors = HashMap::from([
             ("timeout".to_string(), "timeout must be 1-86400".to_string()),
             ("tag".to_string(), "tag invalid chars".to_string()),
         ]);
-        let err = HcomConfigError { errors };
+        let err = CommsConfigError { errors };
         let display = format!("{err}");
         assert!(display.contains("Invalid config"));
         assert!(display.contains("timeout must be 1-86400"));
@@ -2468,7 +2472,7 @@ pane_id_env = "MYTERM_PANE_ID"
     #[test]
     #[serial]
     fn user_defined_override_exempt_from_builtin_platform_gate() {
-        let (_dir, hcom_dir, _home, _guard) = isolated_test_env();
+        let (_dir, comms_dir, _home, _guard) = isolated_test_env();
         let platform = crate::shared::platform::platform_name();
         // A built-in preset NOT available on the current host platform.
         let builtin = match platform {
@@ -2480,7 +2484,7 @@ pane_id_env = "MYTERM_PANE_ID"
 
         // Control: without any user override the wrong-platform built-in is
         // rejected at validate time.
-        let mut cfg = HcomConfig {
+        let mut cfg = CommsConfig {
             terminal: builtin.to_string(),
             ..Default::default()
         };
@@ -2491,13 +2495,13 @@ pane_id_env = "MYTERM_PANE_ID"
 
         // Define a user preset with the SAME name — it must now be accepted.
         std::fs::write(
-            hcom_dir.join("config.toml"),
+            comms_dir.join("config.toml"),
             format!(
                 "[terminal.presets.{builtin}]\nopen = \"{builtin} -- powershell -File {{script}}\"\n"
             ),
         )
         .unwrap();
-        let mut cfg = HcomConfig {
+        let mut cfg = CommsConfig {
             terminal: builtin.to_string(),
             ..Default::default()
         };
@@ -2510,19 +2514,19 @@ pane_id_env = "MYTERM_PANE_ID"
     #[test]
     #[serial]
     fn malformed_user_override_does_not_bypass_builtin_platform_gate() {
-        let (_dir, hcom_dir, _home, _guard) = isolated_test_env();
+        let (_dir, comms_dir, _home, _guard) = isolated_test_env();
         let builtin = match crate::shared::platform::platform_name() {
             "Darwin" | "Linux" => "windows-terminal",
             _ => "iterm",
         };
         std::fs::write(
-            hcom_dir.join("config.toml"),
+            comms_dir.join("config.toml"),
             format!("[terminal.presets.{builtin}]\nopen = \"powershell \\\"unterminated\"\n"),
         )
         .unwrap();
 
         assert!(!is_user_defined_preset(builtin));
-        let mut cfg = HcomConfig {
+        let mut cfg = CommsConfig {
             terminal: builtin.to_string(),
             ..Default::default()
         };
@@ -2535,14 +2539,14 @@ pane_id_env = "MYTERM_PANE_ID"
     #[test]
     #[serial]
     fn malformed_user_override_rejected_for_supported_builtin() {
-        let (_dir, hcom_dir, _home, _guard) = isolated_test_env();
+        let (_dir, comms_dir, _home, _guard) = isolated_test_env();
         let builtin = if cfg!(windows) { "cmd" } else { "tmux" };
         std::fs::write(
-            hcom_dir.join("config.toml"),
+            comms_dir.join("config.toml"),
             format!("[terminal.presets.{builtin}]\nclose = 42\n"),
         )
         .unwrap();
-        let mut cfg = HcomConfig {
+        let mut cfg = CommsConfig {
             terminal: builtin.to_string(),
             ..Default::default()
         };
@@ -2575,8 +2579,8 @@ active = "default"
     fn test_save_toml_config_sets_mode_600_for_secret_bearing_config() {
         use std::os::unix::fs::PermissionsExt;
 
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let config = HcomConfig {
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let config = CommsConfig {
             relay_psk: "super-secret-psk".to_string(),
             ..Default::default()
         };

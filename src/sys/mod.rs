@@ -1,6 +1,6 @@
 //! Platform-abstraction layer.
 //!
-//! Every OS-specific primitive the rest of hcom needs lives behind this module
+//! Every OS-specific primitive the rest of comms needs lives behind this module
 //! so call sites never touch `nix`, `libc`, `std::os::unix`, or Windows APIs
 //! directly. Each capability is a thin, platform-neutral function API; the
 //! per-OS implementation is selected inline with `#[cfg]`. This turns the

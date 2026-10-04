@@ -1,7 +1,7 @@
-//! Centralized path resolution and file utilities for hcom.
+//! Centralized path resolution and file utilities for comms.
 //!
-//! Single source of truth for all hcom directory and file paths.
-//! Respects HCOM_DIR env var for worktrees/dev, falls back to ~/.hcom.
+//! Single source of truth for all comms directory and file paths.
+//! Respects COMMS_DIR env var for worktrees/dev, falls back to ~/.comms.
 //! Also provides atomic file operations and flag counters.
 
 use crate::config::Config;
@@ -16,13 +16,13 @@ pub const LAUNCHES_DIR: &str = "launches";
 pub const ARCHIVE_DIR: &str = "archive";
 pub const SCRIPTS_DIR: &str = "scripts";
 
-/// Per-project data dir, relative to a project root: `<root>/.comms/hcom`.
+/// Per-project data dir, relative to a project root: `<root>/.comms/data`.
 /// Created by `comms init`. (Nested one level so the dir's parent is
 /// `.comms/`, not the project root that legacy tool-config cleanup scans.)
-pub const PROJECT_DATA_DIR: &[&str] = &[".comms", "hcom"];
+pub const PROJECT_DATA_DIR: &[&str] = &[".comms", "data"];
 
-/// Nearest `<ancestor>/.comms/hcom` directory of `start`, if any.
-pub fn find_project_hcom_dir(start: &Path) -> Option<PathBuf> {
+/// Nearest `<ancestor>/.comms/data` directory of `start`, if any.
+pub fn find_project_comms_dir(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
         .map(|dir| {
@@ -33,19 +33,19 @@ pub fn find_project_hcom_dir(start: &Path) -> Option<PathBuf> {
         .find(|candidate| candidate.is_dir())
 }
 
-/// Resolve HCOM_DIR from an environment snapshot.
+/// Resolve COMMS_DIR from an environment snapshot.
 ///
-/// Returns the normalized path plus whether HCOM_DIR was explicitly set.
+/// Returns the normalized path plus whether COMMS_DIR was explicitly set.
 /// Normalization behavior:
 /// - `~` expands against HOME/USERPROFILE when available
 /// - relative paths are resolved against the provided cwd
-/// - unset: the nearest project data dir (`.comms/hcom`, see `comms init`)
-/// - otherwise falls back to `HOME/.hcom` or `.hcom`
-pub fn resolve_hcom_dir_from_env(env: &HashMap<String, String>, cwd: &Path) -> (PathBuf, bool) {
+/// - unset: the nearest project data dir (`.comms/data`, see `comms init`)
+/// - otherwise falls back to `HOME/.comms` or `.comms`
+pub fn resolve_comms_dir_from_env(env: &HashMap<String, String>, cwd: &Path) -> (PathBuf, bool) {
     let home = env.get("HOME").or_else(|| env.get("USERPROFILE"));
-    let hcom_dir = env.get("HCOM_DIR").filter(|value| !value.is_empty());
+    let comms_dir = env.get("COMMS_DIR").filter(|value| !value.is_empty());
 
-    let resolved = if let Some(dir) = hcom_dir {
+    let resolved = if let Some(dir) = comms_dir {
         let expanded = if dir.starts_with('~') {
             if let Some(home_dir) = home {
                 dir.replacen('~', home_dir, 1)
@@ -62,14 +62,14 @@ pub fn resolve_hcom_dir_from_env(env: &HashMap<String, String>, cwd: &Path) -> (
         } else {
             path
         }
-    } else if let Some(project_dir) = find_project_hcom_dir(cwd) {
+    } else if let Some(project_dir) = find_project_comms_dir(cwd) {
         project_dir
     } else {
-        home.map(|home_dir| PathBuf::from(home_dir).join(".hcom"))
-            .unwrap_or_else(|| PathBuf::from(".hcom"))
+        home.map(|home_dir| PathBuf::from(home_dir).join(".comms"))
+            .unwrap_or_else(|| PathBuf::from(".comms"))
     };
 
-    (resolved, hcom_dir.is_some())
+    (resolved, comms_dir.is_some())
 }
 
 /// Canonicalize a path through its deepest existing ancestor.
@@ -115,7 +115,7 @@ pub(crate) fn is_test_temp_path(path: &Path) -> bool {
 
 /// Registry of test roots a fixture has explicitly claimed as disposable.
 ///
-/// Temp-directory *geography* is not ownership: a real hcom DB can legitimately
+/// Temp-directory *geography* is not ownership: a real comms DB can legitimately
 /// live under `$TMPDIR` (and `TMPDIR=/` would trust almost everything). So the
 /// Config redirect (see `config`) trusts only roots a test fixture registered
 /// here, never "it's under /tmp". `open_raw`'s tripwire additionally accepts the
@@ -156,22 +156,22 @@ pub(crate) mod test_roots {
 }
 
 /// Directory components that some AI tools (codex, claude, gemini) treat as
-/// protected metadata under any writable root. Placing HCOM_DIR beneath one of
+/// protected metadata under any writable root. Placing COMMS_DIR beneath one of
 /// these means the parent tool's sandbox/permission layer will block writes to
-/// the hcom DB, with no escalation path for codex apply_patch.
+/// the comms DB, with no escalation path for codex apply_patch.
 ///
 /// - `.git`: codex (apply_patch hard-deny via FileSystemSandboxPolicy), claude
 ///   (DANGEROUS_DIRECTORIES auto-edit gate), gemini (GOVERNANCE_FILES).
 /// - `.codex`, `.agents`: codex protected metadata.
 /// - `.claude`: claude DANGEROUS_DIRECTORIES.
-const PROTECTED_HCOM_DIR_COMPONENTS: &[&str] = &[".git", ".codex", ".claude", ".agents", ".omp"];
+const PROTECTED_COMMS_DIR_COMPONENTS: &[&str] = &[".git", ".codex", ".claude", ".agents", ".omp"];
 
 /// If `path` sits at or beneath a protected metadata component, return that
 /// component name. Component-wise match — `.gitfoo` and `dot.git` do not trigger.
-pub fn protected_hcom_dir_component(path: &Path) -> Option<&'static str> {
+pub fn protected_comms_dir_component(path: &Path) -> Option<&'static str> {
     for component in path.components() {
         if let std::path::Component::Normal(name) = component {
-            for protected in PROTECTED_HCOM_DIR_COMPONENTS {
+            for protected in PROTECTED_COMMS_DIR_COMPONENTS {
                 if name == std::ffi::OsStr::new(*protected) {
                     return Some(*protected);
                 }
@@ -181,56 +181,56 @@ pub fn protected_hcom_dir_component(path: &Path) -> Option<&'static str> {
     None
 }
 
-/// Get the hcom base directory.
+/// Get the comms base directory.
 ///
-/// Uses centralized Config (HCOM_DIR env var or ~/.hcom fallback).
-pub fn hcom_dir() -> PathBuf {
-    Config::get().hcom_dir
+/// Uses centralized Config (COMMS_DIR env var or ~/.comms fallback).
+pub fn comms_dir() -> PathBuf {
+    Config::get().comms_dir
 }
 
-/// Build path under hcom directory, optionally ensuring parent exists.
-pub fn hcom_path(parts: &[&str]) -> PathBuf {
-    let mut path = hcom_dir();
+/// Build path under comms directory, optionally ensuring parent exists.
+pub fn comms_path(parts: &[&str]) -> PathBuf {
+    let mut path = comms_dir();
     for part in parts {
         path = path.join(part);
     }
     path
 }
 
-/// Get the database path (hcom_dir/hcom.db)
+/// Get the database path (comms_dir/comms.db)
 pub fn db_path() -> PathBuf {
-    hcom_dir().join("hcom.db")
+    comms_dir().join("comms.db")
 }
 
-/// Get the log file path (hcom_dir/.tmp/logs/hcom.log)
+/// Get the log file path (comms_dir/.tmp/logs/comms.log)
 pub fn log_path() -> PathBuf {
-    hcom_dir().join(".tmp").join("logs").join("hcom.log")
+    comms_dir().join(".tmp").join("logs").join("comms.log")
 }
 
-/// Get the pidtrack file path (hcom_dir/.tmp/launched_pids.json)
+/// Get the pidtrack file path (comms_dir/.tmp/launched_pids.json)
 pub fn pidtrack_path() -> PathBuf {
-    hcom_dir().join(".tmp").join("launched_pids.json")
+    comms_dir().join(".tmp").join("launched_pids.json")
 }
 
-/// Get the config TOML path (hcom_dir/config.toml)
+/// Get the config TOML path (comms_dir/config.toml)
 pub fn config_toml_path() -> PathBuf {
-    hcom_dir().join("config.toml")
+    comms_dir().join("config.toml")
 }
 
-/// Get the scripts directory (hcom_dir/scripts/)
+/// Get the scripts directory (comms_dir/scripts/)
 pub fn scripts_dir() -> PathBuf {
-    hcom_dir().join(SCRIPTS_DIR)
+    comms_dir().join(SCRIPTS_DIR)
 }
 
-/// Ensure all critical HCOM directories exist. Idempotent, safe to call repeatedly.
+/// Ensure all critical COMMS directories exist. Idempotent, safe to call repeatedly.
 /// Called at hook entry to support opt-in scenarios where hooks execute before CLI commands.
 /// Returns true on success, false on failure.
-pub fn ensure_hcom_directories() -> bool {
-    ensure_hcom_directories_at(&hcom_dir())
+pub fn ensure_comms_directories() -> bool {
+    ensure_comms_directories_at(&comms_dir())
 }
 
 /// Ensure directories under a given base (testable without global config).
-pub fn ensure_hcom_directories_at(base: &Path) -> bool {
+pub fn ensure_comms_directories_at(base: &Path) -> bool {
     if ensure_private_directory(base).is_err() {
         return false;
     }
@@ -242,7 +242,7 @@ pub fn ensure_hcom_directories_at(base: &Path) -> bool {
     true
 }
 
-/// Create an hcom-owned directory and keep it private on POSIX (`0o700`).
+/// Create an comms-owned directory and keep it private on POSIX (`0o700`).
 pub(crate) fn ensure_private_directory(path: &Path) -> std::io::Result<()> {
     fs::create_dir_all(path)?;
     crate::sys::fs::set_private_dir(path)
@@ -257,11 +257,11 @@ pub(crate) fn sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
     os.into()
 }
 
-/// Keep an hcom SQLite database and any WAL/SHM sidecars owner-private on POSIX
+/// Keep an comms SQLite database and any WAL/SHM sidecars owner-private on POSIX
 /// (`0o600`). No-op on `:memory:` and on Windows.
 ///
 /// This secures the *files* only; the containing directory's `0o700` mode is
-/// owned by the caller that creates the hcom directory (`ensure_private_db` is
+/// owned by the caller that creates the comms directory (`ensure_private_db` is
 /// also handed arbitrary temp paths under a shared, sometimes un-chmoddable
 /// parent, so it must not touch the parent's mode).
 ///
@@ -348,7 +348,7 @@ pub fn atomic_write(filepath: &Path, content: &str) -> bool {
 
 /// Increment a counter in .tmp/flags/{name} and return new value.
 pub fn increment_flag_counter(name: &str) -> i32 {
-    increment_flag_counter_at(&hcom_dir(), name)
+    increment_flag_counter_at(&comms_dir(), name)
 }
 
 /// Increment flag counter under a given base (testable).
@@ -382,20 +382,20 @@ mod tests {
         let env = HashMap::from([("HOME".to_string(), "/home/someone".to_string())]);
 
         // No project dir yet: default home dir.
-        let (dir, explicit) = resolve_hcom_dir_from_env(&env, &nested);
-        assert_eq!(dir, PathBuf::from("/home/someone/.hcom"));
+        let (dir, explicit) = resolve_comms_dir_from_env(&env, &nested);
+        assert_eq!(dir, PathBuf::from("/home/someone/.comms"));
         assert!(!explicit);
 
-        let data = root.join(".comms/hcom");
+        let data = root.join(".comms/data");
         fs::create_dir_all(&data).unwrap();
-        assert_eq!(find_project_hcom_dir(&nested), Some(data.clone()));
-        assert_eq!(resolve_hcom_dir_from_env(&env, &nested).0, data);
+        assert_eq!(find_project_comms_dir(&nested), Some(data.clone()));
+        assert_eq!(resolve_comms_dir_from_env(&env, &nested).0, data);
 
-        // Explicit HCOM_DIR still wins.
+        // Explicit COMMS_DIR still wins.
         let mut env = env;
-        env.insert("HCOM_DIR".into(), "/elsewhere".into());
+        env.insert("COMMS_DIR".into(), "/elsewhere".into());
         assert_eq!(
-            resolve_hcom_dir_from_env(&env, &nested).0,
+            resolve_comms_dir_from_env(&env, &nested).0,
             PathBuf::from("/elsewhere")
         );
     }
@@ -404,14 +404,14 @@ mod tests {
     fn test_is_test_temp_path_accepts_temp_child() {
         let tmp = TempDir::new().unwrap();
         assert!(is_test_temp_path(
-            &tmp.path().join("nested").join("hcom.db")
+            &tmp.path().join("nested").join("comms.db")
         ));
     }
 
     #[test]
     fn test_is_test_temp_path_rejects_non_temp() {
         assert!(!is_test_temp_path(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hcom.db")
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("comms.db")
         ));
     }
 
@@ -424,15 +424,15 @@ mod tests {
             .join("..")
             .join("..")
             .join("etc")
-            .join(".hcom")
-            .join("hcom.db");
+            .join(".comms")
+            .join("comms.db");
         assert!(!is_test_temp_path(&escape));
     }
 
     #[test]
-    fn test_ensure_hcom_directories_at() {
+    fn test_ensure_comms_directories_at() {
         let tmp = TempDir::new().unwrap();
-        assert!(ensure_hcom_directories_at(tmp.path()));
+        assert!(ensure_comms_directories_at(tmp.path()));
 
         // Verify all directories were created
         assert!(tmp.path().join(LOGS_DIR).is_dir());
@@ -442,18 +442,18 @@ mod tests {
         assert!(tmp.path().join(ARCHIVE_DIR).is_dir());
 
         // Idempotent — second call succeeds too
-        assert!(ensure_hcom_directories_at(tmp.path()));
+        assert!(ensure_comms_directories_at(tmp.path()));
     }
 
     #[cfg(unix)]
     #[test]
-    fn ensure_hcom_directories_creates_private_base_directory() {
+    fn ensure_comms_directories_creates_private_base_directory() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = TempDir::new().unwrap();
-        let base = tmp.path().join("state").join(".hcom");
+        let base = tmp.path().join("state").join(".comms");
 
-        assert!(ensure_hcom_directories_at(&base));
+        assert!(ensure_comms_directories_at(&base));
 
         let mode = fs::metadata(&base).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
@@ -461,15 +461,15 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn ensure_hcom_directories_restricts_existing_base_directory() {
+    fn ensure_comms_directories_restricts_existing_base_directory() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = TempDir::new().unwrap();
-        let base = tmp.path().join(".hcom");
+        let base = tmp.path().join(".comms");
         fs::create_dir(&base).unwrap();
         fs::set_permissions(&base, fs::Permissions::from_mode(0o755)).unwrap();
 
-        assert!(ensure_hcom_directories_at(&base));
+        assert!(ensure_comms_directories_at(&base));
 
         let mode = fs::metadata(&base).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
@@ -527,62 +527,62 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_hcom_dir_default() {
+    fn test_resolve_comms_dir_default() {
         let env = HashMap::from([("HOME".to_string(), "/home/test".to_string())]);
-        let (path, overridden) = resolve_hcom_dir_from_env(&env, Path::new("/worktree"));
-        assert_eq!(path, PathBuf::from("/home/test/.hcom"));
+        let (path, overridden) = resolve_comms_dir_from_env(&env, Path::new("/worktree"));
+        assert_eq!(path, PathBuf::from("/home/test/.comms"));
         assert!(!overridden);
     }
 
     #[test]
-    fn test_resolve_hcom_dir_expands_tilde() {
+    fn test_resolve_comms_dir_expands_tilde() {
         let env = HashMap::from([
             ("HOME".to_string(), "/home/test".to_string()),
-            ("HCOM_DIR".to_string(), "~/custom/.hcom".to_string()),
+            ("COMMS_DIR".to_string(), "~/custom/.comms".to_string()),
         ]);
-        let (path, overridden) = resolve_hcom_dir_from_env(&env, Path::new("/worktree"));
-        assert_eq!(path, PathBuf::from("/home/test/custom/.hcom"));
+        let (path, overridden) = resolve_comms_dir_from_env(&env, Path::new("/worktree"));
+        assert_eq!(path, PathBuf::from("/home/test/custom/.comms"));
         assert!(overridden);
     }
 
     #[test]
-    fn test_protected_hcom_dir_component() {
+    fn test_protected_comms_dir_component() {
         assert_eq!(
-            protected_hcom_dir_component(Path::new("/home/u/proj/.git/hcom")),
+            protected_comms_dir_component(Path::new("/home/u/proj/.git/comms")),
             Some(".git")
         );
         assert_eq!(
-            protected_hcom_dir_component(Path::new("/home/u/.codex/hcom")),
+            protected_comms_dir_component(Path::new("/home/u/.codex/comms")),
             Some(".codex")
         );
         assert_eq!(
-            protected_hcom_dir_component(Path::new("/home/u/.claude/.hcom")),
+            protected_comms_dir_component(Path::new("/home/u/.claude/.comms")),
             Some(".claude")
         );
         assert_eq!(
-            protected_hcom_dir_component(Path::new("/home/u/.agents/.hcom")),
+            protected_comms_dir_component(Path::new("/home/u/.agents/.comms")),
             Some(".agents")
         );
         assert_eq!(
-            protected_hcom_dir_component(Path::new("/home/u/.hcom")),
+            protected_comms_dir_component(Path::new("/home/u/.comms")),
             None
         );
         // Component-wise match: '.gitfoo' must not trigger.
         assert_eq!(
-            protected_hcom_dir_component(Path::new("/home/u/.gitfoo/.hcom")),
+            protected_comms_dir_component(Path::new("/home/u/.gitfoo/.comms")),
             None
         );
         assert_eq!(
-            protected_hcom_dir_component(Path::new("/home/u/proj/.hcom/sub")),
+            protected_comms_dir_component(Path::new("/home/u/proj/.comms/sub")),
             None
         );
     }
 
     #[test]
-    fn test_resolve_hcom_dir_makes_relative_absolute() {
-        let env = HashMap::from([("HCOM_DIR".to_string(), "relative/.hcom".to_string())]);
-        let (path, overridden) = resolve_hcom_dir_from_env(&env, Path::new("/worktree"));
-        assert_eq!(path, PathBuf::from("/worktree").join("relative/.hcom"));
+    fn test_resolve_comms_dir_makes_relative_absolute() {
+        let env = HashMap::from([("COMMS_DIR".to_string(), "relative/.comms".to_string())]);
+        let (path, overridden) = resolve_comms_dir_from_env(&env, Path::new("/worktree"));
+        assert_eq!(path, PathBuf::from("/worktree").join("relative/.comms"));
         assert!(overridden);
     }
 }

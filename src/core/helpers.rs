@@ -105,10 +105,10 @@ mod tests {
     fn test_bundle_instance_name_system() {
         let id = SenderIdentity {
             kind: SenderKind::System,
-            name: "hcom".into(),
+            name: "comms".into(),
             instance_data: None,
             session_id: None,
         };
-        assert_eq!(get_bundle_instance_name(&id), "sys_hcom");
+        assert_eq!(get_bundle_instance_name(&id), "sys_comms");
     }
 }

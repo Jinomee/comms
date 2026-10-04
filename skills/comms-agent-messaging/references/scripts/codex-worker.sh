@@ -9,7 +9,7 @@ track_launch() {
 }
 cleanup() {
   for name in "${LAUNCHED_NAMES[@]}"; do
-    hcom kill "$name" --go 2>/dev/null || true
+    comms kill "$name" --go 2>/dev/null || true
   done
 }
 
@@ -25,22 +25,22 @@ thread="codex-$(date +%s)"
 
 trap cleanup ERR INT TERM
 
-launch_out=$(hcom 1 codex --tag coder --go --headless \
-  --hcom-prompt "Do this: ${task}. When done, send output: hcom send \"@reviewer-\" --thread ${thread} --intent inform -- \"CODE DONE: <output>\". Then stop: hcom stop" 2>&1)
+launch_out=$(comms 1 codex --tag coder --go --headless \
+  --comms-prompt "Do this: ${task}. When done, send output: comms send \"@reviewer-\" --thread ${thread} --intent inform -- \"CODE DONE: <output>\". Then stop: comms stop" 2>&1)
 track_launch "$launch_out"
 coder=$(echo "$launch_out" | grep '^Names: ' | sed 's/^Names: //' | tr -d ' ')
 echo "Coder (Codex): $coder"
 
-launch_out=$(hcom 1 claude --tag reviewer --go --headless \
-  --hcom-prompt "Wait for @coder- CODE DONE message. Read their transcript: hcom transcript @${coder} --last 5 --full. Send: hcom send \"@bigboss\" --thread ${thread} --intent inform -- \"REVIEWED: <pass/fail>\". Then stop: hcom stop" 2>&1)
+launch_out=$(comms 1 claude --tag reviewer --go --headless \
+  --comms-prompt "Wait for @coder- CODE DONE message. Read their transcript: comms transcript @${coder} --last 5 --full. Send: comms send \"@bigboss\" --thread ${thread} --intent inform -- \"REVIEWED: <pass/fail>\". Then stop: comms stop" 2>&1)
 track_launch "$launch_out"
 reviewer=$(echo "$launch_out" | grep '^Names: ' | sed 's/^Names: //' | tr -d ' ')
 echo "Reviewer (Claude): $reviewer"
 echo "Thread: $thread"
 echo "Waiting..."
 
-hcom events --wait 180 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%REVIEWED%'" $name_arg >/dev/null 2>&1 && echo "PASS" || echo "FAIL"
+comms events --wait 180 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%REVIEWED%'" $name_arg >/dev/null 2>&1 && echo "PASS" || echo "FAIL"
 
 trap - ERR
-for name in "${LAUNCHED_NAMES[@]}"; do hcom kill "$name" --go 2>/dev/null || true; done
-hcom events --sql "msg_thread='${thread}'" --last 10 2>&1
+for name in "${LAUNCHED_NAMES[@]}"; do comms kill "$name" --go 2>/dev/null || true; done
+comms events --sql "msg_thread='${thread}'" --last 10 2>&1

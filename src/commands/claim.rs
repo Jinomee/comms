@@ -1,13 +1,13 @@
-//! Claim commands: `hcom claim`, `hcom release`, `hcom claims`.
+//! Claim commands: `comms claim`, `comms release`, `comms claims`.
 //!
 //! See `crate::claims` for semantics. Patterns are resolved against the
-//! current directory; the holder is the caller's hcom identity, or the human
+//! current directory; the holder is the caller's comms identity, or the human
 //! (`bigboss`) when run from a plain terminal.
 
 use std::path::{Path, PathBuf};
 
 use crate::claims::{self, Claim, ClaimOutcome};
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::shared::identity::{CommandContext, SenderKind};
 
 #[derive(clap::Parser, Debug)]
@@ -75,9 +75,9 @@ fn holder(ctx: Option<&CommandContext>) -> Result<String, String> {
         return Ok(id.name.clone());
     }
     if crate::shared::platform::is_inside_ai_tool() {
-        let hcom = crate::runtime_env::build_hcom_command();
+        let comms = crate::runtime_env::build_comms_command();
         return Err(format!(
-            "hcom identity not found; run '{hcom} start' first (or pass --name <you>)"
+            "comms identity not found; run '{comms} start' first (or pass --name <you>)"
         ));
     }
     Ok(crate::shared::constants::SENDER.to_string())
@@ -112,7 +112,7 @@ fn describe(c: &Claim, base: &Path, now: i64) -> String {
     )
 }
 
-pub fn cmd_claim(db: &HcomDb, args: &ClaimArgs, ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_claim(db: &CommsDb, args: &ClaimArgs, ctx: Option<&CommandContext>) -> i32 {
     let holder = match holder(ctx) {
         Ok(h) => h,
         Err(e) => {
@@ -157,14 +157,14 @@ pub fn cmd_claim(db: &HcomDb, args: &ClaimArgs, ctx: Option<&CommandContext>) ->
             .collect();
         println!("{}", serde_json::Value::Array(items));
     } else {
-        let hcom = crate::runtime_env::build_hcom_command();
+        let comms = crate::runtime_env::build_comms_command();
         for o in &outcomes {
             match o {
                 ClaimOutcome::Claimed(c) => println!("Claimed {}", describe(c, &shown_base, now)),
                 ClaimOutcome::Renewed(c) => println!("Renewed {}", describe(c, &shown_base, now)),
                 ClaimOutcome::Conflict { pattern, existing } => {
                     println!(
-                        "Not claimed: {} overlaps {}. Ask them: {hcom} send @{} -- ...",
+                        "Not claimed: {} overlaps {}. Ask them: {comms} send @{} -- ...",
                         claims::display_pattern(pattern, &shown_base),
                         describe(existing, &shown_base, now),
                         existing.holder
@@ -176,7 +176,7 @@ pub fn cmd_claim(db: &HcomDb, args: &ClaimArgs, ctx: Option<&CommandContext>) ->
     if conflicted { 1 } else { 0 }
 }
 
-pub fn cmd_release(db: &HcomDb, args: &ReleaseArgs, ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_release(db: &CommsDb, args: &ReleaseArgs, ctx: Option<&CommandContext>) -> i32 {
     if args.patterns.is_empty() && !args.all {
         eprintln!("Error: name the patterns to release, or pass --all");
         return 1;
@@ -221,7 +221,7 @@ pub fn cmd_release(db: &HcomDb, args: &ReleaseArgs, ctx: Option<&CommandContext>
     0
 }
 
-pub fn cmd_claims(db: &HcomDb, args: &ClaimsArgs, ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_claims(db: &CommsDb, args: &ClaimsArgs, ctx: Option<&CommandContext>) -> i32 {
     let base = cwd();
     let shown_base = claims::display_base(&base);
     let now = crate::shared::time::now_epoch_i64();

@@ -1,9 +1,9 @@
-//! Budget command: `hcom budget [reset | <limit>]`
+//! Budget command: `comms budget [reset | <limit>]`
 //!
 //! Shows the agent→agent turn budget (see `crate::turn_budget`). Changing it
 //! is for the human only: agents can't lift their own limit.
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::shared::identity::CommandContext;
 use crate::turn_budget;
 
@@ -19,12 +19,12 @@ pub struct BudgetArgs {
     pub json: bool,
 }
 
-pub fn cmd_budget(db: &HcomDb, args: &BudgetArgs, _ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_budget(db: &CommsDb, args: &BudgetArgs, _ctx: Option<&CommandContext>) -> i32 {
     if let Some(action) = args.action.as_deref() {
         if crate::shared::platform::is_inside_ai_tool() {
             eprintln!(
                 "Error: only the human can change the turn budget. Ask them, e.g. `{} send @{} -- ...`",
-                crate::runtime_env::build_hcom_command(),
+                crate::runtime_env::build_comms_command(),
                 crate::shared::constants::SENDER
             );
             return 1;

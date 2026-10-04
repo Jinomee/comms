@@ -2,7 +2,7 @@
 //!
 //! Every real CLI (Codex, Claude, ...) is driven through ONE lifecycle here, so
 //! the test asserts a single tool-independent contract: launch → bind → file
-//! tool → shell tool → `hcom send` → transcript → idle inbound delivery → live
+//! tool → shell tool → `comms send` → transcript → idle inbound delivery → live
 //! fork → kill parent → resume → cleanup + request audit. Tools that meet the
 //! contract by different mechanisms (Codex's native fork vs Claude's
 //! `CLAUDE_ENV_FILE` session-UUID recovery) are NOT special-cased: the shared
@@ -24,7 +24,7 @@ use serde_json::Value;
 
 use super::mock_http::{MockHttp, RecordedRequest, Reply};
 use super::pins::{INSTALL_HINT, pinned_version};
-use super::{Hcom, parse_launch_names, unique_suffix};
+use super::{Comms, parse_launch_names, unique_suffix};
 
 /// Final assistant-text proofs every tool emits verbatim, so the runner can
 /// assert them without knowing the wire format. The case builds each full line
@@ -36,7 +36,7 @@ pub const RESUME_PROOF: &str = "RESUME_PROOF";
 
 /// Pin/identity metadata for the external oracle binary.
 pub struct ToolMeta {
-    /// hcom launch keyword and `tool` column value (`codex`, `claude`).
+    /// comms launch keyword and `tool` column value (`codex`, `claude`).
     pub tool: &'static str,
     /// Executable to version-check (`codex`, `claude`).
     pub binary: &'static str,
@@ -63,7 +63,7 @@ pub struct ScenarioIds {
     pub shell_path: String,
     /// Workspace-relative form of `shell_path` for shell commands.
     pub shell_rel: String,
-    /// Shell command that sends the one outgoing hcom message.
+    /// Shell command that sends the one outgoing comms message.
     pub send_cmd: String,
 }
 
@@ -71,7 +71,7 @@ pub struct ScenarioIds {
 pub trait ToolCase: Clone + Send + Sync + 'static {
     fn meta(&self) -> &ToolMeta;
 
-    /// hcom status context for this tool's file edit (`tool:Write`,
+    /// comms status context for this tool's file edit (`tool:Write`,
     /// `tool:apply_patch`).
     fn file_context(&self) -> &'static str;
 
@@ -85,12 +85,12 @@ pub trait ToolCase: Clone + Send + Sync + 'static {
 
     /// Write config / set env so the launched tool routes to `base_url` and
     /// starts headless against the localhost mock.
-    fn prepare(&self, h: &Hcom, base_url: &str);
+    fn prepare(&self, h: &Comms, base_url: &str);
 
-    /// Tool arguments appended after `hcom <tool> --headless --dir <ws> --`.
-    /// Empty for Codex (hcom supplies its flags); Claude needs model/permission/
+    /// Tool arguments appended after `comms <tool> --headless --dir <ws> --`.
+    /// Empty for Codex (comms supplies its flags); Claude needs model/permission/
     /// tool-restriction flags.
-    fn launch_args(&self, h: &Hcom) -> Vec<String>;
+    fn launch_args(&self, h: &Comms) -> Vec<String>;
 
     /// Whether a request body is a tool-result follow-up rather than a fresh
     /// user turn — used to count turns and detect prompt acceptance without
@@ -112,12 +112,12 @@ pub trait ToolCase: Clone + Send + Sync + 'static {
     /// unexpected request so a mis-scripted turn fails loudly.
     fn respond(&self, req: &RecordedRequest, ids: &ScenarioIds) -> Reply;
 
-    /// Drive any one-time startup gate hcom surfaces in the PTY as
+    /// Drive any one-time startup gate comms surfaces in the PTY as
     /// `launch_blocked` before the tool is ready — e.g. Claude's onboarding +
     /// workspace-trust prompts, which gate hook registration. Default no-op
     /// (Codex starts straight into its TUI). This deliberately exercises the
     /// real surfaced-prompt path rather than pre-seeding trust state.
-    fn drive_startup(&self, _h: &Hcom, _name: &str) {}
+    fn drive_startup(&self, _h: &Comms, _name: &str) {}
 }
 
 fn has_exact_version(version_output: &str, expected: &str) -> bool {
@@ -127,7 +127,7 @@ fn has_exact_version(version_output: &str, expected: &str) -> bool {
 }
 
 /// Panic with install instructions unless exactly the pinned oracle is present.
-pub fn require_pinned<C: ToolCase>(h: &Hcom, case: &C) {
+pub fn require_pinned<C: ToolCase>(h: &Comms, case: &C) {
     let meta = case.meta();
     let pinned = pinned_version(meta.package);
     // Name the exact file the version came from. A mock-tools prefix reused
@@ -171,7 +171,7 @@ pub fn require_pinned<C: ToolCase>(h: &Hcom, case: &C) {
 /// mock observes the prompt, never inject it again: the accepted turn may still
 /// be running, and retrying could duplicate side effects.
 pub fn inject_prompt_until(
-    h: &Hcom,
+    h: &Comms,
     name: &str,
     prompt: &str,
     description: &str,
@@ -235,7 +235,7 @@ pub fn inject_prompt_until(
     );
 }
 
-fn instance_status_context(h: &Hcom, name: &str) -> Option<String> {
+fn instance_status_context(h: &Comms, name: &str) -> Option<String> {
     h.instance_json(name).ok().flatten().and_then(|instance| {
         instance
             .get("status_context")
@@ -254,22 +254,22 @@ fn instance_status_context(h: &Hcom, name: &str) -> Option<String> {
 /// hang in the *tool* — the launch chain was never actually observed.
 ///
 /// The registered inject endpoint is the first thing that only exists once
-/// `hcom pty` is really running: the delivery thread registers it at init,
-/// independent of whether the tool has painted anything yet. `hcom term` exits
+/// `comms pty` is really running: the delivery thread registers it at init,
+/// independent of whether the tool has painted anything yet. `comms term` exits
 /// nonzero until then.
 ///
-/// The wait polls `hcom term` and NOT `hcom list`: computing an instance's
+/// The wait polls `comms term` and NOT `comms list`: computing an instance's
 /// status finalizes a still-unbound launch placeholder as `launch_failed` once
 /// it is older than `instance_lifecycle::LAUNCH_PLACEHOLDER_TIMEOUT` (30s), so
 /// a list-based poll would itself kill any launch slower than that instead of
-/// observing it. `hcom term` only looks up the inject endpoint and never
+/// observing it. `comms term` only looks up the inject endpoint and never
 /// computes status. `process_bound` is checked once, up front, where it is
 /// meaningful — the launcher has already returned by then.
 ///
 /// 90s (not 40s): on Windows CI the wrapper shell is two nested PowerShell
-/// starts before `hcom pty` even begins, and npm-shimmed tools cold-start
+/// starts before `comms pty` even begins, and npm-shimmed tools cold-start
 /// slower than on Unix runners.
-fn wait_pty_proxy_up<C: ToolCase>(h: &Hcom, case: &C, name: &str, what: &str) -> Value {
+fn wait_pty_proxy_up<C: ToolCase>(h: &Comms, case: &C, name: &str, what: &str) -> Value {
     let _ = case;
     let launched = h
         .instance_json(name)
@@ -292,7 +292,7 @@ fn wait_pty_proxy_up<C: ToolCase>(h: &Hcom, case: &C, name: &str, what: &str) ->
         .expect("bound instance present")
 }
 
-fn wait_pty_ready(h: &Hcom, name: &str, what: &str) {
+fn wait_pty_ready(h: &Comms, name: &str, what: &str) {
     h.eventually(what, Duration::from_secs(90), || {
         let (code, stdout, _stderr) = h.run(["term", name, "--json"]);
         // `ready` matches the tool's ready pattern (Codex), but tools whose
@@ -314,12 +314,12 @@ fn wait_pty_ready(h: &Hcom, name: &str, what: &str) {
 /// needs a live parent and resume needs a prior kill, so the phases share live
 /// process state and cannot be split without re-launching the tool per phase.
 pub fn run_full_lifecycle<C: ToolCase>(case: C) {
-    let h = Hcom::new();
+    let h = Comms::new();
     require_pinned(&h, &case);
     let tool = case.meta().tool;
 
     let suffix = unique_suffix();
-    let recipient_process_id = format!("hcom-{tool}-recipient-{suffix}");
+    let recipient_process_id = format!("comms-{tool}-recipient-{suffix}");
     let recipient = h.start_listening_with_process_id(&recipient_process_id);
 
     let canonical_workspace =
@@ -335,10 +335,10 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
     let file_path = canonical_workspace.join("lifecycle-file.txt");
     let shell_path = canonical_workspace.join("lifecycle-shell.txt");
     let ids = ScenarioIds {
-        initial: format!("HCOM_{}_PHASE1_{suffix}", tool.to_uppercase()),
-        inbound: format!("HCOM_{}_INBOUND_{suffix}", tool.to_uppercase()),
-        fork: format!("HCOM_{}_FORK_{suffix}", tool.to_uppercase()),
-        resume: format!("HCOM_{}_RESUME_{suffix}", tool.to_uppercase()),
+        initial: format!("COMMS_{}_PHASE1_{suffix}", tool.to_uppercase()),
+        inbound: format!("COMMS_{}_INBOUND_{suffix}", tool.to_uppercase()),
+        fork: format!("COMMS_{}_FORK_{suffix}", tool.to_uppercase()),
+        resume: format!("COMMS_{}_RESUME_{suffix}", tool.to_uppercase()),
         recipient: recipient.clone(),
         file_path: file_path.to_str().expect("UTF-8 file path").to_string(),
         file_rel: "lifecycle-file.txt".to_string(),
@@ -348,13 +348,13 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
     };
     let ids = ScenarioIds {
         // PowerShell treats a bare @name as splatting syntax, so quote the
-        // hcom target on Windows. Unix shells accept the same target bare.
+        // comms target on Windows. Unix shells accept the same target bare.
         send_cmd: format!(
             "{} send {} --intent inform -- {token}",
             if cfg!(windows) && tool == "claude" {
-                h.bash_hcom_command()
+                h.bash_comms_command()
             } else {
-                h.shell_hcom_command()
+                h.shell_comms_command()
             },
             if cfg!(windows) {
                 format!("'@{recipient}'")
@@ -424,7 +424,7 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
     case.drive_startup(&h, &name);
     wait_pty_ready(&h, &name, "PTY inject endpoint");
 
-    // --- Phase 2: first turn (file tool -> shell tool -> hcom send -> proof) ---
+    // --- Phase 2: first turn (file tool -> shell tool -> comms send -> proof) ---
     {
         let mock = &mock;
         let case = &case;
@@ -506,7 +506,7 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
         .expect("mock did not receive the initial turn");
     assert!(
         initial_request.contains(&format!("--name {name}")),
-        "fresh request did not contain the hcom bootstrap identity"
+        "fresh request did not contain the comms bootstrap identity"
     );
     assert_eq!(
         h.instances_for_tool(tool).expect("list after bind").len(),
@@ -590,7 +590,7 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
         "collision query must expose both edits: {collision_stdout}"
     );
 
-    // --- Phase 3: outgoing hcom message ---------------------------------------
+    // --- Phase 3: outgoing comms message ---------------------------------------
     let listen_stdout = h.eventually(
         "message received by the live recipient",
         Duration::from_secs(40),
@@ -737,7 +737,7 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
                 .delivery_envelope_markers()
                 .iter()
                 .all(|marker| inbound_request.contains(marker)),
-        "request did not contain the native hcom delivery envelope"
+        "request did not contain the native comms delivery envelope"
     );
     let inbound_delivery_events =
         h.eventually("inbound delivery ack", Duration::from_secs(20), || {
@@ -781,7 +781,7 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
         &name,
         "--dir",
         h.workspace.to_str().expect("UTF-8 workspace path"),
-        "--hcom-prompt",
+        "--comms-prompt",
         &format!("Confirm the live fork {}", ids.fork),
     ]);
     assert_eq!(
@@ -799,7 +799,7 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
     let fork_name = fork_names[0].clone();
     assert_ne!(
         fork_name, name,
-        "fork must receive a distinct hcom identity"
+        "fork must receive a distinct comms identity"
     );
 
     // The fork relaunches the tool; clear any startup gate it surfaces (Claude's
@@ -940,7 +940,7 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
     // Identity reset, tool-agnostically: the child's name can only appear via the
     // fork's own identity bootstrap/reset (it is brand new, absent from inherited
     // history), while the parent's name appears from the inherited history. Codex
-    // delivers this as a "new hcom identity {child}" prompt; Claude as a fresh
+    // delivers this as a "new comms identity {child}" prompt; Claude as a fresh
     // SessionStart bootstrap naming the child after the parent's inherited one.
     assert!(
         fork_request.contains(&fork_name) && fork_request.contains(&name),
@@ -991,7 +991,7 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
     // --- Phase 8: resume parent under the same identity -----------------------
     let resume_prompt = format!("Confirm the resumed session {}", ids.resume);
     let (resume_code, resume_stdout, resume_stderr) =
-        h.run(["r", &name, "--hcom-prompt", &resume_prompt]);
+        h.run(["r", &name, "--comms-prompt", &resume_prompt]);
     assert_eq!(
         resume_code,
         0,
@@ -1042,7 +1042,7 @@ pub fn run_full_lifecycle<C: ToolCase>(case: C) {
     );
     assert!(
         resume_request.contains(&format!("--name {name}")),
-        "resume request did not retain the original hcom identity bootstrap"
+        "resume request did not retain the original comms identity bootstrap"
     );
     let rebound_parent = h
         .instance_json(&name)

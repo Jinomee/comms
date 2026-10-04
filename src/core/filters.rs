@@ -1,8 +1,8 @@
 //! Composable event filter system for queries, subscriptions, and listen.
 //!
-//! - `hcom events` (queries)
-//! - `hcom events sub` (subscriptions)
-//! - `hcom listen` (blocking waits)
+//! - `comms events` (queries)
+//! - `comms events sub` (subscriptions)
+//! - `comms listen` (blocking waits)
 //!
 //! Flag parsing extracts known filter flags from argv, SQL generation builds
 //! WHERE clauses from parsed filters.
@@ -181,7 +181,7 @@ pub fn parse_event_flags(argv: &[String]) -> Result<(FilterMap, Vec<String>), St
 /// Without this, `--agent team-luna` won't match instance "luna" with tag "team".
 ///
 ///
-pub fn resolve_filter_names(filters: &mut FilterMap, db: &crate::db::HcomDb) {
+pub fn resolve_filter_names(filters: &mut FilterMap, db: &crate::db::CommsDb) {
     for key in ["instance", "participant", "mention"] {
         let Some(names) = filters.get_mut(key) else {
             continue;
@@ -310,7 +310,7 @@ pub fn build_sql_from_flags(filters: &FilterMap) -> Result<String, String> {
 
     // A participant is either the message's routing instance (the sender) or
     // one of its delivery recipients. Unlike --agent, this reconstructs both
-    // sides of an hcom transport exchange.
+    // sides of an comms transport exchange.
     if let Some(values) = filters.get("participant") {
         let participant_clauses: Vec<String> = values
             .iter()
@@ -838,7 +838,7 @@ mod tests {
 
     #[test]
     fn test_collision_filter_matches_real_writes_and_rejects_empty_details() {
-        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        let db = crate::db::CommsDb::open_raw(std::path::Path::new(":memory:")).unwrap();
         db.init_db().unwrap();
 
         let insert = |instance: &str, timestamp: &str, context: &str, detail: Option<&str>| {
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn test_resolve_filter_names_with_tag() {
         // Create in-memory DB with an instance that has a tag
-        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        let db = crate::db::CommsDb::open_raw(std::path::Path::new(":memory:")).unwrap();
         db.init_db().unwrap();
 
         // Insert instance "luna" with tag "team"
@@ -949,7 +949,7 @@ mod tests {
 
     #[test]
     fn test_resolve_mention_filter_with_tag() {
-        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        let db = crate::db::CommsDb::open_raw(std::path::Path::new(":memory:")).unwrap();
         db.init_db().unwrap();
         db.conn()
             .execute(
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn test_resolve_filter_names_direct_match() {
-        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        let db = crate::db::CommsDb::open_raw(std::path::Path::new(":memory:")).unwrap();
         db.init_db().unwrap();
 
         db.conn()
@@ -985,7 +985,7 @@ mod tests {
 
     #[test]
     fn test_resolve_filter_names_unknown_keeps_original() {
-        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        let db = crate::db::CommsDb::open_raw(std::path::Path::new(":memory:")).unwrap();
         db.init_db().unwrap();
 
         let (mut filters, _) = parse_event_flags(&s(&["--agent", "nonexistent"])).unwrap();
@@ -996,7 +996,7 @@ mod tests {
 
     #[test]
     fn test_resolve_filter_names_no_instance_key() {
-        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        let db = crate::db::CommsDb::open_raw(std::path::Path::new(":memory:")).unwrap();
         db.init_db().unwrap();
 
         let (mut filters, _) = parse_event_flags(&s(&["--status", "listening"])).unwrap();

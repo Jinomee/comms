@@ -27,7 +27,7 @@ use anyhow::Result;
 use rusqlite::params;
 use serde_json::json;
 
-use super::HcomDb;
+use super::CommsDb;
 use crate::core::filters::{FILE_WRITE_CONTEXTS, build_sql_from_flags, collision_window_sql};
 use crate::messages::{InstanceInfo, MessageScope, ScopeResult, compute_scope, resolve_targets};
 use crate::shared::constants::extract_mentions;
@@ -60,7 +60,7 @@ pub(crate) enum SubCreateOutcome {
 
 /// Build and insert a filter-based subscription row into `kv`.
 pub(crate) fn create_filter_subscription(
-    db: &HcomDb,
+    db: &CommsDb,
     filters: &HashMap<String, Vec<String>>,
     sql_parts: &[String],
     caller: &str,
@@ -132,7 +132,7 @@ pub(crate) fn create_filter_subscription(
 
 /// Build and insert a raw-SQL subscription row into `kv`.
 pub(crate) fn build_and_insert_sql_subscription(
-    db: &HcomDb,
+    db: &CommsDb,
     sql_parts: &[String],
     caller: &str,
     once: bool,
@@ -181,7 +181,7 @@ pub(crate) fn build_and_insert_sql_subscription(
 
 pub(crate) use super::reqwatch_policy::AGY_REQWATCH_IDLE_GRACE_SEC;
 
-fn instance_tool(db: &HcomDb, name: &str) -> String {
+fn instance_tool(db: &CommsDb, name: &str) -> String {
     db.conn()
         .query_row(
             "SELECT COALESCE(tool, '') FROM instances WHERE name = ?",
@@ -191,7 +191,7 @@ fn instance_tool(db: &HcomDb, name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn reqwatch_reply_exists(db: &HcomDb, request_id: i64, target: &str, sub_caller: &str) -> bool {
+fn reqwatch_reply_exists(db: &CommsDb, request_id: i64, target: &str, sub_caller: &str) -> bool {
     if sub_caller.is_empty() {
         return false;
     }
@@ -210,7 +210,7 @@ fn reqwatch_reply_exists(db: &HcomDb, request_id: i64, target: &str, sub_caller:
         .unwrap_or(false)
 }
 
-fn kv_store_sub(db: &HcomDb, key: &str, sub: &serde_json::Value) {
+fn kv_store_sub(db: &CommsDb, key: &str, sub: &serde_json::Value) {
     match serde_json::to_string(sub) {
         Ok(json) => {
             if let Err(e) = db.kv_set(key, Some(&json)) {
@@ -222,7 +222,7 @@ fn kv_store_sub(db: &HcomDb, key: &str, sub: &serde_json::Value) {
 }
 
 /// Clear agy grace timers when the target is working again (deliver/tool/active).
-fn clear_agy_reqwatch_idle_grace(db: &HcomDb, target: &str) {
+fn clear_agy_reqwatch_idle_grace(db: &CommsDb, target: &str) {
     for (key, sub, filters) in load_reqwatch_subs(db) {
         if filters.get("target_tool").and_then(|v| v.as_str()) != Some("antigravity") {
             continue;
@@ -245,7 +245,7 @@ fn clear_agy_reqwatch_idle_grace(db: &HcomDb, target: &str) {
 /// Fire Antigravity request watches whose idle grace elapsed while no matching
 /// event arrived. The conditional delete is the claim: concurrent sweepers can
 /// observe the same row, but only one can remove it and emit the one-shot notice.
-fn sweep_expired_reqwatch_graces(db: &HcomDb, now: f64) {
+fn sweep_expired_reqwatch_graces(db: &CommsDb, now: f64) {
     for (key, sub, filters) in load_reqwatch_subs(db) {
         if filters.get("target_tool").and_then(|v| v.as_str()) != Some("antigravity")
             || !super::reqwatch_policy::idle_grace_expired(&sub, now)
@@ -321,7 +321,7 @@ fn sweep_expired_reqwatch_graces(db: &HcomDb, now: f64) {
 
 /// Create request-watch subscriptions for each recipient.
 pub(crate) fn create_request_watches(
-    db: &HcomDb,
+    db: &CommsDb,
     sender: &str,
     request_event_id: i64,
     recipients: &[String],
@@ -357,7 +357,7 @@ pub(crate) fn create_request_watches(
 }
 
 /// Remove all event subscriptions owned by an instance.
-pub(crate) fn cleanup_subscriptions(db: &HcomDb, name: &str) -> Result<u32> {
+pub(crate) fn cleanup_subscriptions(db: &CommsDb, name: &str) -> Result<u32> {
     let deleted = db.conn.execute(
         "DELETE FROM kv
          WHERE key LIKE 'events_sub:%'
@@ -369,7 +369,7 @@ pub(crate) fn cleanup_subscriptions(db: &HcomDb, name: &str) -> Result<u32> {
 }
 
 /// Remove delivery-only thread memberships for an instance name reuse.
-pub(crate) fn cleanup_thread_memberships_for_name_reuse(db: &HcomDb, name: &str) -> Result<u32> {
+pub(crate) fn cleanup_thread_memberships_for_name_reuse(db: &CommsDb, name: &str) -> Result<u32> {
     let deleted = db.conn.execute(
         "DELETE FROM kv
          WHERE key LIKE 'events_sub:%'
@@ -382,7 +382,7 @@ pub(crate) fn cleanup_thread_memberships_for_name_reuse(db: &HcomDb, name: &str)
 }
 
 /// Return active members of a thread in join order.
-pub(crate) fn get_thread_members(db: &HcomDb, thread: &str) -> Vec<String> {
+pub(crate) fn get_thread_members(db: &CommsDb, thread: &str) -> Vec<String> {
     let active_instances: HashSet<String> = db
         .conn()
         .prepare("SELECT name FROM instances")
@@ -435,7 +435,7 @@ pub(crate) fn get_thread_members(db: &HcomDb, thread: &str) -> Vec<String> {
 
 /// Upsert memberships for recipients of a thread message.
 pub(crate) fn add_thread_memberships(
-    db: &HcomDb,
+    db: &CommsDb,
     thread: &str,
     sender: Option<&str>,
     recipients: &[String],
@@ -472,7 +472,7 @@ pub(crate) fn add_thread_memberships(
 /// Check subscriptions and send matching notifications.
 /// Called inline from log_event(). Errors logged, never propagated.
 pub(crate) fn process_logged_event(
-    db: &HcomDb,
+    db: &CommsDb,
     event_id: i64,
     event_type: &str,
     instance: &str,
@@ -488,7 +488,7 @@ pub(crate) fn process_logged_event(
             .get("sender_kind")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if sender == "[hcom-events]" || sender_kind == "system" {
+        if sender == "[comms-events]" || sender_kind == "system" {
             return;
         }
     }
@@ -781,7 +781,7 @@ pub(crate) fn process_logged_event(
 
 /// Load all reqwatch subscriptions as (key, parsed_sub, filters) tuples.
 pub(crate) fn load_reqwatch_subs(
-    db: &HcomDb,
+    db: &CommsDb,
 ) -> Vec<(String, serde_json::Value, serde_json::Value)> {
     let rows: Vec<(String, String)> = match db
         .conn
@@ -808,7 +808,7 @@ pub(crate) fn load_reqwatch_subs(
 
 /// Cancel request-watch subs when watched target messages the requester.
 pub(crate) fn cancel_request_watches_by_flow(
-    db: &HcomDb,
+    db: &CommsDb,
     sender: &str,
     delivered_to: &[String],
     reply_to_id: Option<i64>,
@@ -839,7 +839,7 @@ pub(crate) fn cancel_request_watches_by_flow(
 }
 
 /// Cancel request-watch subs by explicit reply_to match.
-pub(crate) fn cancel_request_watches_by_reply_id(db: &HcomDb, sender: &str, reply_to_id: i64) {
+pub(crate) fn cancel_request_watches_by_reply_id(db: &CommsDb, sender: &str, reply_to_id: i64) {
     for (key, _sub, filters) in &load_reqwatch_subs(db) {
         let target = filters.get("target").and_then(|v| v.as_str()).unwrap_or("");
         let req_id = filters
@@ -862,7 +862,7 @@ pub(crate) fn cancel_request_watches_by_reply_id(db: &HcomDb, sender: &str, repl
 
 /// Send a system notification message.
 pub(crate) fn send_system_message(
-    db: &HcomDb,
+    db: &CommsDb,
     sender_name: &str,
     message: &str,
 ) -> Result<Vec<String>> {
@@ -871,7 +871,7 @@ pub(crate) fn send_system_message(
 
 /// Send a message from a specific sender kind.
 pub(crate) fn send_message_as(
-    db: &HcomDb,
+    db: &CommsDb,
     sender_name: &str,
     sender_kind: &str,
     message: &str,
@@ -936,7 +936,7 @@ pub(crate) fn send_message_as(
     Ok(delivered_to)
 }
 
-fn resolve_caller_kind(db: &HcomDb, caller: &str) -> &'static str {
+fn resolve_caller_kind(db: &CommsDb, caller: &str) -> &'static str {
     let exists: bool = db
         .conn()
         .query_row(
@@ -979,7 +979,7 @@ fn collision_self_relevance_sql(caller: &str) -> String {
 }
 
 fn format_sub_notification(
-    db: &HcomDb,
+    db: &CommsDb,
     sub_id: &str,
     event_id: i64,
     event_type: &str,
@@ -1101,7 +1101,7 @@ fn format_sub_notification(
 }
 
 fn find_collision_partner(
-    db: &HcomDb,
+    db: &CommsDb,
     event_id: i64,
     instance: &str,
     file_path: &str,
@@ -1125,7 +1125,7 @@ fn find_collision_partner(
         .ok()
 }
 
-fn send_sub_notification(db: &HcomDb, caller: &str, message: &str) -> bool {
+fn send_sub_notification(db: &CommsDb, caller: &str, message: &str) -> bool {
     let row: Option<(String, Option<String>)> = db
         .conn
         .query_row(
@@ -1145,10 +1145,10 @@ fn send_sub_notification(db: &HcomDb, caller: &str, message: &str) -> bool {
     };
 
     let text = format!("@{} {}", full_name, message);
-    let Ok(delivered_to) = send_system_message(db, "[hcom-events]", &text) else {
+    let Ok(delivered_to) = send_system_message(db, "[comms-events]", &text) else {
         return false;
     };
-    // send_system_message only logs the [hcom-events] row; unlike `hcom send`
+    // send_system_message only logs the [comms-events] row; unlike `comms send`
     // it does not ping notify endpoints, so the notification can sit unread
     // until an unrelated wake. Wake only the matching caller here: this path
     // runs inline from log_event, so avoid a broader wake_all fan-out.
@@ -1176,19 +1176,19 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
-    fn setup_full_test_db() -> (HcomDb, PathBuf) {
+    fn setup_full_test_db() -> (CommsDb, PathBuf) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(10_000);
 
         let temp_dir = std::env::temp_dir();
         let test_id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = temp_dir.join(format!(
-            "test_hcom_subscriptions_{}_{}.db",
+            "test_comms_subscriptions_{}_{}.db",
             std::process::id(),
             test_id
         ));
 
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         (db, db_path)
     }
@@ -1219,7 +1219,7 @@ mod tests {
         }
     }
 
-    fn count_reqwatch_without_reply_notifications(db: &HcomDb, requester: &str) -> i64 {
+    fn count_reqwatch_without_reply_notifications(db: &CommsDb, requester: &str) -> i64 {
         let pattern = format!("%@{requester} %");
         db.conn()
             .query_row(
@@ -1233,7 +1233,7 @@ mod tests {
     }
 
     fn setup_reqwatch_pair(
-        db: &HcomDb,
+        db: &CommsDb,
         requester: &str,
         responder: &str,
         responder_tool: &str,
@@ -1635,7 +1635,7 @@ mod tests {
         let notices = || -> i64 {
             db.conn
                 .query_row(
-                    "SELECT COUNT(*) FROM events_v WHERE type = 'message' AND msg_from = '[hcom-events]'",
+                    "SELECT COUNT(*) FROM events_v WHERE type = 'message' AND msg_from = '[comms-events]'",
                     [],
                     |r| r.get(0),
                 )
@@ -1700,8 +1700,9 @@ mod tests {
             .unwrap();
 
         // Log event from sys_ instance - should NOT trigger subscription
-        let data = serde_json::json!({"from": "[hcom-events]", "text": "test"});
-        db.log_event("message", "sys_[hcom-events]", &data).unwrap();
+        let data = serde_json::json!({"from": "[comms-events]", "text": "test"});
+        db.log_event("message", "sys_[comms-events]", &data)
+            .unwrap();
 
         // Sub should not be updated (last_id should still be 0)
         let sub_after = db.kv_get("events_sub:test").unwrap().unwrap();
@@ -1733,7 +1734,7 @@ mod tests {
 
         // Log system message - recursion guard should skip
         let data = serde_json::json!({
-            "from": "[hcom-events]",
+            "from": "[comms-events]",
             "sender_kind": "system",
             "text": "notification"
         });
@@ -2011,7 +2012,7 @@ mod tests {
     }
 
     #[test]
-    fn test_subscription_recursion_guard_hcom_events_sender() {
+    fn test_subscription_recursion_guard_comms_events_sender() {
         let (db, db_path) = setup_full_test_db();
 
         db.conn
@@ -2030,9 +2031,9 @@ mod tests {
         db.kv_set("events_sub:test", Some(&sub.to_string()))
             .unwrap();
 
-        // Log message from [hcom-events] (non-sys_ instance) — guard B should skip
+        // Log message from [comms-events] (non-sys_ instance) — guard B should skip
         let data = serde_json::json!({
-            "from": "[hcom-events]",
+            "from": "[comms-events]",
             "text": "notification from events"
         });
         db.log_event("message", "ext_notifier", &data).unwrap();
@@ -2042,7 +2043,7 @@ mod tests {
         let sub_val: serde_json::Value = serde_json::from_str(&sub_after).unwrap();
         assert_eq!(
             sub_val["last_id"], 0,
-            "[hcom-events] sender should be blocked by guard B"
+            "[comms-events] sender should be blocked by guard B"
         );
 
         cleanup_test_db(db_path);
@@ -2067,7 +2068,7 @@ mod tests {
 
         // No @mentions = broadcast
         let delivered = db
-            .send_system_message("[hcom-test]", "hello everyone")
+            .send_system_message("[comms-test]", "hello everyone")
             .unwrap();
         assert_eq!(delivered.len(), 2);
         assert!(delivered.contains(&"luna".to_string()));
@@ -2095,7 +2096,7 @@ mod tests {
 
         // With @mention = targeted
         let delivered = db
-            .send_system_message("[hcom-test]", "@luna your task is done")
+            .send_system_message("[comms-test]", "@luna your task is done")
             .unwrap();
         assert_eq!(delivered.len(), 1);
         assert!(delivered.contains(&"luna".to_string()));
@@ -2116,7 +2117,7 @@ mod tests {
 
         // Mention by full name (tag-name)
         let delivered = db
-            .send_system_message("[hcom-test]", "@api-luna your task is done")
+            .send_system_message("[comms-test]", "@api-luna your task is done")
             .unwrap();
         assert_eq!(delivered.len(), 1);
         assert!(delivered.contains(&"luna".to_string()));
@@ -2173,7 +2174,7 @@ mod tests {
             .unwrap();
 
         let delivered = db
-            .send_system_message("[hcom-test]", "@giru request timed out")
+            .send_system_message("[comms-test]", "@giru request timed out")
             .unwrap();
         assert_eq!(delivered, vec!["giru"]);
 
@@ -2611,7 +2612,7 @@ mod tests {
         let data = serde_json::json!({
             "status": "active",
             "context": "tool:shell",
-            "detail": "hcom listen 1 --name nova"
+            "detail": "comms listen 1 --name nova"
         });
         db.log_event("status", "nova", &data).unwrap();
 

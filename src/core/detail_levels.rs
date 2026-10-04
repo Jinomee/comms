@@ -31,7 +31,7 @@ impl DetailLevel {
             "detailed" => Ok(DetailLevel::Detailed),
             _ => Err(format!(
                 "Invalid detail level '{}'. Must be one of: detailed, full, normal \
-                 (maps to hcom transcript flags: detailed=--detailed | full=--full | normal=default)",
+                 (maps to comms transcript flags: detailed=--detailed | full=--full | normal=default)",
                 s
             )),
         }

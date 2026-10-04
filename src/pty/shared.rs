@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use crate::config::Config;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::delivery::{
     APPROVAL_SCRAPE_CLEAR_MS, DeliveryState, ScreenState, ToolConfig, latch_scraped_approval,
     run_delivery_loop,
@@ -52,7 +52,7 @@ pub(super) fn log_spawned(
         "pty",
         "startup.spawned",
         &format!(
-            "instance={} hcom_pid={} child_pid={} spawn_ms={} command={command}",
+            "instance={} comms_pid={} child_pid={} spawn_ms={} command={command}",
             instance.unwrap_or("-"),
             std::process::id(),
             child_pid.map_or_else(|| "-".to_string(), |p| p.to_string()),
@@ -61,7 +61,7 @@ pub(super) fn log_spawned(
     );
 }
 
-/// Startup timeline for a launched agent, logged to hcom.log so a launch that
+/// Startup timeline for a launched agent, logged to comms.log so a launch that
 /// never binds shows how far it got: spawn, the first output chunks (with a
 /// preview, so terminal setup can be told apart from the tool's own output),
 /// and, if the ready pattern is slow to appear, where output stood by then.
@@ -305,7 +305,7 @@ pub(super) fn note_user_keystroke(
 
 /// Publish PTY approval edges independently of the delivery queue.
 ///
-/// Approval is agent state: `hcom list` must report it even when no message
+/// Approval is agent state: `comms list` must report it even when no message
 /// is pending. Clearing is guarded by the PTY-owned context so lifecycle
 /// hooks that already moved the agent to active are never overwritten.
 pub(super) fn publish_approval_status(
@@ -313,7 +313,7 @@ pub(super) fn publish_approval_status(
     instance_name_cfg: Option<&str>,
     current_status: &Arc<RwLock<String>>,
 ) {
-    let Ok(db) = HcomDb::open() else {
+    let Ok(db) = CommsDb::open() else {
         log_warn(
             "native",
             "pty.approval_status_open_failed",
@@ -364,7 +364,7 @@ pub(super) fn publish_approval_status(
     };
     let Some((status, context)) = edge else {
         // No transition to publish. Still reflect a standing block in the
-        // PTY-owned shared status so `hcom list` stays consistent.
+        // PTY-owned shared status so `comms list` stays consistent.
         if already_blocked && let Ok(mut shared_status) = current_status.write() {
             *shared_status = ST_BLOCKED.to_string();
         }
@@ -473,7 +473,7 @@ pub(super) fn start_delivery_thread(
         crate::log::log_warn(
             "native",
             "delivery.skip.no_instance_name",
-            "No instance name - delivery disabled. Set config.instance_name or HCOM_INSTANCE_NAME env var.",
+            "No instance name - delivery disabled. Set config.instance_name or COMMS_INSTANCE_NAME env var.",
         );
         return Ok(DeliveryStart::Disabled);
     }
@@ -491,7 +491,7 @@ pub(super) fn start_delivery_thread(
         // Initialize delivery components with dependency injection
         let (mut db, notify) = match super::initialize_delivery_components(
             &instance_name,
-            HcomDb::open,
+            CommsDb::open,
             NotifyServer::new,
         ) {
             Ok((db, notify)) => {
@@ -618,7 +618,7 @@ pub(super) fn start_delivery_thread(
 /// running` body runs zero iterations (its `register_notify_port` never runs).
 /// This final start therefore exists so init-time registration (DB open, notify
 /// server, inject-port registration) and the loop's post-loop cleanup get a
-/// chance to run and settle the final DB status, not to hand an in-flight `hcom
+/// chance to run and settle the final DB status, not to hand an in-flight `comms
 /// deliver` a live consumer.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(super) fn should_start_delivery(
@@ -630,7 +630,7 @@ pub(super) fn should_start_delivery(
     ready || elapsed > timeout || shutting_down
 }
 
-/// Leading-edge throttle for the `hcom term` screen snapshot the reader renders.
+/// Leading-edge throttle for the `comms term` screen snapshot the reader renders.
 ///
 /// Rendering `get_screen_dump` costs ~150µs on a wide screen, so refreshing it on
 /// every ConPTY chunk would burn measurable CPU (and steal reader time from
@@ -659,7 +659,7 @@ pub(super) fn finalize_launch_failure_after_exit(
         return;
     };
 
-    let Ok(mut db) = HcomDb::open() else {
+    let Ok(mut db) = CommsDb::open() else {
         return;
     };
     finalize_launch_failure_with_db(
@@ -669,12 +669,12 @@ pub(super) fn finalize_launch_failure_after_exit(
         launch_phase_active,
         elapsed,
         exit_code,
-        std::env::var("HCOM_LAUNCHED").as_deref() == Ok("1"),
+        std::env::var("COMMS_LAUNCHED").as_deref() == Ok("1"),
     );
 }
 
 fn finalize_launch_failure_with_db(
-    db: &mut HcomDb,
+    db: &mut CommsDb,
     instance_name: &str,
     tail: Option<&str>,
     launch_phase_active: &Arc<AtomicBool>,
@@ -687,7 +687,7 @@ fn finalize_launch_failure_with_db(
     // In that case EXIT_WAS_KILLED stays false, and kill may already have
     // deleted the row. Use the launch's event cursor to recognize its stop
     // without confusing a previous incarnation's kill with a resume failure.
-    let launch_event_id = std::env::var("HCOM_LAUNCH_EVENT_ID")
+    let launch_event_id = std::env::var("COMMS_LAUNCH_EVENT_ID")
         .ok()
         .and_then(|value| value.parse::<i64>().ok());
     if instance
@@ -747,9 +747,9 @@ fn finalize_launch_failure_with_db(
     );
     launch_phase_active.store(false, Ordering::Release);
 
-    let process_id = std::env::var("HCOM_PROCESS_ID").unwrap_or_default();
+    let process_id = std::env::var("COMMS_PROCESS_ID").unwrap_or_default();
     // A bound row that never got ready is stopped here (snapshot kept, so
-    // `hcom r` still works): a child this quick exits before the delivery
+    // `comms r` still works): a child this quick exits before the delivery
     // thread starts, so its cleanup never runs, and Claude's SessionEnd defers
     // to this path.
     if !unbound
@@ -763,7 +763,7 @@ fn finalize_launch_failure_with_db(
     }
 }
 
-fn launch_was_killed(db: &HcomDb, name: &str, launch_event_id: Option<i64>) -> bool {
+fn launch_was_killed(db: &CommsDb, name: &str, launch_event_id: Option<i64>) -> bool {
     let Some(launch_event_id) = launch_event_id else {
         return false;
     };
@@ -782,8 +782,8 @@ fn launch_was_killed(db: &HcomDb, name: &str, launch_event_id: Option<i64>) -> b
 
 /// Build the OSC 1/2 title-set escape for `name`/`status` under `tool_name`.
 ///
-/// - [`TitleMode::Label`] → `◉ luna [claude]` (hcom's status label only).
-/// - [`TitleMode::Combined`] → `◉ luna - ⠋ Working` — hcom's `{icon} name` plus
+/// - [`TitleMode::Label`] → `◉ luna [claude]` (comms's status label only).
+/// - [`TitleMode::Combined`] → `◉ luna - ⠋ Working` — comms's `{icon} name` plus
 ///   the wrapped tool's live title after ` - ` (dropping the `[tool]` tag). The
 ///   child text is already sanitized upstream by `ScreenTracker` (control/escape
 ///   bytes stripped, whitespace collapsed, length bounded) so it cannot break
@@ -821,7 +821,7 @@ pub(super) fn build_early_launch_context() -> String {
 
     let mut ctx = Map::new();
 
-    if let Ok(pid) = std::env::var("HCOM_PROCESS_ID")
+    if let Ok(pid) = std::env::var("COMMS_PROCESS_ID")
         && !pid.is_empty()
     {
         ctx.insert("process_id".into(), Value::String(pid));
@@ -836,7 +836,7 @@ pub(super) fn build_early_launch_context() -> String {
 
     // A selected preset defines the pane-ID namespace. Never pair its close
     // command with an ID inherited from another backend.
-    let launched_preset = std::env::var("HCOM_LAUNCHED_PRESET")
+    let launched_preset = std::env::var("COMMS_LAUNCHED_PRESET")
         .ok()
         .filter(|preset| !preset.is_empty());
     if let Some(preset) = launched_preset.as_deref()
@@ -874,7 +874,7 @@ pub(super) fn build_early_launch_context() -> String {
     // Retry with backoff only when pane_id not already captured from env vars
     // (tmux/wezterm set env vars directly, no file needed).
     if let Some(process_id) = ctx.get("process_id").and_then(|v| v.as_str()) {
-        let id_file = crate::paths::hcom_dir()
+        let id_file = crate::paths::comms_dir()
             .join(".tmp")
             .join("terminal_ids")
             .join(process_id);
@@ -1120,7 +1120,7 @@ impl OutputModeFilter {
                         };
                     } else {
                         // Multi-digit/non-title OSC. Preserve it while tracking
-                        // its boundary for safe insertion of hcom's title.
+                        // its boundary for safe insertion of comms's title.
                         out.extend_from_slice(&self.buf);
                         self.buf.clear();
                         self.state = FilterState::StringSeq {
@@ -1181,7 +1181,7 @@ impl OutputModeFilter {
         std::mem::take(&mut self.dsr_seen)
     }
 
-    /// True when an hcom title OSC can be appended without splitting a control
+    /// True when an comms title OSC can be appended without splitting a control
     /// sequence or a multi-byte UTF-8 character.
     pub(super) fn title_write_safe(&self) -> bool {
         self.state == FilterState::Ground && self.pending_utf8 == 0
@@ -1214,8 +1214,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn intentional_kill_is_not_a_launch_failure_even_after_row_deletion() {
-        let (_dir, hcom_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
-        let mut db = HcomDb::open_at(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let mut db = CommsDb::open_at(&comms_dir.join("test.db")).unwrap();
         db.save_instance_named(
             "luna",
             &serde_json::Map::from_iter([
@@ -1262,8 +1262,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn rejected_resume_records_output_and_preserves_stopped_snapshot() {
-        let (_dir, hcom_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
-        let mut db = HcomDb::open_at(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let mut db = CommsDb::open_at(&comms_dir.join("test.db")).unwrap();
         db.save_instance_named(
             "luna",
             &serde_json::Map::from_iter([
@@ -1275,7 +1275,7 @@ mod tests {
             ]),
         )
         .unwrap();
-        let process_id = std::env::var("HCOM_PROCESS_ID").unwrap_or_default();
+        let process_id = std::env::var("COMMS_PROCESS_ID").unwrap_or_default();
         if !process_id.is_empty() {
             db.set_process_binding(&process_id, "rejected-session", "luna")
                 .unwrap();
@@ -1325,8 +1325,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn launch_exit_after_row_deleted_still_records_failure_but_ready_exit_does_not() {
-        let (_dir, hcom_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
-        let mut db = HcomDb::open_at(&hcom_dir.join("test.db")).unwrap();
+        let (_dir, comms_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let mut db = CommsDb::open_at(&comms_dir.join("test.db")).unwrap();
         let active = Arc::new(AtomicBool::new(true));
         finalize_launch_failure_with_db(
             &mut db,
@@ -1753,13 +1753,13 @@ mod tests {
     fn clear_launch_context_env() {
         // SAFETY: tests are #[serial].
         unsafe {
-            std::env::remove_var("HCOM_PROCESS_ID");
+            std::env::remove_var("COMMS_PROCESS_ID");
             std::env::remove_var("KITTY_LISTEN_ON");
             std::env::remove_var("WEZTERM_PANE");
             std::env::remove_var("TMUX_PANE");
             std::env::remove_var("KITTY_WINDOW_ID");
             std::env::remove_var("ZELLIJ_PANE_ID");
-            std::env::remove_var("HCOM_LAUNCHED_PRESET");
+            std::env::remove_var("COMMS_LAUNCHED_PRESET");
             std::env::remove_var("HERDR_PANE_ID");
         }
     }
@@ -1826,7 +1826,7 @@ mod tests {
         clear_launch_context_env();
         // SAFETY: test is #[serial].
         unsafe {
-            std::env::set_var("HCOM_LAUNCHED_PRESET", "herdr");
+            std::env::set_var("COMMS_LAUNCHED_PRESET", "herdr");
             std::env::set_var("HERDR_PANE_ID", "w2:p1A");
             std::env::set_var("WEZTERM_PANE", "0");
         }
@@ -1842,7 +1842,7 @@ mod tests {
         clear_launch_context_env();
         // SAFETY: test is #[serial].
         unsafe {
-            std::env::set_var("HCOM_LAUNCHED_PRESET", "herdr");
+            std::env::set_var("COMMS_LAUNCHED_PRESET", "herdr");
             std::env::set_var("WEZTERM_PANE", "4");
         }
         let json = build_early_launch_context();

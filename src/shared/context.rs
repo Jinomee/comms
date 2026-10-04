@@ -1,6 +1,6 @@
-//! Per-request execution context for hcom.
+//! Per-request execution context for comms.
 //!
-//! HcomContext is constructed once at request entry and passed by reference
+//! CommsContext is constructed once at request entry and passed by reference
 //! to all handlers. No global state or thread-locals.
 
 use std::collections::HashMap;
@@ -17,24 +17,24 @@ use crate::tool::Tool;
 ///
 /// No thread-local storage — explicit parameter passing everywhere.
 #[derive(Debug, Clone)]
-pub struct HcomContext {
+pub struct CommsContext {
     // === Identity ===
-    /// HCOM_PROCESS_ID — identifies launched instances.
+    /// COMMS_PROCESS_ID — identifies launched instances.
     pub process_id: Option<String>,
-    /// HCOM_LAUNCHED=1 — true if launched by hcom.
+    /// COMMS_LAUNCHED=1 — true if launched by comms.
     pub is_launched: bool,
-    /// HCOM_PTY_MODE=1 — running in PTY wrapper.
+    /// COMMS_PTY_MODE=1 — running in PTY wrapper.
     pub is_pty_mode: bool,
-    /// HCOM_BACKGROUND is set — background/headless mode.
+    /// COMMS_BACKGROUND is set — background/headless mode.
     pub is_background: bool,
-    /// Log filename for background mode (from HCOM_BACKGROUND).
+    /// Log filename for background mode (from COMMS_BACKGROUND).
     pub background_name: Option<String>,
 
     // === Paths ===
-    /// Path to hcom data directory (~/.hcom or HCOM_DIR).
-    pub hcom_dir: PathBuf,
-    /// True if HCOM_DIR was explicitly set.
-    pub hcom_dir_override: bool,
+    /// Path to comms data directory (~/.comms or COMMS_DIR).
+    pub comms_dir: PathBuf,
+    /// True if COMMS_DIR was explicitly set.
+    pub comms_dir_override: bool,
     /// Current working directory when context was captured.
     pub cwd: PathBuf,
 
@@ -43,21 +43,21 @@ pub struct HcomContext {
     pub tool: Tool,
     /// CLAUDE_ENV_FILE path (for session ID extraction).
     pub claude_env_file: Option<String>,
-    /// HCOM_IS_FORK=1 (--fork-session launch).
+    /// COMMS_IS_FORK=1 (--fork-session launch).
     pub is_fork: bool,
     /// Codex thread ID (session equivalent).
     pub codex_thread_id: Option<String>,
 
     // === Launch context ===
-    /// HCOM_LAUNCHED_BY — name of instance that launched this one.
+    /// COMMS_LAUNCHED_BY — name of instance that launched this one.
     pub launched_by: Option<String>,
-    /// HCOM_LAUNCH_BATCH_ID — batch identifier for grouped launches.
+    /// COMMS_LAUNCH_BATCH_ID — batch identifier for grouped launches.
     pub launch_batch_id: Option<String>,
-    /// HCOM_LAUNCH_EVENT_ID — event ID for this launch.
+    /// COMMS_LAUNCH_EVENT_ID — event ID for this launch.
     pub launch_event_id: Option<String>,
-    /// HCOM_LAUNCHED_PRESET — terminal preset used to launch.
+    /// COMMS_LAUNCHED_PRESET — terminal preset used to launch.
     pub launched_preset: Option<String>,
-    /// HCOM_NOTES — per-instance bootstrap user notes.
+    /// COMMS_NOTES — per-instance bootstrap user notes.
     pub notes: String,
 
     // === I/O ===
@@ -71,7 +71,7 @@ pub struct HcomContext {
     pub raw_env: HashMap<String, String>,
 }
 
-impl HcomContext {
+impl CommsContext {
     /// Build context from an explicit environment map.
     ///
     /// Primary constructor — used by both CLI (from os env) and future
@@ -84,30 +84,30 @@ impl HcomContext {
 
         let tool = crate::shared::tool_detection::detect_tool(env);
 
-        // Resolve hcom_dir using the same normalization as Config/paths.
-        let (hcom_dir, hcom_dir_override) = crate::paths::resolve_hcom_dir_from_env(env, &cwd);
+        // Resolve comms_dir using the same normalization as Config/paths.
+        let (comms_dir, comms_dir_override) = crate::paths::resolve_comms_dir_from_env(env, &cwd);
 
         Self {
-            process_id: get_nonempty("HCOM_PROCESS_ID"),
-            is_launched: is_eq("HCOM_LAUNCHED", "1"),
-            is_pty_mode: is_eq("HCOM_PTY_MODE", "1"),
-            is_background: get_nonempty("HCOM_BACKGROUND").is_some(),
-            background_name: get_nonempty("HCOM_BACKGROUND"),
-            hcom_dir,
-            hcom_dir_override,
+            process_id: get_nonempty("COMMS_PROCESS_ID"),
+            is_launched: is_eq("COMMS_LAUNCHED", "1"),
+            is_pty_mode: is_eq("COMMS_PTY_MODE", "1"),
+            is_background: get_nonempty("COMMS_BACKGROUND").is_some(),
+            background_name: get_nonempty("COMMS_BACKGROUND"),
+            comms_dir,
+            comms_dir_override,
             cwd,
             tool,
             claude_env_file: get_nonempty("CLAUDE_ENV_FILE"),
-            is_fork: is_eq("HCOM_IS_FORK", "1"),
+            is_fork: is_eq("COMMS_IS_FORK", "1"),
             // Current Codex hooks report the shared root session ID; older
             // builds expose only the thread ID. Keep this legacy field name.
             codex_thread_id: get_nonempty("CODEX_SESSION_ID")
                 .or_else(|| get_nonempty("CODEX_THREAD_ID")),
-            launched_by: get_nonempty("HCOM_LAUNCHED_BY"),
-            launch_batch_id: get_nonempty("HCOM_LAUNCH_BATCH_ID"),
-            launch_event_id: get_nonempty("HCOM_LAUNCH_EVENT_ID"),
-            launched_preset: get_nonempty("HCOM_LAUNCHED_PRESET"),
-            notes: get("HCOM_NOTES").unwrap_or_default(),
+            launched_by: get_nonempty("COMMS_LAUNCHED_BY"),
+            launch_batch_id: get_nonempty("COMMS_LAUNCH_BATCH_ID"),
+            launch_event_id: get_nonempty("COMMS_LAUNCH_EVENT_ID"),
+            launched_preset: get_nonempty("COMMS_LAUNCHED_PRESET"),
+            notes: get("COMMS_NOTES").unwrap_or_default(),
             stdin_is_tty: true,
             stdout_is_tty: true,
             raw_env: env.clone(),
@@ -136,19 +136,19 @@ impl HcomContext {
 
     // === Derived paths ===
 
-    /// Path to hcom.db.
+    /// Path to comms.db.
     pub fn db_path(&self) -> PathBuf {
-        self.hcom_dir.join("hcom.db")
+        self.comms_dir.join("comms.db")
     }
 
     /// Path to logs directory.
     pub fn log_dir(&self) -> PathBuf {
-        self.hcom_dir.join(".tmp").join("logs")
+        self.comms_dir.join(".tmp").join("logs")
     }
 
-    /// Path to hcom.log.
+    /// Path to comms.log.
     pub fn log_path(&self) -> PathBuf {
-        self.log_dir().join("hcom.log")
+        self.log_dir().join("comms.log")
     }
 
     /// Whether running inside any AI tool.
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn test_from_env_claude() {
         let env = make_env(&[("CLAUDECODE", "1"), ("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.tool, Tool::Claude);
         assert_eq!(ctx.cwd, PathBuf::from("/tmp"));
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn test_from_env_antigravity() {
         let env = make_env(&[("ANTIGRAVITY_AGENT", "1"), ("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.tool, Tool::Antigravity);
     }
@@ -197,7 +197,7 @@ mod tests {
             ("GEMINI_CLI", "1"),
             ("HOME", "/home/test"),
         ]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.tool, Tool::Antigravity);
     }
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn test_from_env_gemini() {
         let env = make_env(&[("GEMINI_CLI", "1"), ("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.tool, Tool::Gemini);
     }
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn test_from_env_codex() {
         let env = make_env(&[("CODEX_SANDBOX", "1"), ("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.tool, Tool::Codex);
     }
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn test_from_env_codex_thread_id() {
         let env = make_env(&[("CODEX_THREAD_ID", "thread-abc"), ("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.codex_thread_id.as_deref(), Some("thread-abc"));
     }
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn test_from_env_opencode() {
         let env = make_env(&[("OPENCODE", "1"), ("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.tool, Tool::OpenCode);
     }
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn test_from_env_kilo() {
         let env = make_env(&[("KILO", "1"), ("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.tool, Tool::Kilo);
     }
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn test_from_env_adhoc() {
         let env = make_env(&[("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.tool, Tool::Adhoc);
     }
@@ -256,62 +256,65 @@ mod tests {
             ("CLAUDE_ENV_FILE", "/tmp/.claude_env"),
             ("HOME", "/home/test"),
         ]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.tool, Tool::Claude);
         assert_eq!(ctx.claude_env_file.as_deref(), Some("/tmp/.claude_env"));
     }
 
     #[test]
-    fn test_hcom_dir_default() {
+    fn test_comms_dir_default() {
         let env = make_env(&[("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
-        assert_eq!(ctx.hcom_dir, PathBuf::from("/home/test/.hcom"));
-        assert!(!ctx.hcom_dir_override);
+        assert_eq!(ctx.comms_dir, PathBuf::from("/home/test/.comms"));
+        assert!(!ctx.comms_dir_override);
     }
 
     #[test]
-    fn test_hcom_dir_override() {
-        let env = make_env(&[("HCOM_DIR", "/custom/hcom"), ("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+    fn test_comms_dir_override() {
+        let env = make_env(&[("COMMS_DIR", "/custom/comms"), ("HOME", "/home/test")]);
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
-        assert_eq!(ctx.hcom_dir, PathBuf::from("/custom/hcom"));
-        assert!(ctx.hcom_dir_override);
+        assert_eq!(ctx.comms_dir, PathBuf::from("/custom/comms"));
+        assert!(ctx.comms_dir_override);
     }
 
     #[test]
-    fn test_hcom_dir_tilde_expansion() {
-        let env = make_env(&[("HCOM_DIR", "~/custom/.hcom"), ("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+    fn test_comms_dir_tilde_expansion() {
+        let env = make_env(&[("COMMS_DIR", "~/custom/.comms"), ("HOME", "/home/test")]);
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
-        assert_eq!(ctx.hcom_dir, PathBuf::from("/home/test/custom/.hcom"));
+        assert_eq!(ctx.comms_dir, PathBuf::from("/home/test/custom/.comms"));
     }
 
     #[test]
-    fn test_hcom_dir_relative_resolved_to_absolute() {
-        let env = make_env(&[("HCOM_DIR", "relative/.hcom"), ("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp/worktree"));
+    fn test_comms_dir_relative_resolved_to_absolute() {
+        let env = make_env(&[("COMMS_DIR", "relative/.comms"), ("HOME", "/home/test")]);
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp/worktree"));
 
-        assert_eq!(ctx.hcom_dir, PathBuf::from("/tmp/worktree/relative/.hcom"));
+        assert_eq!(
+            ctx.comms_dir,
+            PathBuf::from("/tmp/worktree/relative/.comms")
+        );
     }
 
     #[test]
     fn test_identity_fields() {
         let env = make_env(&[
-            ("HCOM_PROCESS_ID", "pid-123"),
-            ("HCOM_LAUNCHED", "1"),
-            ("HCOM_PTY_MODE", "1"),
-            ("HCOM_BACKGROUND", "agent.log"),
-            ("HCOM_LAUNCHED_BY", "luna"),
-            ("HCOM_LAUNCH_BATCH_ID", "batch-1"),
-            ("HCOM_LAUNCH_EVENT_ID", "42"),
-            ("HCOM_LAUNCHED_PRESET", "kitty"),
-            ("HCOM_IS_FORK", "1"),
-            ("HCOM_NOTES", "test notes"),
+            ("COMMS_PROCESS_ID", "pid-123"),
+            ("COMMS_LAUNCHED", "1"),
+            ("COMMS_PTY_MODE", "1"),
+            ("COMMS_BACKGROUND", "agent.log"),
+            ("COMMS_LAUNCHED_BY", "luna"),
+            ("COMMS_LAUNCH_BATCH_ID", "batch-1"),
+            ("COMMS_LAUNCH_EVENT_ID", "42"),
+            ("COMMS_LAUNCHED_PRESET", "kitty"),
+            ("COMMS_IS_FORK", "1"),
+            ("COMMS_NOTES", "test notes"),
             ("HOME", "/home/test"),
         ]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert_eq!(ctx.process_id.as_deref(), Some("pid-123"));
         assert!(ctx.is_launched);
@@ -329,12 +332,12 @@ mod tests {
     #[test]
     fn test_empty_values_become_none() {
         let env = make_env(&[
-            ("HCOM_PROCESS_ID", ""),
-            ("HCOM_LAUNCHED", "0"),
-            ("HCOM_BACKGROUND", ""),
+            ("COMMS_PROCESS_ID", ""),
+            ("COMMS_LAUNCHED", "0"),
+            ("COMMS_BACKGROUND", ""),
             ("HOME", "/home/test"),
         ]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
         assert!(ctx.process_id.is_none());
         assert!(!ctx.is_launched);
@@ -345,30 +348,30 @@ mod tests {
     #[test]
     fn test_derived_paths() {
         let env = make_env(&[("HOME", "/home/test")]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
-        assert_eq!(ctx.db_path(), PathBuf::from("/home/test/.hcom/hcom.db"));
-        assert_eq!(ctx.log_dir(), PathBuf::from("/home/test/.hcom/.tmp/logs"));
+        assert_eq!(ctx.db_path(), PathBuf::from("/home/test/.comms/comms.db"));
+        assert_eq!(ctx.log_dir(), PathBuf::from("/home/test/.comms/.tmp/logs"));
         assert_eq!(
             ctx.log_path(),
-            PathBuf::from("/home/test/.hcom/.tmp/logs/hcom.log")
+            PathBuf::from("/home/test/.comms/.tmp/logs/comms.log")
         );
     }
 
     #[test]
     fn test_is_inside_ai_tool() {
         let adhoc =
-            HcomContext::from_env(&make_env(&[("HOME", "/home/test")]), PathBuf::from("/tmp"));
+            CommsContext::from_env(&make_env(&[("HOME", "/home/test")]), PathBuf::from("/tmp"));
         assert!(!adhoc.is_inside_ai_tool());
 
-        let claude = HcomContext::from_env(
+        let claude = CommsContext::from_env(
             &make_env(&[("CLAUDECODE", "1"), ("HOME", "/home/test")]),
             PathBuf::from("/tmp"),
         );
         assert!(claude.is_inside_ai_tool());
 
-        let launched = HcomContext::from_env(
-            &make_env(&[("HCOM_LAUNCHED", "1"), ("HOME", "/home/test")]),
+        let launched = CommsContext::from_env(
+            &make_env(&[("COMMS_LAUNCHED", "1"), ("HOME", "/home/test")]),
             PathBuf::from("/tmp"),
         );
         assert!(launched.is_inside_ai_tool());
@@ -392,7 +395,7 @@ mod tests {
             ("CODEX_SANDBOX", "1"),
             ("HOME", "/home/test"),
         ]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         assert_eq!(ctx.tool, Tool::Claude);
     }
 
@@ -400,12 +403,12 @@ mod tests {
     fn test_raw_env_preserved() {
         let env = make_env(&[
             ("HOME", "/home/test"),
-            ("HCOM_TAG", "test-tag"),
+            ("COMMS_TAG", "test-tag"),
             ("CUSTOM_VAR", "custom-val"),
         ]);
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
 
-        assert_eq!(ctx.raw_env.get("HCOM_TAG").unwrap(), "test-tag");
+        assert_eq!(ctx.raw_env.get("COMMS_TAG").unwrap(), "test-tag");
         assert_eq!(ctx.raw_env.get("CUSTOM_VAR").unwrap(), "custom-val");
     }
 }

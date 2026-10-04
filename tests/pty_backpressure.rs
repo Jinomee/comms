@@ -21,17 +21,17 @@ impl ProxyRun {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join(".tmp")).unwrap();
         fs::write(root.path().join(".tmp/pty_debug_on"), "1").unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_hcom"))
+        let child = Command::new(env!("CARGO_BIN_EXE_comms"))
             .args([
                 "pty",
                 "sh",
                 "-c",
-                "head -c 524288 /dev/zero; printf final-sentinel; touch \"$HCOM_TEST_DONE\"",
+                "head -c 524288 /dev/zero; printf final-sentinel; touch \"$COMMS_TEST_DONE\"",
             ])
             // Keep synthetic PTY diagnostics out of the live agents' database.
-            .env("HCOM_DIR", root.path())
-            .env("HCOM_TEST_DONE", root.path().join("child-done"))
-            .env_remove("HCOM_INSTANCE_NAME")
+            .env("COMMS_DIR", root.path())
+            .env("COMMS_TEST_DONE", root.path().join("child-done"))
+            .env_remove("COMMS_INSTANCE_NAME")
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(Stdio::null())

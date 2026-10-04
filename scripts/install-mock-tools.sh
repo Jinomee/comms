@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PREFIX="${HCOM_MOCK_TOOLS_PREFIX:-$ROOT/target/mock-tools}"
-CACHE="${HCOM_MOCK_TOOLS_NPM_CACHE:-$ROOT/target/npm-cache}"
+PREFIX="${COMMS_MOCK_TOOLS_PREFIX:-$ROOT/target/mock-tools}"
+CACHE="${COMMS_MOCK_TOOLS_NPM_CACHE:-$ROOT/target/npm-cache}"
 
 mkdir -p "$PREFIX" "$CACHE"
 
@@ -162,11 +162,11 @@ if [[ "$npm_platform" == "android" && -n "$claude_version" ]]; then
     printf 'Claude native binary is missing: %s\n' "$claude_native" >&2
     exit 1
   fi
-  claude_proot_distro="${HCOM_MOCK_TOOLS_CLAUDE_PROOT_DISTRO:-}"
+  claude_proot_distro="${COMMS_MOCK_TOOLS_CLAUDE_PROOT_DISTRO:-}"
   if [[ -z "$claude_proot_distro" ]]; then
     printf '%s\n' \
       'Android real-Claude tests require a glibc proot distro.' \
-      'Set HCOM_MOCK_TOOLS_CLAUDE_PROOT_DISTRO to its proot-distro name.' >&2
+      'Set COMMS_MOCK_TOOLS_CLAUDE_PROOT_DISTRO to its proot-distro name.' >&2
     exit 1
   fi
   if [[ ! "$claude_proot_distro" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -191,7 +191,7 @@ if [[ "$npm_platform" == "android" && -n "$claude_version" ]]; then
     printf 'env_args=()\n'
     printf 'while IFS= read -r name; do\n'
     printf '  case "$name" in\n'
-    printf '    HCOM_* | ANTHROPIC_* | CLAUDE_* | DISABLE_* | ENABLE_* | XDG_* | CODEX_HOME | DUMMY_KEY | PATH | TMPDIR | CI | LANG | LC_ALL | TERM | NO_COLOR | FORCE_COLOR)\n'
+    printf '    COMMS_* | ANTHROPIC_* | CLAUDE_* | DISABLE_* | ENABLE_* | XDG_* | CODEX_HOME | DUMMY_KEY | PATH | TMPDIR | CI | LANG | LC_ALL | TERM | NO_COLOR | FORCE_COLOR)\n'
     printf '      env_args+=(--env "$name=${!name}") ;;\n'
     printf '  esac\n'
     printf 'done < <(compgen -e)\n'

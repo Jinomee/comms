@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::OptionalExtension;
 use std::collections::HashSet;
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::shared::time::now_epoch_i64;
 
 // Names are 4-letter CVCV (consonant-vowel-consonant-vowel) patterns.
@@ -246,7 +246,7 @@ pub(crate) fn allocate_name(
     Err(anyhow::anyhow!("No available names left in pool"))
 }
 
-pub(crate) fn collect_taken_names(db: &HcomDb) -> Result<(HashSet<String>, HashSet<String>)> {
+pub(crate) fn collect_taken_names(db: &CommsDb) -> Result<(HashSet<String>, HashSet<String>)> {
     let instances = db.iter_instances_full()?;
     let alive_names: HashSet<String> = instances.iter().map(|r| r.name.clone()).collect();
     let mut taken_names = alive_names.clone();
@@ -296,7 +296,7 @@ pub fn hash_to_name(input: &str, collision_attempt: u32) -> String {
 pub const PLACEHOLDER_STATUS: &str = "pending";
 pub const PLACEHOLDER_CONTEXT: &str = "new";
 
-pub(crate) fn allocate_unreserved_name(db: &HcomDb) -> Result<String> {
+pub(crate) fn allocate_unreserved_name(db: &CommsDb) -> Result<String> {
     let (alive_names, taken_names) = collect_taken_names(db)?;
 
     allocate_name(
@@ -310,11 +310,11 @@ pub(crate) fn allocate_unreserved_name(db: &HcomDb) -> Result<String> {
 
 /// Generate a unique instance name with flock-based reservation.
 /// Creates a placeholder row in DB to prevent TOCTOU races.
-pub fn generate_unique_name(db: &HcomDb) -> Result<String> {
+pub fn generate_unique_name(db: &CommsDb) -> Result<String> {
     reserve_generated_name(db)
 }
 
-pub(crate) fn reserve_generated_name(db: &HcomDb) -> Result<String> {
+pub(crate) fn reserve_generated_name(db: &CommsDb) -> Result<String> {
     use std::fs::{File, create_dir_all};
 
     let lock_path = db
@@ -354,7 +354,7 @@ pub(crate) fn reserve_generated_name(db: &HcomDb) -> Result<String> {
         data.insert("last_event_id".into(), serde_json::json!(last_event_id));
         data.insert(
             "wait_timeout".into(),
-            serde_json::json!(crate::config::HcomConfig::effective_timeout()),
+            serde_json::json!(crate::config::CommsConfig::effective_timeout()),
         );
         db.save_instance_reservation(&name, &data)?;
 
@@ -406,13 +406,13 @@ pub struct SubagentAllocation<'a> {
 /// Allocate a structured subagent instance row `{parent}_{type}_{N}`.
 ///
 /// If an instance row already exists for `agent_id`, returns its name without
-/// re-inserting (so SubagentStart can run before `hcom start --name` without
+/// re-inserting (so SubagentStart can run before `comms start --name` without
 /// creating duplicates, and vice versa). Otherwise computes the next free
 /// suffix and INSERTs the row.
 ///
 /// The idempotency check, suffix scan, and INSERT share one `BEGIN IMMEDIATE`
 /// transaction so concurrent sibling hooks cannot choose the same suffix.
-pub fn allocate_subagent_instance(db: &HcomDb, info: &SubagentAllocation) -> Result<String> {
+pub fn allocate_subagent_instance(db: &CommsDb, info: &SubagentAllocation) -> Result<String> {
     let sanitized = sanitize_subagent_type(info.agent_type);
     let pattern = format!("{}_{}_", info.parent_name, sanitized);
     let like_pattern = format!("{pattern}%");
@@ -424,7 +424,7 @@ pub fn allocate_subagent_instance(db: &HcomDb, info: &SubagentAllocation) -> Res
 
     db.with_immediate_transaction(|txn| {
         // Idempotency check must live inside the transaction too: otherwise a
-        // concurrent SubagentStart and `hcom start --name <agent_id>` for the
+        // concurrent SubagentStart and `comms start --name <agent_id>` for the
         // same agent_id could both miss it and insert two rows.
         let existing: Option<String> = txn
             .query_row(
@@ -454,7 +454,7 @@ pub fn allocate_subagent_instance(db: &HcomDb, info: &SubagentAllocation) -> Res
             return Ok(name);
         }
 
-        // Resume the same hcom identity when Claude reuses an agent_id after a
+        // Resume the same comms identity when Claude reuses an agent_id after a
         // definitive SubagentStop removed the live row.
         let stopped: Option<(String, i64)> = txn
             .query_row(
@@ -551,9 +551,9 @@ mod subagent_alloc_tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn setup_db() -> (TempDir, HcomDb) {
+    fn setup_db() -> (TempDir, CommsDb) {
         let tmp = TempDir::new().unwrap();
-        let db = HcomDb::open_raw(&tmp.path().join("test.db")).unwrap();
+        let db = CommsDb::open_raw(&tmp.path().join("test.db")).unwrap();
         db.init_db().unwrap();
         (tmp, db)
     }
@@ -737,7 +737,7 @@ mod subagent_alloc_tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("race.db");
         {
-            let db = HcomDb::open_raw(&path).unwrap();
+            let db = CommsDb::open_raw(&path).unwrap();
             db.init_db().unwrap();
         }
 
@@ -748,7 +748,7 @@ mod subagent_alloc_tests {
                 let path = path.clone();
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
-                    let db = HcomDb::open_raw(&path).unwrap();
+                    let db = CommsDb::open_raw(&path).unwrap();
                     let agent_id = format!("aid-{i}");
                     barrier.wait();
                     allocate_subagent_instance(
@@ -774,7 +774,7 @@ mod subagent_alloc_tests {
             }
         }
 
-        let db = HcomDb::open_raw(&path).unwrap();
+        let db = CommsDb::open_raw(&path).unwrap();
         let rows: i64 = db
             .conn()
             .query_row(
@@ -844,20 +844,20 @@ mod reservation_tests {
         }
     }
 
-    fn setup_db() -> (TempDir, HcomDb) {
+    fn setup_db() -> (TempDir, CommsDb) {
         let tmp = TempDir::new().unwrap();
-        let db = HcomDb::open_raw(&tmp.path().join("test.db")).unwrap();
+        let db = CommsDb::open_raw(&tmp.path().join("test.db")).unwrap();
         db.init_db().unwrap();
         (tmp, db)
     }
 
     #[test]
     #[serial]
-    fn placeholder_row_honors_configured_hcom_timeout() {
+    fn placeholder_row_honors_configured_comms_timeout() {
         // Regression test for issue #71: the generated-name placeholder row
-        // must carry the effective HCOM_TIMEOUT, not silently fall back to
+        // must carry the effective COMMS_TIMEOUT, not silently fall back to
         // the old always-86400 schema default.
-        let _env = EnvVarGuard::set("HCOM_TIMEOUT", "45");
+        let _env = EnvVarGuard::set("COMMS_TIMEOUT", "45");
         let (_tmp, db) = setup_db();
 
         let name = reserve_generated_name(&db).unwrap();
@@ -876,7 +876,7 @@ mod reservation_tests {
     #[test]
     #[serial]
     fn placeholder_row_falls_back_to_120_without_config() {
-        let _env = EnvVarGuard::unset("HCOM_TIMEOUT");
+        let _env = EnvVarGuard::unset("COMMS_TIMEOUT");
         let (_tmp, db) = setup_db();
 
         let name = reserve_generated_name(&db).unwrap();
@@ -889,8 +889,8 @@ mod reservation_tests {
                 |row| row.get(0),
             )
             .unwrap();
-        // Default HcomConfig::timeout is 86400 (schema-equivalent default),
-        // preserved for anyone who hasn't set HCOM_TIMEOUT.
+        // Default CommsConfig::timeout is 86400 (schema-equivalent default),
+        // preserved for anyone who hasn't set COMMS_TIMEOUT.
         assert_eq!(wait_timeout, Some(86400));
     }
 }

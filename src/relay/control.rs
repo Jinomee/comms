@@ -7,8 +7,8 @@ use rumqttc::v5::mqttbytes::QoS;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
-use crate::config::HcomConfig;
-use crate::db::HcomDb;
+use crate::config::CommsConfig;
+use crate::db::CommsDb;
 use crate::launcher::{self, LaunchParams};
 use crate::log;
 
@@ -21,8 +21,8 @@ use super::{
 /// the AEAD-sealed bytes; the underlying JSON layout is unchanged from the
 /// pre-encryption format so callers don't have to know about the cipher.
 fn build_control_payload(
-    db: &HcomDb,
-    config: &HcomConfig,
+    db: &CommsDb,
+    config: &CommsConfig,
     action: &str,
     target_device_short_id: &str,
     request_id: Option<&str>,
@@ -76,8 +76,8 @@ fn build_control_payload(
 }
 
 pub fn build_rpc_control_payload(
-    db: &HcomDb,
-    config: &HcomConfig,
+    db: &CommsDb,
+    config: &CommsConfig,
     action: &str,
     target_device_short_id: &str,
     request_id: &str,
@@ -94,8 +94,8 @@ pub fn build_rpc_control_payload(
 }
 
 fn send_control_via_ephemeral(
-    db: &HcomDb,
-    config: &HcomConfig,
+    db: &CommsDb,
+    config: &CommsConfig,
     client: &super::client::EphemeralClient,
     action: &str,
     target_device_short_id: &str,
@@ -153,8 +153,8 @@ fn send_control_via_ephemeral(
 
 /// Send an RPC control command using an ephemeral client.
 pub fn send_rpc_control_ephemeral(
-    db: &HcomDb,
-    config: &HcomConfig,
+    db: &CommsDb,
+    config: &CommsConfig,
     action: &str,
     target_device_short_id: &str,
     request_id: &str,
@@ -180,8 +180,8 @@ pub fn send_rpc_control_ephemeral(
 }
 
 pub fn send_one_way_control_ephemeral(
-    db: &HcomDb,
-    config: &HcomConfig,
+    db: &CommsDb,
+    config: &CommsConfig,
     action: &str,
     target_device_short_id: &str,
     params: &serde_json::Value,
@@ -205,7 +205,7 @@ pub fn send_one_way_control_ephemeral(
     result
 }
 
-pub fn get_rpc_result(db: &HcomDb, request_id: &str) -> Option<Value> {
+pub fn get_rpc_result(db: &CommsDb, request_id: &str) -> Option<Value> {
     let data: String = db
         .conn()
         .query_row(
@@ -221,13 +221,13 @@ pub fn get_rpc_result(db: &HcomDb, request_id: &str) -> Option<Value> {
 }
 
 /// Consume an RPC answer if it has arrived: return it and delete the row.
-pub(crate) fn take_rpc_result(db: &HcomDb, request_id: &str) -> Option<Value> {
+pub(crate) fn take_rpc_result(db: &CommsDb, request_id: &str) -> Option<Value> {
     let result = get_rpc_result(db, request_id)?;
     delete_rpc_result(db, request_id);
     Some(result)
 }
 
-fn delete_rpc_result(db: &HcomDb, request_id: &str) {
+fn delete_rpc_result(db: &CommsDb, request_id: &str) {
     // rpc_result rows are single-use rendezvous points. Deleting on consume prevents
     // accumulation and keeps _rpc events out of the push loop entirely.
     let _ = db.conn().execute(
@@ -237,7 +237,7 @@ fn delete_rpc_result(db: &HcomDb, request_id: &str) {
 }
 
 pub fn wait_for_rpc_result_with_db(
-    db: &HcomDb,
+    db: &CommsDb,
     request_id: &str,
     timeout: Duration,
 ) -> Result<Value, String> {
@@ -252,11 +252,11 @@ pub fn wait_for_rpc_result_with_db(
     Err(format!("timed out waiting for rpc_result {}", request_id))
 }
 
-/// Send an RPC request and wait for the result, reusing an existing HcomDb connection.
+/// Send an RPC request and wait for the result, reusing an existing CommsDb connection.
 /// Prefer this over `send_rpc_request_and_wait` when the caller already holds a db.
 pub fn send_rpc_request_and_wait_with_db(
-    db: &HcomDb,
-    config: &HcomConfig,
+    db: &CommsDb,
+    config: &CommsConfig,
     action: &str,
     target_device_short_id: &str,
     target_name: Option<&str>,
@@ -264,7 +264,7 @@ pub fn send_rpc_request_and_wait_with_db(
     timeout: Duration,
 ) -> Result<Value, String> {
     if !super::worker::ensure_worker(false) {
-        return Err("relay worker not running - start with: hcom relay on".to_string());
+        return Err("relay worker not running - start with: comms relay on".to_string());
     }
     ensure_remote_action_supported(db, target_device_short_id, action, target_name)?;
 
@@ -345,14 +345,14 @@ pub fn require_successful_rpc_result(response: Value) -> Result<Value, String> {
 /// Prefer [`dispatch_remote`] unless the caller needs to inspect custom
 /// fields on a failed response (e.g. kill's `permission_denied` path).
 pub fn dispatch_remote_raw(
-    db: &HcomDb,
+    db: &CommsDb,
     device_short_id: &str,
     target_name: Option<&str>,
     action: &str,
     params: &Value,
     timeout: Duration,
 ) -> Result<Value, String> {
-    let config = HcomConfig::load(None).unwrap_or_default();
+    let config = CommsConfig::load(None).unwrap_or_default();
     send_rpc_request_and_wait_with_db(
         db,
         &config,
@@ -368,7 +368,7 @@ pub fn dispatch_remote_raw(
 /// `result` field. This is the default for CLI callers: on success you get
 /// the handler's output value; on failure you get a user-facing error string.
 pub fn dispatch_remote(
-    db: &HcomDb,
+    db: &CommsDb,
     device_short_id: &str,
     target_name: Option<&str>,
     action: &str,
@@ -385,7 +385,7 @@ pub fn dispatch_remote(
 /// `result_key` is the JSON key in the result to extract (e.g. "content", "message").
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch_remote_and_print(
-    db: &HcomDb,
+    db: &CommsDb,
     device_short_id: &str,
     target_name: Option<&str>,
     action: &str,
@@ -450,7 +450,7 @@ pub mod rpc_action {
     pub const SUB_UNSUB: &str = "sub_unsub";
 }
 
-type RemoteRpcHandler = fn(&HcomDb, &Value, &str, &HcomConfig) -> Result<Value, String>;
+type RemoteRpcHandler = fn(&CommsDb, &Value, &str, &CommsConfig) -> Result<Value, String>;
 
 const REMOTE_RPC_HANDLERS: &[(&str, RemoteRpcHandler)] = &[
     (rpc_action::LAUNCH, handle_remote_launch),
@@ -509,7 +509,7 @@ enum CachedCapabilities {
 }
 
 fn read_remote_capabilities(
-    db: &HcomDb,
+    db: &CommsDb,
     target_device_short_id: &str,
 ) -> Result<CachedCapabilities, String> {
     let Some(device_id) = safe_kv_get(db, &format!("relay_short_{}", target_device_short_id))
@@ -545,7 +545,7 @@ fn read_remote_capabilities(
 }
 
 fn check_remote_action_for_db(
-    db: &HcomDb,
+    db: &CommsDb,
     target_device_short_id: &str,
     action: &str,
     target_name: Option<&str>,
@@ -559,7 +559,7 @@ fn check_remote_action_for_db(
                 Ok(())
             } else {
                 Err(format!(
-                    "device {target_device_short_id}{detail} does not advertise remote action '{action}' — peer may be running an older binary, or its relay worker may need a restart to pick up newly-installed capabilities (hcom relay off && hcom relay on on the peer)."
+                    "device {target_device_short_id}{detail} does not advertise remote action '{action}' — peer may be running an older binary, or its relay worker may need a restart to pick up newly-installed capabilities (comms relay off && comms relay on on the peer)."
                 ))
             }
         }
@@ -583,7 +583,7 @@ fn check_remote_action_for_db(
 /// yes, `Some(false)` never (it advertises capabilities without the action),
 /// `None` not yet (offline, or its capabilities have not synced).
 pub(crate) fn peer_accepts_action(
-    db: &HcomDb,
+    db: &CommsDb,
     target_device_short_id: &str,
     action: &str,
 ) -> Option<bool> {
@@ -597,7 +597,7 @@ pub(crate) fn peer_accepts_action(
 }
 
 fn ensure_remote_action_supported(
-    db: &HcomDb,
+    db: &CommsDb,
     target_device_short_id: &str,
     action: &str,
     target_name: Option<&str>,
@@ -628,7 +628,7 @@ fn ensure_remote_action_supported(
 }
 
 fn emit_rpc_result(
-    db: &HcomDb,
+    db: &CommsDb,
     request_id: &str,
     action: &str,
     ok: bool,
@@ -694,10 +694,10 @@ fn string_list_param(params: &Value, key: &str) -> Vec<String> {
 }
 
 fn normalize_config_field(field: &str) -> String {
-    if field.starts_with("HCOM_") {
+    if field.starts_with("COMMS_") {
         field.to_string()
     } else {
-        format!("HCOM_{}", field.to_uppercase())
+        format!("COMMS_{}", field.to_uppercase())
     }
 }
 
@@ -742,7 +742,7 @@ struct PreparedRemoteLaunch {
 
 fn prepare_remote_launch(
     request: &RemoteLaunchRequest,
-    config: &HcomConfig,
+    config: &CommsConfig,
 ) -> PreparedRemoteLaunch {
     let tool = crate::launcher::LaunchTool::from_str(&request.tool)
         .unwrap_or_else(|_| panic!("validated remote launch tool: {}", request.tool));
@@ -774,17 +774,17 @@ impl RemoteResumeRequest {
 }
 
 fn handle_remote_launch(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     _initiated_by: &str,
-    config: &HcomConfig,
+    config: &CommsConfig,
 ) -> Result<Value, String> {
     let request = RemoteLaunchRequest::from_params(params)?;
     let prepared = prepare_remote_launch(&request, config);
     // Enforce the same Claude headless invariant the local CLI path enforces
     // (src/commands/launch.rs validate_claude_headless_launch). The local
     // path short-circuits into dispatch_remote before local validation fires,
-    // so a bare `hcom claude --headless --device X` would otherwise bypass it
+    // so a bare `comms claude --headless --device X` would otherwise bypass it
     // and fall through to a detached plain-claude launch on the remote.
     crate::commands::launch::validate_claude_headless_launch(
         &request.tool,
@@ -826,10 +826,10 @@ fn handle_remote_launch(
 }
 
 fn handle_remote_kill(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     let target = required_param(params, "target")?;
     let result = crate::commands::kill::kill_tracked_instance(db, target, initiated_by)?;
@@ -850,10 +850,10 @@ fn handle_remote_kill(
 }
 
 fn handle_remote_resume(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     _initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     let request = RemoteResumeRequest::from_params(params)?;
     let flags = crate::router::GlobalFlags {
@@ -872,10 +872,10 @@ fn handle_remote_resume(
 }
 
 fn handle_remote_config_get(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     _initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     if let Some(instance) = optional_param(params, "instance") {
         let key = optional_param(params, "field");
@@ -905,10 +905,10 @@ fn handle_remote_config_get(
 }
 
 fn handle_remote_config_set(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     _initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     if let Some(instance) = optional_param(params, "instance") {
         let field = required_param(params, "field")?;
@@ -927,16 +927,16 @@ fn handle_remote_config_set(
 fn reject_remote_secret_field(field: &str) -> Result<(), String> {
     let normalized = normalize_config_field(field);
     let secret = match normalized.as_str() {
-        "HCOM_RELAY_PSK" => "relay_psk",
-        "HCOM_RELAY_TOKEN" => "relay_token",
-        "HCOM_RELAY_ID" => "relay_id",
-        "HCOM_RELAY" => "relay",
+        "COMMS_RELAY_PSK" => "relay_psk",
+        "COMMS_RELAY_TOKEN" => "relay_token",
+        "COMMS_RELAY_ID" => "relay_id",
+        "COMMS_RELAY" => "relay",
         _ => return Ok(()),
     };
     Err(format!("{secret} is not remotely queryable"))
 }
 
-pub fn disable_local_relay(config: &HcomConfig, db: &HcomDb) -> Result<bool, String> {
+pub fn disable_local_relay(config: &CommsConfig, db: &CommsDb) -> Result<bool, String> {
     let cleared_remote_state = if config.relay_enabled {
         super::client::clear_retained_state(config)
     } else {
@@ -952,10 +952,10 @@ pub fn disable_local_relay(config: &HcomConfig, db: &HcomDb) -> Result<bool, Str
 }
 
 fn handle_remote_relay_off(
-    db: &HcomDb,
+    db: &CommsDb,
     _params: &Value,
     _initiated_by: &str,
-    config: &HcomConfig,
+    config: &CommsConfig,
 ) -> Result<Value, String> {
     let cleared_remote_state = disable_local_relay(config, db)?;
     if super::worker::is_relay_worker_running() {
@@ -974,10 +974,10 @@ fn handle_remote_relay_off(
 }
 
 fn handle_remote_term_screen(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     _initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     let target = required_param(params, "target")?;
     let raw_json = bool_param(params, "json", false);
@@ -987,10 +987,10 @@ fn handle_remote_term_screen(
 }
 
 fn handle_remote_term_inject(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     _initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     let target = required_param(params, "target")?;
     let text = optional_param(params, "text").unwrap_or("");
@@ -1000,10 +1000,10 @@ fn handle_remote_term_inject(
 }
 
 fn handle_remote_transcript(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     _initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     let target = required_param(params, "target")?;
     let last_n = usize_param(params, "last", 10);
@@ -1042,10 +1042,10 @@ const REMOTE_EVENTS_HARD_CAP: usize = 2000;
 const REMOTE_EVENTS_BYTE_CAP: usize = 98_304;
 
 fn handle_remote_events(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     _initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     let filters: crate::core::filters::FilterMap = match params.get("filters") {
         Some(v) if !v.is_null() => {
@@ -1149,10 +1149,10 @@ fn handle_remote_events(
 }
 
 fn handle_remote_sub_create(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     _initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     let caller_input = required_param(params, "caller")?;
     let caller_is_external = bool_param(params, "caller_is_external", false);
@@ -1233,10 +1233,10 @@ fn handle_remote_sub_create(
 }
 
 fn handle_remote_sub_list(
-    db: &HcomDb,
+    db: &CommsDb,
     _params: &Value,
     _initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     let rows: Vec<String> = db
         .conn()
@@ -1256,10 +1256,10 @@ fn handle_remote_sub_list(
 }
 
 fn handle_remote_sub_unsub(
-    db: &HcomDb,
+    db: &CommsDb,
     params: &Value,
     _initiated_by: &str,
-    _config: &HcomConfig,
+    _config: &CommsConfig,
 ) -> Result<Value, String> {
     let id_raw = required_param(params, "id")?;
     let sub_id = if id_raw.starts_with("sub-") {
@@ -1280,12 +1280,12 @@ fn handle_remote_sub_unsub(
 /// Process incoming control events targeting this device.
 /// Deduplicates by timestamp to avoid re-processing.
 pub fn handle_control_events(
-    db: &HcomDb,
+    db: &CommsDb,
     events: &[Value],
     own_short_id: &str,
     source_device: &str,
 ) -> bool {
-    let config = HcomConfig::load(None).unwrap_or_default();
+    let config = CommsConfig::load(None).unwrap_or_default();
     let last_ctrl_ts: f64 = safe_kv_get(db, &format!("relay_ctrl_{}", source_device))
         .and_then(|s| s.parse().ok())
         .unwrap_or(0.0);
@@ -1387,16 +1387,16 @@ mod tests {
     use crate::hooks::test_helpers::isolated_test_env;
     use serde_json::json;
 
-    fn test_db() -> HcomDb {
+    fn test_db() -> CommsDb {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         std::mem::forget(dir);
         db
     }
 
-    fn latest_rpc_result(db: &HcomDb) -> serde_json::Value {
+    fn latest_rpc_result(db: &CommsDb) -> serde_json::Value {
         let payload: String = db
             .conn()
             .query_row(
@@ -1481,9 +1481,9 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_build_rpc_control_payload_includes_request_id_and_params() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
         let psk = [0x55u8; 32];
-        let config = HcomConfig {
+        let config = CommsConfig {
             relay_id: "relay-1".to_string(),
             relay_psk: super::super::encode_psk(&psk),
             ..Default::default()
@@ -1548,7 +1548,7 @@ mod tests {
             "background": false,
         }))
         .unwrap();
-        let prepared = prepare_remote_launch(&request, &HcomConfig::default());
+        let prepared = prepare_remote_launch(&request, &CommsConfig::default());
         assert!(!prepared.background);
         assert_eq!(prepared.args, vec!["--model", "gpt-5.4"]);
     }
@@ -1562,7 +1562,7 @@ mod tests {
             "background": false,
         }))
         .unwrap();
-        let prepared = prepare_remote_launch(&request, &HcomConfig::default());
+        let prepared = prepare_remote_launch(&request, &CommsConfig::default());
         assert!(prepared.background);
     }
 
@@ -1575,10 +1575,10 @@ mod tests {
             "count": 1,
             "args": ["-p"],
             "background": true,
-            "initial_prompt": "say hi in hcom",
+            "initial_prompt": "say hi in comms",
         }))
         .unwrap();
-        let prepared = prepare_remote_launch(&request, &HcomConfig::default());
+        let prepared = prepare_remote_launch(&request, &CommsConfig::default());
         assert!(prepared.background);
         assert!(prepared.args.iter().any(|arg| arg == "-p"));
         assert!(
@@ -1599,10 +1599,10 @@ mod tests {
             "count": 1,
             "args": [],
             "background": true,
-            "initial_prompt": "say hi in hcom",
+            "initial_prompt": "say hi in comms",
         }))
         .unwrap();
-        let prepared = prepare_remote_launch(&request, &HcomConfig::default());
+        let prepared = prepare_remote_launch(&request, &CommsConfig::default());
         assert!(prepared.background);
         assert!(
             !prepared
@@ -1621,7 +1621,7 @@ mod tests {
             "background": true,
         }))
         .unwrap();
-        let prepared = prepare_remote_launch(&request, &HcomConfig::default());
+        let prepared = prepare_remote_launch(&request, &CommsConfig::default());
         assert!(prepared.background);
         assert!(
             crate::commands::launch::validate_claude_headless_launch(
@@ -1706,8 +1706,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_handle_control_events_relay_off_disables_local_relay() {
-        let (_dir, _hcom_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
-        let config = HcomConfig {
+        let (_dir, _comms_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let config = CommsConfig {
             relay: "mqtt://127.0.0.1:1".to_string(),
             relay_id: "relay-1".to_string(),
             relay_psk: super::super::encode_psk(&[0x22; 32]),
@@ -1717,10 +1717,10 @@ mod tests {
         crate::config::save_toml_config(&config, None).unwrap();
 
         let db = test_db();
-        let loaded = HcomConfig::load(None).unwrap();
+        let loaded = CommsConfig::load(None).unwrap();
         let result = handle_remote_relay_off(&db, &json!({}), "_:EFGH", &loaded).unwrap();
         assert_eq!(result["disabled"], true);
-        let updated = HcomConfig::load(None).unwrap();
+        let updated = CommsConfig::load(None).unwrap();
         assert!(!updated.relay_enabled);
     }
 
@@ -1760,7 +1760,7 @@ mod tests {
             "unexpected err: {err}"
         );
         assert!(
-            err.contains("hcom relay off"),
+            err.contains("comms relay off"),
             "missing restart hint: {err}"
         );
     }
@@ -1860,7 +1860,7 @@ mod tests {
             &db,
             &json!({"fields": ["relay_psk"]}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap_err();
         assert_eq!(err, "relay_psk is not remotely queryable");
@@ -1873,7 +1873,7 @@ mod tests {
             &db,
             &json!({"instance": "luna", "field": "relay_psk"}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap_err();
         assert_eq!(err, "relay_psk is not remotely queryable");
@@ -1886,7 +1886,7 @@ mod tests {
             &db,
             &json!({"field": "relay_psk", "value": "secret"}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap_err();
         assert_eq!(err, "relay_psk is not remotely queryable");
@@ -1899,13 +1899,13 @@ mod tests {
             &db,
             &json!({"instance": "luna", "field": "relay_psk", "value": "secret"}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap_err();
         assert_eq!(err, "relay_psk is not remotely queryable");
     }
 
-    fn seed_events(db: &HcomDb, count: usize) {
+    fn seed_events(db: &CommsDb, count: usize) {
         for i in 0..count {
             let etype = if i % 2 == 0 { "message" } else { "status" };
             db.log_event(etype, "luna", &json!({"i": i})).unwrap();
@@ -1917,7 +1917,7 @@ mod tests {
         let db = test_db();
         seed_events(&db, 5);
         let out =
-            handle_remote_events(&db, &json!({}), "initiator", &HcomConfig::default()).unwrap();
+            handle_remote_events(&db, &json!({}), "initiator", &CommsConfig::default()).unwrap();
         assert_eq!(out["count"].as_u64().unwrap(), 5);
         let events = out["events"].as_array().unwrap();
         assert_eq!(events.len(), 5);
@@ -1931,7 +1931,7 @@ mod tests {
             &db,
             &json!({"filters": {"type": ["message"]}, "last": 50}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap();
         let events = out["events"].as_array().unwrap();
@@ -1949,7 +1949,7 @@ mod tests {
             &db,
             &json!({"last": 9999}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap();
         assert_eq!(out["count"].as_u64().unwrap(), 10);
@@ -1957,7 +1957,7 @@ mod tests {
             &db,
             &json!({"last": 3}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap();
         assert_eq!(out["count"].as_u64().unwrap(), 3);
@@ -1971,7 +1971,7 @@ mod tests {
             &db,
             &json!({"last": 10}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap();
         assert_eq!(out["count"].as_u64().unwrap(), 2);
@@ -1991,7 +1991,7 @@ mod tests {
             &db,
             &json!({"last": input_count}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap();
         assert_eq!(out["truncated"].as_bool(), Some(true));
@@ -2019,7 +2019,7 @@ mod tests {
             &db,
             &json!({"last": 20, "max_bytes": 32 * 1024}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap();
         assert_eq!(out["truncated"].as_bool(), Some(true));
@@ -2039,7 +2039,7 @@ mod tests {
             &db,
             &json!({"last": 20, "max_bytes": 10_000_000}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap();
         assert!(serde_json::to_string(&out).unwrap().len() <= REMOTE_EVENTS_BYTE_CAP);
@@ -2059,7 +2059,7 @@ mod tests {
             &db,
             &json!({"last": 1, "max_bytes": REMOTE_EVENTS_BYTE_CAP}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap();
         let events = out["events"].as_array().unwrap();
@@ -2086,7 +2086,7 @@ mod tests {
             &db,
             &json!({"last": 1, "max_bytes": 32 * 1024}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap();
         assert_eq!(narrow["events"].as_array().unwrap().len(), 0);
@@ -2095,7 +2095,7 @@ mod tests {
             &db,
             &json!({"last": 1, "max_bytes": REMOTE_EVENTS_BYTE_CAP}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap();
         let events = wide["events"].as_array().unwrap();
@@ -2115,7 +2115,7 @@ mod tests {
             &db,
             &json!({"sql": "not a real column = 1"}),
             "initiator",
-            &HcomConfig::default(),
+            &CommsConfig::default(),
         )
         .unwrap_err();
         assert!(err.contains("sql error"), "unexpected err: {err}");

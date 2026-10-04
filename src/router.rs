@@ -10,7 +10,7 @@ use clap::Parser;
 
 use crate::db::DEV_ROOT_KV_KEY;
 use crate::log::{log_error, log_info, log_warn};
-use crate::shared::{HcomError, dev_root_binary};
+use crate::shared::{CommsError, dev_root_binary};
 use crate::tool::Tool;
 
 /// All known hook names (for fast lookup)
@@ -22,6 +22,7 @@ fn is_hook(name: &str) -> bool {
 
 const COMMANDS: &[&str] = &[
     "ask",
+    "init",
     "claim",
     "release",
     "claims",
@@ -64,7 +65,7 @@ fn released_tool_names() -> Vec<&'static str> {
 
 /// Error for an unrecognized first token, with typo suggestions.
 ///
-/// `hcom 2 claud` is reported as an unknown tool (not "unknown command '2'").
+/// `comms 2 claud` is reported as an unknown tool (not "unknown command '2'").
 fn unknown_command_message(cmd: &str, args: &[String]) -> String {
     use crate::shared::suggest::did_you_mean;
     let tools = released_tool_names();
@@ -78,14 +79,14 @@ fn unknown_command_message(cmd: &str, args: &[String]) -> String {
                 tools.join(", ")
             ),
             None => format!(
-                "Missing tool after count: hcom {cmd} <tool>\nTools: {}",
+                "Missing tool after count: comms {cmd} <tool>\nTools: {}",
                 tools.join(", ")
             ),
         };
     }
     let candidates = COMMANDS.iter().chain(tools.iter()).copied();
     format!(
-        "Unknown command '{cmd}'{}\nRun 'hcom --help' for usage.",
+        "Unknown command '{cmd}'{}\nRun 'comms --help' for usage.",
         did_you_mean(cmd, candidates)
     )
 }
@@ -96,21 +97,21 @@ fn maybe_external_send_name_hint(
     has_from_flag: bool,
     process_id: Option<&str>,
     is_inside_ai_tool: bool,
-    err: &HcomError,
+    err: &CommsError,
 ) -> Option<String> {
     let name = explicit_name?;
     if cmd != "send"
         || has_from_flag
         || process_id.is_some()
         || is_inside_ai_tool
-        || !matches!(err, HcomError::NotFound(_))
+        || !matches!(err, CommsError::NotFound(_))
     {
         return None;
     }
 
-    let hcom_cmd = crate::runtime_env::build_hcom_command();
+    let comms_cmd = crate::runtime_env::build_comms_command();
     Some(format!(
-        "{err}\nHint: If '{name}' is an external sender (cron/script/manual alert), use:\n  {hcom_cmd} send --from {name} ..."
+        "{err}\nHint: If '{name}' is an external sender (cron/script/manual alert), use:\n  {comms_cmd} send --from {name} ..."
     ))
 }
 
@@ -158,7 +159,7 @@ pub enum Action {
     Hook { hook: String, args: Vec<String> },
     /// Run a CLI command. Args are the full argv[1..] passed through.
     Command { cmd: String, args: Vec<String> },
-    /// Launch tool (e.g. `hcom 3 claude --model haiku`)
+    /// Launch tool (e.g. `comms 3 claude --model haiku`)
     Launch { args: Vec<String> },
     /// Run PTY wrapper mode
     Pty { args: Vec<String> },
@@ -168,7 +169,7 @@ pub enum Action {
     Version,
     /// Show help
     Help,
-    /// `hcom help <topic...>`: print that topic's help page. Never dispatches
+    /// `comms help <topic...>`: print that topic's help page. Never dispatches
     /// the target, since not every target (scripts, relay-worker) honors --help.
     TopicHelp { args: Vec<String> },
     /// Open TUI in new terminal window
@@ -186,9 +187,9 @@ pub struct GlobalFlags {
 
 // ── Argv parsing (clap for flags, manual for command routing) ───────────
 //
-// Top-level command/hook routing stays manual because hcom's CLI is unusual:
-// hooks appear as bare subcommands (`hcom sessionstart`), launch commands can
-// start with a numeric count (`hcom 3 claude`), and ~40 hook/command/tool names
+// Top-level command/hook routing stays manual because comms's CLI is unusual:
+// hooks appear as bare subcommands (`comms sessionstart`), launch commands can
+// start with a numeric count (`comms 3 claude`), and ~40 hook/command/tool names
 // need classification. clap will be used for per-command arg parsing as commands
 // are ported to Rust.
 
@@ -218,7 +219,7 @@ struct GlobalFlagParser {
 ///
 /// NOTE: clap's trailing_var_arg means --name after a positional (command token)
 /// is NOT extracted. Use `extract_global_flags_full()` when you need to find
-/// --name anywhere in argv (e.g., `hcom send --name vami @luna -- hello`).
+/// --name anywhere in argv (e.g., `comms send --name vami @luna -- hello`).
 pub fn extract_global_flags(argv: &[String]) -> (Vec<String>, GlobalFlags) {
     match GlobalFlagParser::try_parse_from(argv) {
         Ok(parsed) => (
@@ -266,7 +267,7 @@ fn extract_global_flags_manual(argv: &[String]) -> (Vec<String>, GlobalFlags) {
 ///
 /// Unlike `extract_global_flags()` (clap-based, only finds flags before first
 /// positional), this scans the full argv up to `--`. Used by `dispatch_native_command()`
-/// to handle `hcom send --name vami @luna -- hello` correctly.
+/// to handle `comms send --name vami @luna -- hello` correctly.
 ///
 /// Also detects --help/-h requests (before `--`) for per-command help dispatch.
 pub fn extract_global_flags_full(argv: &[String]) -> (Vec<String>, GlobalFlags, bool) {
@@ -323,7 +324,7 @@ pub fn resolve_action(argv: &[String]) -> Action {
     // Global flags as commands
     match first {
         "--help" | "-h" => return Action::Help,
-        // `hcom help [cmd...]` == `hcom [cmd...] --help`
+        // `comms help [cmd...]` == `comms [cmd...] --help`
         "help" if argv.len() == 1 => return Action::Help,
         "help" => {
             return Action::TopicHelp {
@@ -335,12 +336,12 @@ pub fn resolve_action(argv: &[String]) -> Action {
         _ => {}
     }
 
-    // Relay worker mode: `hcom relay-worker`
+    // Relay worker mode: `comms relay-worker`
     if first == "relay-worker" {
         return Action::RelayWorker;
     }
 
-    // PTY mode: `hcom pty <tool> [args...]`
+    // PTY mode: `comms pty <tool> [args...]`
     if first == "pty" {
         return Action::Pty {
             args: argv[1..].to_vec(),
@@ -375,7 +376,7 @@ pub fn resolve_action(argv: &[String]) -> Action {
             args: argv.to_vec(),
         };
     }
-    // Numeric count + tool: `hcom 3 claude`
+    // Numeric count + tool: `comms 3 claude`
     if cmd_token.parse::<u32>().is_ok()
         && let Some(second) = stripped.get(1)
         && is_launch_tool(second.as_str())
@@ -385,7 +386,7 @@ pub fn resolve_action(argv: &[String]) -> Action {
         };
     }
 
-    // --new-terminal can appear after flags: `hcom --name foo --new-terminal`
+    // --new-terminal can appear after flags: `comms --name foo --new-terminal`
     if stripped.iter().any(|a| a == "--new-terminal") {
         return Action::NewTerminal;
     }
@@ -397,12 +398,12 @@ pub fn resolve_action(argv: &[String]) -> Action {
     }
 }
 
-// ── HCOM_DEV_ROOT re-exec ───────────────────────────────────────────────
+// ── COMMS_DEV_ROOT re-exec ───────────────────────────────────────────────
 
-/// If HCOM_DEV_ROOT is set and points to a different worktree, re-exec using
+/// If COMMS_DEV_ROOT is set and points to a different worktree, re-exec using
 /// that worktree's binary.
-/// so worktree development works: `HCOM_DEV_ROOT=/path/to/worktree hcom list`
-/// will run the worktree's hcom binary instead of the installed one.
+/// so worktree development works: `COMMS_DEV_ROOT=/path/to/worktree comms list`
+/// will run the worktree's comms binary instead of the installed one.
 pub fn maybe_reexec_dev_root() {
     let (dev_root, source) = match resolve_effective_dev_root(&crate::paths::db_path()) {
         Some(v) => v,
@@ -459,7 +460,7 @@ pub fn maybe_reexec_dev_root() {
     );
 }
 
-/// True if argv is `hcom config dev_root [...]` (after stripping global flags).
+/// True if argv is `comms config dev_root [...]` (after stripping global flags).
 fn is_config_dev_root_invocation(argv: &[String]) -> bool {
     let (positional, _, _) = extract_global_flags_full(argv);
     let mut iter = positional.iter().take_while(|a| a.as_str() != "--");
@@ -472,7 +473,7 @@ fn is_config_dev_root_invocation(argv: &[String]) -> bool {
     )
 }
 
-/// `hcom update` must run from the binary the user invoked. Re-executing a
+/// `comms update` must run from the binary the user invoked. Re-executing a
 /// configured dev-root binary would compare the checkout version and inspect
 /// the checkout executable path instead of updating the installed binary.
 fn is_update_invocation(argv: &[String]) -> bool {
@@ -484,10 +485,10 @@ fn is_update_invocation(argv: &[String]) -> bool {
     }
 }
 
-/// Print help for `hcom help <topic...>` without running anything.
+/// Print help for `comms help <topic...>` without running anything.
 fn print_topic_help(args: &[String]) -> i32 {
     let (stripped, _, _) = extract_global_flags_full(args);
-    // `hcom help 3 claude` == `hcom help claude`
+    // `comms help 3 claude` == `comms help claude`
     let words: Vec<String> = stripped
         .into_iter()
         .skip_while(|a| a.parse::<u32>().is_ok())
@@ -509,7 +510,7 @@ fn print_topic_help(args: &[String]) -> i32 {
 }
 
 pub(crate) fn resolve_effective_dev_root(db_path: &Path) -> Option<(PathBuf, &'static str)> {
-    if let Ok(r) = env::var("HCOM_DEV_ROOT")
+    if let Ok(r) = env::var("COMMS_DEV_ROOT")
         && !r.is_empty()
     {
         return Some((PathBuf::from(r), "env"));
@@ -519,8 +520,8 @@ pub(crate) fn resolve_effective_dev_root(db_path: &Path) -> Option<(PathBuf, &'s
 }
 
 fn read_dev_root_from_kv(db_path: &Path) -> Option<PathBuf> {
-    // A missing db file or unset `dev_root` key are normal states (fresh HCOM_DIR,
-    // user never ran `hcom config dev_root`). Only warn on unexpected failures
+    // A missing db file or unset `dev_root` key are normal states (fresh COMMS_DIR,
+    // user never ran `comms config dev_root`). Only warn on unexpected failures
     // like permission denied or corruption.
     let conn = match rusqlite::Connection::open_with_flags(
         db_path,
@@ -588,7 +589,7 @@ pub fn dispatch() -> anyhow::Result<()> {
     let action = resolve_action(argv);
 
     // Check for updates on CLI commands (not hooks/pty/relay — those need to be fast/silent).
-    // Skip for `hcom update` itself — it handles its own output.
+    // Skip for `comms update` itself — it handles its own output.
     let is_update_cmd = matches!(&action, Action::Command { cmd, .. } if cmd == "update");
     if !is_update_cmd
         && matches!(
@@ -658,7 +659,7 @@ pub fn dispatch() -> anyhow::Result<()> {
             }
         }
         Action::Command { ref cmd, ref args }
-            if matches!(cmd.as_str(), "start" | "kill" | "ask") =>
+            if matches!(cmd.as_str(), "start" | "kill" | "ask" | "init") =>
         {
             let (_, flags, help) = extract_global_flags_full(args);
             if help {
@@ -669,6 +670,7 @@ pub fn dispatch() -> anyhow::Result<()> {
                 "start" => crate::commands::start::run(args, &flags)?,
                 "kill" => crate::commands::kill::run(args, &flags)?,
                 "ask" => crate::commands::ask::run(args, &flags)?,
+                "init" => crate::commands::init::run(args, &flags)?,
                 _ => unreachable!(),
             };
             if exit_code != 0 {
@@ -710,7 +712,7 @@ pub fn dispatch() -> anyhow::Result<()> {
             std::process::exit(1);
         }
         Action::Version => {
-            println!("hcom {}", env!("CARGO_PKG_VERSION"));
+            println!("comms {}", env!("CARGO_PKG_VERSION"));
         }
         Action::Help => {
             crate::commands::help::print_help();
@@ -741,7 +743,7 @@ fn launch_new_terminal() -> i32 {
     let exe = match env::current_exe() {
         Ok(p) => p.to_string_lossy().to_string(),
         Err(e) => {
-            eprintln!("Error: Cannot determine hcom binary path: {}", e);
+            eprintln!("Error: Cannot determine comms binary path: {}", e);
             return 1;
         }
     };
@@ -750,10 +752,10 @@ fn launch_new_terminal() -> i32 {
         .ok()
         .map(|p| p.to_string_lossy().to_string());
 
-    // Pass through HCOM env vars
+    // Pass through COMMS env vars
     let mut env_vars = HashMap::new();
     for (k, v) in env::vars() {
-        if k.starts_with("HCOM_") {
+        if k.starts_with("COMMS_") {
             env_vars.insert(k, v);
         }
     }
@@ -768,7 +770,7 @@ fn launch_new_terminal() -> i32 {
         false, // not run_here (open new window)
         None,  // default terminal
         inside_ai,
-        None, // not launching a specific tool (hcom TUI itself)
+        None, // not launching a specific tool (comms TUI itself)
     ) {
         Ok((crate::terminal::LaunchResult::Success, _)) => 0,
         Ok((crate::terminal::LaunchResult::Failed(msg), _)) => {
@@ -791,11 +793,11 @@ fn launch_new_terminal() -> i32 {
 /// Args are the full argv[1..] (includes the command name and global flags).
 fn dispatch_native_command(cmd: &str, args: &[String]) -> i32 {
     use crate::cli_context::build_ctx_for_command;
-    use crate::db::HcomDb;
+    use crate::db::CommsDb;
 
     // Extract global flags (--name, --go, --help) from anywhere in args,
     // respecting -- separator. Uses full scan (not clap) so --name works
-    // regardless of position: `hcom send --name vami @luna -- hello`.
+    // regardless of position: `comms send --name vami @luna -- hello`.
     let (stripped, flags, help_requested) = extract_global_flags_full(args);
 
     // Per-command --help: native help text
@@ -822,7 +824,7 @@ fn dispatch_native_command(cmd: &str, args: &[String]) -> i32 {
     }
 
     // Open DB (includes schema migration/compat check)
-    let db = match HcomDb::open() {
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(e) => {
             eprintln!("Error: Failed to open database: {e}");
@@ -836,10 +838,10 @@ fn dispatch_native_command(cmd: &str, args: &[String]) -> i32 {
     crate::instance_lifecycle::reap_dead_processes_throttled(&db);
 
     // Build context (identity resolution, --go flag)
-    let process_id = std::env::var("HCOM_PROCESS_ID")
+    let process_id = std::env::var("COMMS_PROCESS_ID")
         .ok()
         .filter(|s| !s.is_empty());
-    let codex_thread_id = crate::shared::context::HcomContext::from_os().codex_thread_id;
+    let codex_thread_id = crate::shared::context::CommsContext::from_os().codex_thread_id;
     // Flags only: anything after `--` is message text.
     let has_from_flag = cmd_argv
         .iter()
@@ -1009,7 +1011,7 @@ fn dispatch_native_command(cmd: &str, args: &[String]) -> i32 {
                 if let Err(e) =
                     crate::cli_context::maybe_deliver_pending_messages(&db, &ctx, has_json)
                 {
-                    eprintln!("hcom: {e}");
+                    eprintln!("comms: {e}");
                     return 1;
                 }
                 return code;
@@ -1041,12 +1043,12 @@ fn dispatch_native_command(cmd: &str, args: &[String]) -> i32 {
     };
 
     // Deliver pending messages AFTER command for adhoc instances (no hooks).
-    // This appends unread hcom messages to the command's stdout — keep in mind
+    // This appends unread comms messages to the command's stdout — keep in mind
     // when changing output contracts or adding machine-readable modes.
     // Skipped when the command claimed delivery (send, listen). A failed write
     // leaves the messages unread and fails the command.
     if let Err(e) = crate::cli_context::maybe_deliver_pending_messages(&db, &ctx, has_json) {
-        eprintln!("hcom: {e}");
+        eprintln!("comms: {e}");
         return if result == 0 { 1 } else { result };
     }
 
@@ -1100,8 +1102,8 @@ mod tests {
     #[test]
     fn read_dev_root_from_kv_returns_stored_value() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("hcom.db");
-        let db = crate::db::HcomDb::open_at(&db_path).unwrap();
+        let db_path = dir.path().join("comms.db");
+        let db = crate::db::CommsDb::open_at(&db_path).unwrap();
         db.conn()
             .execute(
                 "INSERT INTO kv (key, value) VALUES (?1, ?2)",
@@ -1118,8 +1120,8 @@ mod tests {
     #[test]
     fn read_dev_root_from_kv_returns_none_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("hcom.db");
-        crate::db::HcomDb::open_at(&db_path).unwrap();
+        let db_path = dir.path().join("comms.db");
+        crate::db::CommsDb::open_at(&db_path).unwrap();
 
         assert_eq!(read_dev_root_from_kv(&db_path), None);
     }
@@ -1498,8 +1500,8 @@ mod tests {
 
     #[test]
     fn send_not_found_gets_external_sender_hint_outside_ai() {
-        let err = HcomError::NotFound(
-            "Instance 'healthcheck' not found. Run 'hcom start --as healthcheck' to reclaim your identity.".into(),
+        let err = CommsError::NotFound(
+            "Instance 'healthcheck' not found. Run 'comms start --as healthcheck' to reclaim your identity.".into(),
         );
         let msg =
             maybe_external_send_name_hint("send", Some("healthcheck"), false, None, false, &err)
@@ -1510,8 +1512,8 @@ mod tests {
 
     #[test]
     fn send_not_found_keeps_agent_recovery_path_inside_ai() {
-        let err = HcomError::NotFound(
-            "Instance 'luna' not found. Run 'hcom start --as luna' to reclaim your identity."
+        let err = CommsError::NotFound(
+            "Instance 'luna' not found. Run 'comms start --as luna' to reclaim your identity."
                 .into(),
         );
         let msg =
@@ -1521,7 +1523,7 @@ mod tests {
 
     #[test]
     fn non_not_found_name_errors_do_not_get_external_sender_hint() {
-        let err = HcomError::InvalidInput(
+        let err = CommsError::InvalidInput(
             "Invalid instance name 'Invalid-Name!'. Use base name only (lowercase letters, numbers, underscore).".into(),
         );
         let msg =
@@ -1575,7 +1577,7 @@ mod tests {
 
     #[test]
     fn is_same_file_works() {
-        let tmp = std::env::temp_dir().join("hcom_test_same_file");
+        let tmp = std::env::temp_dir().join("comms_test_same_file");
         let _ = std::fs::write(&tmp, "test");
         assert!(is_same_file(&tmp, &tmp));
         let _ = std::fs::remove_file(&tmp);

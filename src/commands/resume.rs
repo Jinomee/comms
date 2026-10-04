@@ -1,4 +1,4 @@
-//! Resume command: `hcom r <name> [tool-args...]`
+//! Resume command: `comms r <name> [tool-args...]`
 //!
 //!
 //! Loads a stopped instance's snapshot and relaunches with --resume session_id.
@@ -9,10 +9,10 @@ use std::io::BufRead;
 
 use crate::commands::launch::{
     LaunchOutputContext, LaunchPreview, extract_launch_flags, is_background_from_args,
-    load_hcom_config, print_launch_feedback, print_launch_preview, resolve_launcher_name,
+    load_comms_config, print_launch_feedback, print_launch_preview, resolve_launcher_name,
 };
 use crate::commands::transcript::detect_agent_type;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::hooks::codex::derive_codex_transcript_path;
 use crate::hooks::gemini::derive_gemini_transcript_path;
 use crate::hooks::kimi::derive_kimi_transcript_path;
@@ -24,9 +24,9 @@ use crate::transcript::claude_projects_dir;
 
 /// Where to load the resume/fork plan from.
 enum ResumeSource<'a> {
-    /// Resume an hcom-tracked instance by name (active or stopped).
+    /// Resume an comms-tracked instance by name (active or stopped).
     Instance { name: &'a str },
-    /// Adopt a session from its on-disk transcript (first-time bring-in under hcom).
+    /// Adopt a session from its on-disk transcript (first-time bring-in under comms).
     Disk {
         session_id: String,
         tool: String,
@@ -98,7 +98,7 @@ pub fn parse_resume_argv(argv: &[String], cmd: &str) -> Result<(String, Vec<Stri
     }
 
     if i >= argv.len() {
-        bail!("Usage: hcom {} <name> [tool-args...]", cmd);
+        bail!("Usage: comms {} <name> [tool-args...]", cmd);
     }
 
     let name = argv[i].clone();
@@ -114,11 +114,11 @@ pub fn do_resume(
     extra_args: &[String],
     flags: &GlobalFlags,
 ) -> Result<i32> {
-    let db = HcomDb::open()?;
+    let db = CommsDb::open()?;
     let name = crate::identity::resolve_display_name_or_stopped(&db, name)
         .unwrap_or_else(|| name.to_string());
-    let hcom_config = load_hcom_config();
-    let ctx = crate::shared::HcomContext::from_os();
+    let comms_config = load_comms_config();
+    let ctx = crate::shared::CommsContext::from_os();
 
     if let Some((base_name, device)) = crate::relay::control::split_device_suffix(&name) {
         if fork {
@@ -136,12 +136,15 @@ pub fn do_resume(
             && should_preview_resume_rpc(extra_args)
             && let Ok(plan) = prepare_resume_plan(&db, &name, fork, extra_args, flags)
         {
-            print_resume_preview(&plan, &hcom_config, &name, fork);
+            print_resume_preview(&plan, &comms_config, &name, fork);
             return Ok(0);
         }
 
-        let launcher_name =
-            resolve_launcher_name(&db, flags, std::env::var("HCOM_PROCESS_ID").ok().as_deref());
+        let launcher_name = resolve_launcher_name(
+            &db,
+            flags,
+            std::env::var("COMMS_PROCESS_ID").ok().as_deref(),
+        );
         let inner = crate::relay::control::dispatch_remote(
             &db,
             device,
@@ -169,7 +172,7 @@ pub fn do_resume(
             terminal: remote_output.terminal.as_deref(),
             background: remote_output.background,
             run_here: remote_output.run_here,
-            hcom_config: &hcom_config,
+            comms_config: &comms_config,
             inline_readiness_wait_secs: None,
         };
         print_launch_feedback(&db, &launch_result, &output)?;
@@ -179,7 +182,7 @@ pub fn do_resume(
     let (resolved, plan) = resolve_name_to_plan(&db, &name, fork, extra_args, flags)?;
     let is_adoption = plan.launch.name.is_none();
     if ctx.is_inside_ai_tool() && !flags.go && should_preview_resume_rpc(extra_args) {
-        print_resume_preview(&plan, &hcom_config, &resolved, fork);
+        print_resume_preview(&plan, &comms_config, &resolved, fork);
         return Ok(0);
     }
 
@@ -193,7 +196,7 @@ pub fn do_resume(
         &resolved,
         fork,
         &plan,
-        &hcom_config,
+        &comms_config,
         true,
         inline_readiness_wait_secs,
     )?;
@@ -213,7 +216,7 @@ pub fn do_resume(
 /// by `handle_remote_resume` on the target device, where the device suffix
 /// has already been stripped by the dispatcher.
 pub fn run_local_resume_result(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     fork: bool,
     extra_args: &[String],
@@ -233,15 +236,15 @@ pub fn run_local_resume_result(
 ///    row (crash/orphaned) must NOT short-circuit to a name-based resume
 ///    whose snapshot might be missing or out of date; events are the
 ///    source of truth.
-/// 3. If the name isn't a known hcom instance and lacks a device suffix,
+/// 3. If the name isn't a known comms instance and lacks a device suffix,
 ///    try resolving it as a Claude/Codex thread name, then run the same
 ///    binding → events → adoption chain on the resolved session ID.
-/// 4. Otherwise, prepare a plan for an existing hcom instance.
+/// 4. Otherwise, prepare a plan for an existing comms instance.
 ///
 /// Returns `(resolved_name_for_display, prepared_plan)`. The loop form
 /// avoids re-opening the DB that the old recursive `do_resume` calls did.
 fn resolve_name_to_plan(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     fork: bool,
     extra_args: &[String],
@@ -258,7 +261,7 @@ fn resolve_name_to_plan(
                 && matches!(db.get_instance_full(&bound), Ok(Some(_)))
             {
                 bail!(
-                    "Session {} is currently active as '{}' — run hcom kill {} first",
+                    "Session {} is currently active as '{}' — run comms kill {} first",
                     current,
                     bound,
                     bound
@@ -281,7 +284,7 @@ fn resolve_name_to_plan(
                 && matches!(db.get_instance_full(&bound), Ok(Some(_)))
             {
                 bail!(
-                    "Session {} (thread '{}') is currently active as '{}' — run hcom kill {} first",
+                    "Session {} (thread '{}') is currently active as '{}' — run comms kill {} first",
                     session_id,
                     current,
                     bound,
@@ -308,7 +311,7 @@ fn resolve_name_to_plan(
 }
 
 fn prepare_resume_plan(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     fork: bool,
     extra_args: &[String],
@@ -318,7 +321,7 @@ fn prepare_resume_plan(
 }
 
 fn prepare_resume_plan_from_source(
-    db: &HcomDb,
+    db: &CommsDb,
     source: ResumeSource<'_>,
     fork: bool,
     extra_args: &[String],
@@ -344,7 +347,7 @@ fn prepare_resume_plan_from_source(
                 && inst.status != ST_INACTIVE
             {
                 bail!(
-                    "'{name}' is still running.\n  Branch a copy instead: hcom f {name}\n  Or stop it first:     hcom kill {name}"
+                    "'{name}' is still running.\n  Branch a copy instead: comms f {name}\n  Or stop it first:     comms kill {name}"
                 );
             }
             let (tool, sid, largs, tag, bg, leid, snap) = if fork {
@@ -385,7 +388,7 @@ fn prepare_resume_plan_from_source(
         Some(tag.clone())
     };
 
-    // Extract hcom-level flags from extra args before tool parsing.
+    // Extract comms-level flags from extra args before tool parsing.
     let (dir_override, launch_flags, clean_extra) = extract_resume_flags(extra_args);
 
     // Determine effective working directory:
@@ -469,7 +472,7 @@ fn prepare_resume_plan_from_source(
     )?;
 
     let launcher_name =
-        resolve_launcher_name(db, flags, std::env::var("HCOM_PROCESS_ID").ok().as_deref());
+        resolve_launcher_name(db, flags, std::env::var("COMMS_PROCESS_ID").ok().as_deref());
     let launcher_name_for_output = launcher_name.clone();
 
     // Choose a preview child name only for tracked-instance forks, since the
@@ -499,7 +502,7 @@ fn prepare_resume_plan_from_source(
     // Instance name for LaunchParams:
     // - Adoption: None (launcher allocates; SessionStart hook binds via session_bindings)
     // - Tracked fork: preview-only fork_child_name; execute swaps in a reserved name
-    // - Tracked resume: preserve existing hcom name
+    // - Tracked resume: preserve existing comms name
     let launch_name = if is_adoption {
         None
     } else if fork {
@@ -561,7 +564,7 @@ fn prepare_resume_plan_from_source(
 
 /// A missing session is not evidence that no work happened. Refuse to
 /// relaunch, and include the last launch's saved output when available.
-fn missing_session_error(db: &HcomDb, name: &str, fork: bool) -> String {
+fn missing_session_error(db: &CommsDb, name: &str, fork: bool) -> String {
     let log_file = db
         .get_instance_full(name)
         .ok()
@@ -595,11 +598,11 @@ fn missing_session_error(db: &HcomDb, name: &str, fork: bool) -> String {
 }
 
 fn execute_prepared_resume(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     fork: bool,
     plan: &PreparedResume,
-    hcom_config: &crate::config::HcomConfig,
+    comms_config: &crate::config::CommsConfig,
     print_feedback_now: bool,
     inline_readiness_wait_secs: Option<u64>,
 ) -> Result<i32> {
@@ -615,7 +618,7 @@ fn execute_prepared_resume(
             terminal: plan.output.terminal.as_deref(),
             background: plan.output.background,
             run_here: plan.output.run_here,
-            hcom_config,
+            comms_config,
             inline_readiness_wait_secs,
         };
         print_launch_feedback(db, &result, &output)?;
@@ -643,7 +646,7 @@ fn execute_prepared_resume(
 }
 
 fn execute_prepared_resume_result(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     fork: bool,
     plan: &PreparedResume,
@@ -661,13 +664,13 @@ fn execute_prepared_resume_result(
     if fork {
         // Named-fork belt-and-suspenders: the pre-registered instance row
         // was created with last_event_id=0 and may inherit a stale
-        // HCOM_LAUNCH_EVENT_ID from the parent's env if the tool doesn't
+        // COMMS_LAUNCH_EVENT_ID from the parent's env if the tool doesn't
         // propagate our override cleanly. Stamp the current position
         // directly on the DB so there's no replay window.
         //
         // Adoption-fork (plan.launch.name=None) doesn't need the belt:
         // there's no pre-reg row, so the SessionStart hook creates the
-        // instance fresh using HCOM_LAUNCH_EVENT_ID (always set by
+        // instance fresh using COMMS_LAUNCH_EVENT_ID (always set by
         // launcher::launch to current max) — no zero-cursor window to
         // protect against.
         let current_max = db.get_last_event_id();
@@ -682,7 +685,7 @@ fn execute_prepared_resume_result(
     Ok(result)
 }
 
-fn prepare_launch_for_execution(db: &HcomDb, plan: &PreparedResume) -> Result<LaunchParams> {
+fn prepare_launch_for_execution(db: &CommsDb, plan: &PreparedResume) -> Result<LaunchParams> {
     let mut launch = plan.launch.clone();
     let Some(identity) = &plan.tracked_fork_identity else {
         return Ok(launch);
@@ -708,7 +711,7 @@ fn prepare_launch_for_execution(db: &HcomDb, plan: &PreparedResume) -> Result<La
 }
 
 fn build_remote_resume_output(
-    db: &HcomDb,
+    db: &CommsDb,
     launch_result: &LaunchResult,
     extra_args: &[String],
     fork: bool,
@@ -716,7 +719,7 @@ fn build_remote_resume_output(
 ) -> ResumeOutputContext {
     let (_dir_override, launch_flags, _clean_extra) = extract_resume_flags(extra_args);
     let launcher_name =
-        resolve_launcher_name(db, flags, std::env::var("HCOM_PROCESS_ID").ok().as_deref());
+        resolve_launcher_name(db, flags, std::env::var("COMMS_PROCESS_ID").ok().as_deref());
 
     ResumeOutputContext {
         action: if fork { "fork" } else { "resume" }.to_string(),
@@ -731,7 +734,7 @@ fn build_remote_resume_output(
 
 fn print_resume_preview(
     plan: &PreparedResume,
-    hcom_config: &crate::config::HcomConfig,
+    comms_config: &crate::config::CommsConfig,
     name: &str,
     fork: bool,
 ) {
@@ -739,7 +742,7 @@ fn print_resume_preview(
     let identity_note = if fork {
         format!("Fork source: {} (new identity)", name)
     } else if is_adoption {
-        format!("Adopting session: {} (new hcom identity)", name)
+        format!("Adopting session: {} (new comms identity)", name)
     } else {
         format!("Resume target: {} (same identity)", name)
     };
@@ -755,7 +758,7 @@ fn print_resume_preview(
         tag: plan.output.tag.as_deref(),
         cwd: Some(cwd_str),
         terminal: plan.output.terminal.as_deref(),
-        config: hcom_config,
+        config: comms_config,
         show_config_args: false,
         notes: &notes,
     });
@@ -772,7 +775,7 @@ fn extract_resume_flags(
     args: &[String],
 ) -> (
     Option<String>,
-    crate::commands::launch::HcomLaunchFlags,
+    crate::commands::launch::CommsLaunchFlags,
     Vec<String>,
 ) {
     let mut dir = None;
@@ -798,15 +801,15 @@ fn extract_resume_flags(
 }
 
 fn should_preview_resume(
-    launch_flags: &crate::commands::launch::HcomLaunchFlags,
+    launch_flags: &crate::commands::launch::CommsLaunchFlags,
     tool_args: &[String],
 ) -> bool {
-    !tool_args.is_empty() || *launch_flags != crate::commands::launch::HcomLaunchFlags::default()
+    !tool_args.is_empty() || *launch_flags != crate::commands::launch::CommsLaunchFlags::default()
 }
 
-/// A direct Claude/Codex run that joined with `hcom start` is stored as
+/// A direct Claude/Codex run that joined with `comms start` is stored as
 /// `adhoc` but keeps its native session id. Resolve the owning tool from the
-/// transcript on disk so resume/fork relaunches that session under hcom (with
+/// transcript on disk so resume/fork relaunches that session under comms (with
 /// hooks) under the same name.
 fn resolve_adhoc_resume_tool(name: &str, tool: String, sid: &str, fork: bool) -> Result<String> {
     if tool != "adhoc" {
@@ -819,7 +822,7 @@ fn resolve_adhoc_resume_tool(name: &str, tool: String, sid: &str, fork: bool) ->
     match find_session_on_disk(sid) {
         Some((tool, _)) => Ok(tool),
         None => bail!(
-            "'{name}' joined ad-hoc from session {sid}, but no transcript for it was found, so hcom cannot tell which tool to {op}"
+            "'{name}' joined ad-hoc from session {sid}, but no transcript for it was found, so comms cannot tell which tool to {op}"
         ),
     }
 }
@@ -837,7 +840,7 @@ fn validate_resume_operation(tool: &str, fork: bool) -> Result<()> {
     // Accepts canonical names + aliases (e.g. `"agy"` → Antigravity).
     let spec = parsed.spec();
     if spec.resume.and_then(|r| r.fork).is_none() {
-        bail!("{} does not support session forking (hcom f)", spec.label);
+        bail!("{} does not support session forking (comms f)", spec.label);
     }
     Ok(())
 }
@@ -855,17 +858,17 @@ fn build_resume_prompts(input: ResumePromptInput<'_>) -> (Option<String>, Option
     } = input;
 
     // Codex tracked-instance fork identity reset belongs in the initial prompt.
-    // Adoption-fork has no prior hcom identity, so normal bootstrap handles it.
+    // Adoption-fork has no prior comms identity, so normal bootstrap handles it.
     let initial_prompt = if fork && tool == "codex" && !is_adoption {
         let child_name = child_name.expect("tracked fork child name should be available");
         let child_display = effective_tag
             .map(|tag| format!("{tag}-{child_name}"))
             .unwrap_or_else(|| child_name.to_string());
         let identity_reset = format!(
-            "You are a fork of {display_name}, but your new hcom identity is now {child_display}.\n\
-             Your hcom name is {child_name}.\n\
-             Do not use {display_name}'s hcom identity anymore, even if it appears in inherited thread history.\n\
-             Use `hcom ... --name {child_name}` for all hcom commands.\n\
+            "You are a fork of {display_name}, but your new comms identity is now {child_display}.\n\
+             Your comms name is {child_name}.\n\
+             Do not use {display_name}'s comms identity anymore, even if it appears in inherited thread history.\n\
+             Use `comms ... --name {child_name}` for all comms commands.\n\
              If asked about your identity, answer exactly: {child_display}"
         );
         Some(match custom_initial_prompt {
@@ -906,8 +909,8 @@ fn resume_system_prompt(tool: &str, name: &str, fork: bool, child_name: Option<&
         if tool == "codex" {
             format!(
                 "YOU ARE A FORK of agent '{}'. \
-                 You have the same session history but are a NEW agent with an already-assigned hcom identity. \
-                 Use that assigned identity for all hcom commands.",
+                 You have the same session history but are a NEW agent with an already-assigned comms identity. \
+                 Use that assigned identity for all comms commands.",
                 name
             )
         } else {
@@ -917,14 +920,14 @@ fn resume_system_prompt(tool: &str, name: &str, fork: bool, child_name: Option<&
                 Some(child) => format!(
                     "YOU ARE A FORK of agent '{name}'. \
                      You have the same session history but are a NEW agent. \
-                     Your new hcom identity is '{child}'. \
-                     Use '--name {child}' for all hcom commands. \
+                     Your new comms identity is '{child}'. \
+                     Use '--name {child}' for all comms commands. \
                      Do NOT use '{name}'s identity, even if it appears in the inherited history.",
                 ),
                 None => format!(
                     "YOU ARE A FORK of agent '{name}'. \
-                     You have the same session history but are a NEW agent with an already-assigned hcom identity. \
-                     Use that assigned identity for all hcom commands.",
+                     You have the same session history but are a NEW agent with an already-assigned comms identity. \
+                     Use that assigned identity for all comms commands.",
                 ),
             }
         }
@@ -935,7 +938,7 @@ fn resume_system_prompt(tool: &str, name: &str, fork: bool, child_name: Option<&
 
 /// Load data from an active or stopped instance.
 fn load_instance_data(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
 ) -> Result<(String, String, String, String, bool, i64, String)> {
     // Try active instance first
@@ -957,7 +960,7 @@ fn load_instance_data(
 
 /// Load stopped snapshot from life events.
 fn load_stopped_snapshot(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
 ) -> Result<(String, String, String, String, bool, i64, String)> {
     // Filter action='stopped' in SQL so we can't miss it past a LIMIT window
@@ -1029,7 +1032,7 @@ fn load_stopped_snapshot(
 
     let known = crate::identity::known_agent_names(db);
     bail!(
-        "No agent named '{name}' to resume (not a known hcom agent, session UUID, or thread name){}\n  Stopped agents: hcom list --stopped",
+        "No agent named '{name}' to resume (not a known comms agent, session UUID, or thread name){}\n  Stopped agents: comms list --stopped",
         crate::shared::suggest::did_you_mean(name, known.iter().map(String::as_str))
     )
 }
@@ -1129,7 +1132,7 @@ fn merge_codex_resume_args(original: &[String], resume: &[String]) -> Vec<String
             i += 1;
         }
     }
-    // hcom constructs this pair with build_resume_args.
+    // comms constructs this pair with build_resume_args.
     root.extend_from_slice(&resume[..2]);
     root.extend(config);
     root.extend_from_slice(&resume[2..]);
@@ -1160,7 +1163,7 @@ fn merge_grok_args(original: &[String], resume: &[String]) -> Vec<String> {
         "--agents",
         "--json-schema",
     ];
-    // `--cwd`: hcom already starts a resume/fork in the right directory.
+    // `--cwd`: comms already starts a resume/fork in the right directory.
     const DROP_WITH_VALUE: &[&str] = &[
         "--cwd",
         "--resume",
@@ -1251,7 +1254,7 @@ fn merge_grok_args(original: &[String], resume: &[String]) -> Vec<String> {
 
 /// Merge copilot original launch args with resume args.
 ///
-/// copilot launch_args bake in `HCOM_COPILOT_ARGS` (e.g. `--model
+/// copilot launch_args bake in `COMMS_COPILOT_ARGS` (e.g. `--model
 /// claude-haiku-4.5`) plus the `-i <initial-prompt>` from the launcher.
 /// On resume: drop `-i`/`--interactive` and its value, drop `--resume`
 /// and its value; keep everything else (model flags, `--allow-*`, etc.).
@@ -1332,7 +1335,7 @@ fn merge_copilot_args(original: &[String], resume: &[String]) -> Vec<String> {
 
 /// Merge cursor-agent original launch args with resume args.
 ///
-/// cursor's launch_args bake in `HCOM_CURSOR_ARGS` (e.g. `--model composer-2.5
+/// cursor's launch_args bake in `COMMS_CURSOR_ARGS` (e.g. `--model composer-2.5
 /// --force`) plus the trailing positional task prompt that the launcher appends
 /// (`launcher.rs` Positional shape). On resume we must:
 ///   - preserve user config flags (`--model`, `--force`/`--yolo`, `--sandbox`,
@@ -1340,7 +1343,7 @@ fn merge_copilot_args(original: &[String], resume: &[String]) -> Vec<String> {
 ///     `--plugin-dir`, …) so the resumed agent keeps its model/permissions;
 ///   - drop the stale positional prompt — re-submitting the original task on a
 ///     resume would re-run it;
-///   - strip flags hcom owns at relaunch: prior session selectors
+///   - strip flags comms owns at relaunch: prior session selectors
 ///     (`--resume`/`--continue`) and cwd/worktree selectors
 ///     (`--workspace`, `-w`/`--worktree`, `--worktree-base`,
 ///     `--skip-worktree-setup`) — the launcher sets the working directory
@@ -1642,7 +1645,7 @@ fn resolve_thread_name(name: &str) -> Result<Option<String>> {
         (Some(claude_id), Some(codex_id)) => {
             bail!(
                 "Thread name '{}' matches both Claude (session {}) and Codex (session {}).\n\
-                 Use `hcom claude --resume '{}'` or `hcom codex resume '{}'` to disambiguate.",
+                 Use `comms claude --resume '{}'` or `comms codex resume '{}'` to disambiguate.",
                 name,
                 claude_id,
                 codex_id,
@@ -1875,7 +1878,7 @@ fn lookup_opencode_family_session(tool: &str, session_id: &str) -> Option<String
     if !db_path.exists() {
         return None;
     }
-    // Open read-only; no hcom-side schema assumptions beyond `session(id, directory)`.
+    // Open read-only; no comms-side schema assumptions beyond `session(id, directory)`.
     let conn = rusqlite::Connection::open_with_flags(
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -2141,7 +2144,7 @@ fn find_pi_transcript_in_root(root: &std::path::Path, session_id: &str) -> Optio
     None
 }
 
-/// Locate a cursor-agent transcript by conversation UUID (== hcom session_id).
+/// Locate a cursor-agent transcript by conversation UUID (== comms session_id).
 /// cursor writes it at `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/
 /// <uuid>.jsonl` — the same path the hook reports. The `<slug>` can't be
 /// derived from the UUID, so scan the per-project dirs for the nested file.
@@ -2363,7 +2366,7 @@ fn recover_gemini_cwd(transcript_path: &str) -> Option<String> {
 /// Locate a session on disk, recover its CWD, and build the `PreparedResume`.
 /// Callers: `resolve_name_to_plan` (both interactive and RPC paths).
 fn build_adopt_plan(
-    db: &HcomDb,
+    db: &CommsDb,
     session_id: &str,
     fork: bool,
     extra_args: &[String],
@@ -2375,10 +2378,10 @@ fn build_adopt_plan(
     if let Some(path) = ambiguous_pi_omp_session(session_id) {
         bail!(
             "Session {session_id} was found under a shared PI_CODING_AGENT_DIR \
-             ({path}) with no product marker, so hcom cannot tell whether it is a \
+             ({path}) with no product marker, so comms cannot tell whether it is a \
              Pi or Oh My Pi session (both write identical transcripts).\n\
              Disambiguate by launching the owning tool explicitly, e.g.\n  \
-             hcom pi --resume {session_id}\n  hcom omp --resume {session_id}"
+             comms pi --resume {session_id}\n  comms omp --resume {session_id}"
         );
     }
 
@@ -2466,17 +2469,17 @@ fn build_adopt_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::HcomDb;
+    use crate::db::CommsDb;
 
     fn s(items: &[&str]) -> Vec<String> {
         items.iter().map(|i| i.to_string()).collect()
     }
 
-    fn test_db() -> HcomDb {
+    fn test_db() -> CommsDb {
         crate::config::Config::init();
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         std::mem::forget(dir);
         db
@@ -2674,7 +2677,7 @@ mod tests {
         // `omp --fork <id>` takes the id as its value and routes through
         // SessionManager.forkFrom(...). Same shape as Pi — fork must emit
         // `["--fork", <id>]`, replacing `--resume`, not `["--resume", <id>,
-        // "--fork"]`. hcom must not degrade `hcom f` into a plain `--resume`.
+        // "--fork"]`. comms must not degrade `comms f` into a plain `--resume`.
         let args = build_resume_args("omp", "sess-omp", true);
         assert_eq!(args, s(&["--fork", "sess-omp"]));
     }
@@ -2761,7 +2764,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_find_session_on_disk_prefers_omp_for_omp_paths() {
-        let (_dir, _hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_dir, _comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         unsafe {
             std::env::remove_var("PI_CODING_AGENT_SESSION_DIR");
             std::env::remove_var("PI_CODING_AGENT_DIR");
@@ -2787,7 +2790,7 @@ mod tests {
         // Regression guard for the shared-root bug: a Pi session reached via the
         // Pi-exclusive PI_CODING_AGENT_SESSION_DIR override must be attributed to
         // Pi, not stolen by OMP (which never reads that variable).
-        let (_dir, _hcom, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_dir, _comms, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         let pi_sessions = tempfile::tempdir().unwrap();
         let root = pi_sessions.path().join("project");
         std::fs::create_dir_all(&root).unwrap();
@@ -2795,7 +2798,7 @@ mod tests {
         unsafe {
             std::env::remove_var("PI_CODING_AGENT_DIR");
             std::env::remove_var("XDG_DATA_HOME");
-            std::env::remove_var("HCOM_TOOL");
+            std::env::remove_var("COMMS_TOOL");
             std::env::set_var("PI_CODING_AGENT_SESSION_DIR", pi_sessions.path());
         }
 
@@ -2812,14 +2815,14 @@ mod tests {
         // path's product marker (.pi vs .omp), not on which tool's root list or
         // probe order found it. Agent dirs conventionally sit under .pi or
         // .omp, so the marker is present.
-        let (_dir, _hcom, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_dir, _comms, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         let base = tempfile::tempdir().unwrap();
         unsafe {
             std::env::remove_var("PI_CODING_AGENT_SESSION_DIR");
             std::env::remove_var("XDG_DATA_HOME");
             std::env::remove_var("OMP_PROFILE");
             std::env::remove_var("PI_PROFILE");
-            std::env::remove_var("HCOM_TOOL");
+            std::env::remove_var("COMMS_TOOL");
         }
 
         // Managed Pi: PI_CODING_AGENT_DIR=<base>/.pi -> sessions/<file>.
@@ -2845,7 +2848,7 @@ mod tests {
         // Arbitrary shared PI_CODING_AGENT_DIR with no .pi/.omp marker must be
         // reported ambiguous, never silently attributed — even when the caller
         // itself is Pi or OMP.
-        let (_dir, _hcom, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_dir, _comms, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         let shared = tempfile::tempdir().unwrap();
         let root = shared.path().join("sessions").join("proj");
         std::fs::create_dir_all(&root).unwrap();
@@ -2855,7 +2858,7 @@ mod tests {
             std::env::remove_var("XDG_DATA_HOME");
             std::env::remove_var("OMP_PROFILE");
             std::env::remove_var("PI_PROFILE");
-            std::env::remove_var("HCOM_TOOL");
+            std::env::remove_var("COMMS_TOOL");
             std::env::set_var("PI_CODING_AGENT_DIR", shared.path());
         }
 
@@ -2865,7 +2868,7 @@ mod tests {
         assert!(ambiguous_pi_omp_session("amb").is_some());
 
         for caller in ["pi", "omp"] {
-            unsafe { std::env::set_var("HCOM_TOOL", caller) }
+            unsafe { std::env::set_var("COMMS_TOOL", caller) }
             assert!(
                 find_session_on_disk("amb").is_none(),
                 "caller {caller} must not claim a markerless shared transcript"
@@ -2881,7 +2884,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_derive_omp_transcript_path_checks_named_profile() {
-        let (_dir, _hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_dir, _comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         unsafe {
             std::env::remove_var("PI_CODING_AGENT_SESSION_DIR");
             std::env::remove_var("PI_CODING_AGENT_DIR");
@@ -2908,7 +2911,7 @@ mod tests {
         let err = validate_resume_operation("gemini", true)
             .unwrap_err()
             .to_string();
-        assert_eq!(err, "Gemini does not support session forking (hcom f)");
+        assert_eq!(err, "Gemini does not support session forking (comms f)");
     }
 
     #[test]
@@ -3032,7 +3035,7 @@ mod tests {
         assert_eq!(merged, s(&["--conversation", "new-id", "--sandbox"]));
     }
 
-    /// cursor launch_args bake in HCOM_CURSOR_ARGS config plus a trailing
+    /// cursor launch_args bake in COMMS_CURSOR_ARGS config plus a trailing
     /// positional prompt. Resume must preserve config flags, drop the stale
     /// prompt + old --resume, and prepend the new resume args.
     #[test]
@@ -3367,9 +3370,9 @@ mod tests {
             "--batch-id",
             "batch-1",
             "--run-here",
-            "--hcom-prompt",
+            "--comms-prompt",
             "hi",
-            "--hcom-system-prompt",
+            "--comms-system-prompt",
             "sys",
             "--model",
             "opus",
@@ -3395,14 +3398,14 @@ mod tests {
             "opus",
         ]));
         assert_eq!(dir, Some("/tmp/test".to_string()));
-        assert_eq!(flags, crate::commands::launch::HcomLaunchFlags::default());
+        assert_eq!(flags, crate::commands::launch::CommsLaunchFlags::default());
         assert_eq!(remaining, s(&["--dir", "tool-dir", "--model", "opus"]));
     }
 
     #[test]
     fn test_should_preview_resume_false_for_plain_resume() {
         assert!(!should_preview_resume(
-            &crate::commands::launch::HcomLaunchFlags::default(),
+            &crate::commands::launch::CommsLaunchFlags::default(),
             &[]
         ));
     }
@@ -3410,19 +3413,19 @@ mod tests {
     #[test]
     fn test_should_preview_resume_true_for_tool_args() {
         assert!(should_preview_resume(
-            &crate::commands::launch::HcomLaunchFlags::default(),
+            &crate::commands::launch::CommsLaunchFlags::default(),
             &s(&["--model", "opus"])
         ));
     }
 
     #[test]
-    fn test_should_preview_resume_rpc_true_for_hcom_flags() {
+    fn test_should_preview_resume_rpc_true_for_comms_flags() {
         assert!(should_preview_resume_rpc(&s(&["--terminal", "kitty"])));
     }
 
     #[test]
-    fn test_should_preview_resume_true_for_hcom_only_flags() {
-        let flags = crate::commands::launch::HcomLaunchFlags {
+    fn test_should_preview_resume_true_for_comms_only_flags() {
+        let flags = crate::commands::launch::CommsLaunchFlags {
             terminal: Some("kitty".to_string()),
             ..Default::default()
         };
@@ -3431,7 +3434,7 @@ mod tests {
 
     #[test]
     fn test_headless_fork_allowed_for_non_claude_tools() {
-        // Every tool runs headless via the PTY runner, so `hcom f <x> --headless`
+        // Every tool runs headless via the PTY runner, so `comms f <x> --headless`
         // must not be gated to Claude.
         let db = test_db();
         for (name, tool) in [("luna", "codex"), ("nova", "opencode"), ("pira", "pi")] {
@@ -3486,7 +3489,7 @@ mod tests {
                 .initial_prompt
                 .as_deref()
                 .unwrap_or("")
-                .contains(&format!("Your hcom name is {reserved_name}."))
+                .contains(&format!("Your comms name is {reserved_name}."))
         );
     }
 
@@ -3538,8 +3541,8 @@ mod tests {
     #[test]
     fn test_resume_system_prompt_codex_fork_does_not_tell_agent_to_rebind() {
         let prompt = resume_system_prompt("codex", "luna", true, None);
-        assert!(prompt.contains("already-assigned hcom identity"));
-        assert!(!prompt.contains("Run hcom start"));
+        assert!(prompt.contains("already-assigned comms identity"));
+        assert!(!prompt.contains("Run comms start"));
     }
 
     #[test]
@@ -3551,7 +3554,7 @@ mod tests {
             "should state the --name flag"
         );
         assert!(
-            !prompt.contains("Run hcom start"),
+            !prompt.contains("Run comms start"),
             "should not tell agent to rebind"
         );
         assert!(
@@ -3561,8 +3564,8 @@ mod tests {
 
         // None path falls back to already-assigned wording (no child name available)
         let prompt_none = resume_system_prompt("claude", "luna", true, None);
-        assert!(prompt_none.contains("already-assigned hcom identity"));
-        assert!(!prompt_none.contains("Run hcom start"));
+        assert!(prompt_none.contains("already-assigned comms identity"));
+        assert!(!prompt_none.contains("Run comms start"));
     }
 
     #[test]

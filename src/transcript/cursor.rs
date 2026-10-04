@@ -2,7 +2,7 @@
 //!
 //! cursor-agent writes one JSON object per line at
 //! `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl` (the path
-//! the hook hands hcom verbatim as `transcript_path`). Each line is
+//! the hook hands comms verbatim as `transcript_path`). Each line is
 //! Anthropic-shaped:
 //!
 //! ```jsonc
@@ -28,7 +28,7 @@ use super::shared::{
     read_file_lossy, same_trimmed_text, truncate_str,
 };
 
-/// Map cursor's tool names onto hcom's canonical (Claude) names. cursor uses
+/// Map cursor's tool names onto comms's canonical (Claude) names. cursor uses
 /// Claude-style CamelCase for most tools (`Read`, `Write`, `Grep`, `Glob`,
 /// `WebFetch`, `TodoWrite`, `Shell`, `Task`), so only its divergent names need
 /// remapping before falling through to the shared normalizer:

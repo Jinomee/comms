@@ -1,10 +1,10 @@
 use super::{
     HOOK_TIMEOUT_SECS, KIMI_HOOK_COMMANDS, build_kimi_hook_command, get_handler,
     get_kimi_settings_path, handle_sessionend, handle_sessionstart, handle_stop,
-    is_hcom_kimi_command, kimi_permission_patterns, merge_hcom_hooks, merge_hcom_permissions,
-    remove_hcom_permissions,
+    is_comms_kimi_command, kimi_permission_patterns, merge_comms_hooks, merge_comms_permissions,
+    remove_comms_permissions,
 };
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::hooks::HookResult;
 use crate::hooks::common::commit_delivery_ack;
 use crate::hooks::test_helpers::isolated_test_env;
@@ -15,20 +15,20 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table};
 #[test]
 #[serial]
 fn config_path_is_project_local_unless_explicitly_overridden() {
-    let (_dir, hcom_dir, _home, _guard) = isolated_test_env();
+    let (_dir, comms_dir, _home, _guard) = isolated_test_env();
     unsafe {
         std::env::remove_var("KIMI_CODE_HOME");
     }
     assert_eq!(
         get_kimi_settings_path(),
-        hcom_dir
+        comms_dir
             .parent()
             .unwrap()
             .join(".kimi-code")
             .join("config.toml")
     );
 
-    let explicit = hcom_dir.join("explicit-kimi");
+    let explicit = comms_dir.join("explicit-kimi");
     unsafe {
         std::env::set_var("KIMI_CODE_HOME", &explicit);
     }
@@ -43,26 +43,26 @@ fn rules(doc: &DocumentMut) -> &ArrayOfTables {
 }
 
 #[test]
-fn is_hcom_kimi_command_matches_canonical_commands() {
-    // Each installed hook command must be recognized as hcom-managed, else
+fn is_comms_kimi_command_matches_canonical_commands() {
+    // Each installed hook command must be recognized as comms-managed, else
     // re-setup duplicates them instead of replacing them.
     for (_, suffix) in KIMI_HOOK_COMMANDS {
         let cmd = build_kimi_hook_command(suffix);
         assert!(
-            is_hcom_kimi_command(&cmd),
-            "should recognize installed hcom hook command: {cmd}"
+            is_comms_kimi_command(&cmd),
+            "should recognize installed comms hook command: {cmd}"
         );
         assert!(
-            is_hcom_kimi_command(&format!("hcom {suffix}")),
-            "should recognize bare hcom {suffix}"
+            is_comms_kimi_command(&format!("comms {suffix}")),
+            "should recognize bare comms {suffix}"
         );
         assert!(
-            is_hcom_kimi_command(&format!("uvx hcom {suffix}")),
-            "should recognize uvx hcom {suffix}"
+            is_comms_kimi_command(&format!("uvx comms {suffix}")),
+            "should recognize uvx comms {suffix}"
         );
     }
-    assert!(!is_hcom_kimi_command("echo hello"));
-    assert!(!is_hcom_kimi_command("hcom send @x -- hi"));
+    assert!(!is_comms_kimi_command("echo hello"));
+    assert!(!is_comms_kimi_command("comms send @x -- hi"));
 }
 
 #[test]
@@ -79,12 +79,12 @@ fn merge_hooks_strips_stale_uvx_prefix_rows() {
         for (event, suffix) in KIMI_HOOK_COMMANDS {
             let mut table = Table::new();
             table.insert("event", toml_edit::value(*event));
-            table.insert("command", toml_edit::value(format!("uvx hcom {suffix}")));
+            table.insert("command", toml_edit::value(format!("uvx comms {suffix}")));
             table.insert("timeout", toml_edit::value(HOOK_TIMEOUT_SECS));
             arr.push(table);
         }
     }
-    merge_hcom_hooks(&mut doc);
+    merge_comms_hooks(&mut doc);
     let Item::ArrayOfTables(arr) = doc.get("hooks").unwrap() else {
         panic!("expected [[hooks]]");
     };
@@ -101,8 +101,8 @@ fn merge_hooks_strips_stale_uvx_prefix_rows() {
             "stale uvx hook must be stripped: {cmd}"
         );
         assert!(
-            is_hcom_kimi_command(cmd),
-            "replacement must be current-prefix hcom command: {cmd}"
+            is_comms_kimi_command(cmd),
+            "replacement must be current-prefix comms command: {cmd}"
         );
     }
 }
@@ -135,12 +135,12 @@ fn permission_events_are_registered_and_dispatchable() {
 #[test]
 fn merge_hooks_is_idempotent() {
     let mut doc = DocumentMut::new();
-    merge_hcom_hooks(&mut doc);
+    merge_comms_hooks(&mut doc);
     let first = match doc.get("hooks") {
         Some(Item::ArrayOfTables(arr)) => arr.len(),
         _ => panic!("expected [[hooks]]"),
     };
-    merge_hcom_hooks(&mut doc);
+    merge_comms_hooks(&mut doc);
     let second = match doc.get("hooks") {
         Some(Item::ArrayOfTables(arr)) => arr.len(),
         _ => panic!("expected [[hooks]]"),
@@ -148,14 +148,14 @@ fn merge_hooks_is_idempotent() {
     assert_eq!(first, KIMI_HOOK_COMMANDS.len());
     assert_eq!(
         first, second,
-        "re-merging hooks must not duplicate existing hcom hooks"
+        "re-merging hooks must not duplicate existing comms hooks"
     );
 }
 
 #[test]
 fn merge_prepends_allow_rules_for_all_safe_commands() {
     let mut doc = DocumentMut::new();
-    merge_hcom_permissions(&mut doc);
+    merge_comms_permissions(&mut doc);
 
     let arr = rules(&doc);
     let expected = kimi_permission_patterns();
@@ -185,9 +185,9 @@ pattern = "Bash"
     .parse()
     .unwrap();
 
-    merge_hcom_permissions(&mut doc);
+    merge_comms_permissions(&mut doc);
     let after_first = rules(&doc).len();
-    merge_hcom_permissions(&mut doc);
+    merge_comms_permissions(&mut doc);
     let after_second = rules(&doc).len();
     assert_eq!(
         after_first, after_second,
@@ -195,7 +195,7 @@ pattern = "Bash"
     );
 
     // The user's broad `ask Bash` rule survives and sits AFTER our allows,
-    // so first-match-wins still auto-approves hcom commands.
+    // so first-match-wins still auto-approves comms commands.
     let arr = rules(&doc);
     let last = arr.get(arr.len() - 1).unwrap();
     assert_eq!(last.get("decision").and_then(|v| v.as_str()), Some("ask"));
@@ -213,8 +213,8 @@ pattern = "Bash(rm -rf*)"
     .parse()
     .unwrap();
 
-    merge_hcom_permissions(&mut doc);
-    remove_hcom_permissions(&mut doc);
+    merge_comms_permissions(&mut doc);
+    remove_comms_permissions(&mut doc);
 
     // The user's deny rule remains; managed allows are gone.
     let arr = rules(&doc);
@@ -227,8 +227,8 @@ pattern = "Bash(rm -rf*)"
 #[test]
 fn remove_drops_empty_permission_table() {
     let mut doc = DocumentMut::new();
-    merge_hcom_permissions(&mut doc);
-    remove_hcom_permissions(&mut doc);
+    merge_comms_permissions(&mut doc);
+    remove_comms_permissions(&mut doc);
     assert!(
         doc.get("permission").is_none(),
         "permission table should be removed when no rules remain"
@@ -254,19 +254,19 @@ fn verify_permissions_at_doc(doc: &DocumentMut) -> bool {
         .all(|expected| present.iter().any(|p| p == expected))
 }
 
-fn make_test_db() -> (tempfile::TempDir, HcomDb) {
+fn make_test_db() -> (tempfile::TempDir, CommsDb) {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
-    let db = HcomDb::open_raw(&db_path).unwrap();
+    let db = CommsDb::open_raw(&db_path).unwrap();
     db.init_db().unwrap();
     (dir, db)
 }
 
-fn ctx_with_process(process_id: &str) -> crate::shared::context::HcomContext {
+fn ctx_with_process(process_id: &str) -> crate::shared::context::CommsContext {
     let mut env = std::collections::HashMap::new();
-    env.insert("HCOM_PROCESS_ID".into(), process_id.into());
-    env.insert("HCOM_TOOL".into(), "kimi".into());
-    crate::shared::context::HcomContext::from_env(&env, std::env::current_dir().unwrap())
+    env.insert("COMMS_PROCESS_ID".into(), process_id.into());
+    env.insert("COMMS_TOOL".into(), "kimi".into());
+    crate::shared::context::CommsContext::from_env(&env, std::env::current_dir().unwrap())
 }
 
 fn kimi_payload(session_id: &str, hook_name: &str) -> crate::hooks::HookPayload {
@@ -283,7 +283,7 @@ fn kimi_payload(session_id: &str, hook_name: &str) -> crate::hooks::HookPayload 
     }
 }
 
-fn seed_bound_kimi_instance(db: &HcomDb, name: &str, session_id: &str, process_id: &str) {
+fn seed_bound_kimi_instance(db: &CommsDb, name: &str, session_id: &str, process_id: &str) {
     let now = chrono::Utc::now().timestamp() as f64;
     db.conn()
         .execute(
@@ -302,7 +302,7 @@ fn seed_bound_kimi_instance(db: &HcomDb, name: &str, session_id: &str, process_i
     db.rebind_session(session_id, name).unwrap();
 }
 
-fn insert_unread_message(db: &HcomDb, from: &str, text: &str) -> i64 {
+fn insert_unread_message(db: &CommsDb, from: &str, text: &str) -> i64 {
     let data = serde_json::json!({
         "from": from,
         "text": text,
@@ -318,7 +318,7 @@ fn insert_unread_message(db: &HcomDb, from: &str, text: &str) -> i64 {
     db.conn().last_insert_rowid()
 }
 
-fn instance_last_event_id(db: &HcomDb, name: &str) -> i64 {
+fn instance_last_event_id(db: &CommsDb, name: &str) -> i64 {
     db.conn()
         .query_row(
             "SELECT last_event_id FROM instances WHERE name = ?1",
@@ -328,7 +328,7 @@ fn instance_last_event_id(db: &HcomDb, name: &str) -> i64 {
         .unwrap()
 }
 
-fn stopped_event_count(db: &HcomDb, name: &str) -> i64 {
+fn stopped_event_count(db: &CommsDb, name: &str) -> i64 {
     db.conn()
         .query_row(
             "SELECT COUNT(*) FROM events

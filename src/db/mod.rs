@@ -1,4 +1,4 @@
-//! SQLite database access for hcom
+//! SQLite database access for comms
 //!
 //! Three loosely-coupled state planes live in a single DB:
 //! - `instances`: live per-agent state (TUI display, gating, delivery cursors)
@@ -80,8 +80,8 @@ enum SchemaCompat {
     StaleProcess,
 }
 
-/// Database handle for hcom operations
-pub struct HcomDb {
+/// Database handle for comms operations
+pub struct CommsDb {
     conn: Connection,
     db_path: std::path::PathBuf,
     db_inode: u64,
@@ -114,15 +114,15 @@ fn assert_isolated_db_path(db_path: &std::path::Path) {
         "test refused to open a DB at {} (not a registered or temp-tree path).\n\
          This path is not disposable test state, so open_raw fails closed.\n\
          Tests must install an isolated environment first:\n    \
-         let (_dir, _hcom_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();",
+         let (_dir, _comms_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();",
         db_path.display(),
     );
 }
 
-impl HcomDb {
+impl CommsDb {
     /// Open a hardened connection: secure the directory and database files to
     /// owner-only modes (see `paths::ensure_private_db`), then open with the
-    /// standard hcom PRAGMAs. The single write path for opening the DB.
+    /// standard comms PRAGMAs. The single write path for opening the DB.
     fn open_connection(db_path: &std::path::Path) -> Result<Connection> {
         crate::paths::ensure_private_db(db_path)
             .with_context(|| format!("Failed to secure database: {}", db_path.display()))?;
@@ -169,9 +169,9 @@ impl HcomDb {
             ("BEGIN IMMEDIATE", "COMMIT", "ROLLBACK")
         } else {
             (
-                "SAVEPOINT hcom_write_scope",
-                "RELEASE hcom_write_scope",
-                "ROLLBACK TO hcom_write_scope; RELEASE hcom_write_scope",
+                "SAVEPOINT comms_write_scope",
+                "RELEASE comms_write_scope",
+                "ROLLBACK TO comms_write_scope; RELEASE comms_write_scope",
             )
         };
         self.conn.execute_batch(begin)?;
@@ -190,15 +190,16 @@ impl HcomDb {
         &self.db_path
     }
 
-    /// Open the hcom database at ~/.hcom/hcom.db with schema migration/compat.
+    /// Open the comms database at ~/.comms/comms.db with schema migration/compat.
     pub fn open() -> Result<Self> {
-        let hcom_dir = crate::paths::hcom_dir();
-        crate::paths::ensure_private_directory(&hcom_dir)
-            .with_context(|| format!("Failed to secure hcom directory: {}", hcom_dir.display()))?;
-        Self::open_at(&hcom_dir.join("hcom.db"))
+        let comms_dir = crate::paths::comms_dir();
+        crate::paths::ensure_private_directory(&comms_dir).with_context(|| {
+            format!("Failed to secure comms directory: {}", comms_dir.display())
+        })?;
+        Self::open_at(&comms_dir.join("comms.db"))
     }
 
-    /// Open the hcom database at a specific path with schema migration/compat.
+    /// Open the comms database at a specific path with schema migration/compat.
     pub fn open_at(db_path: &std::path::Path) -> Result<Self> {
         let mut db = Self::open_raw(db_path)?;
         db.ensure_schema()?;
@@ -220,7 +221,7 @@ impl HcomDb {
         })
     }
 
-    /// Reconnect if the DB file was replaced (e.g., by hcom reset / schema bump).
+    /// Reconnect if the DB file was replaced (e.g., by comms reset / schema bump).
     /// Long-lived threads (PTY delivery, listeners) hold an open connection to the
     /// old inode; this moves them onto the new DB file.
     /// Returns true if reconnection happened.
@@ -231,7 +232,7 @@ impl HcomDb {
         }
         // DB file replaced — reconnect
         use crate::log::{log_error, log_info};
-        // Best-effort re-harden: the replacement was written by another hcom
+        // Best-effort re-harden: the replacement was written by another comms
         // process (reset/archive) that already secured it, so failing here must
         // not wedge a live delivery/listener loop — log and continue.
         if let Err(e) = crate::paths::ensure_private_db(&self.db_path) {
@@ -497,7 +498,7 @@ impl HcomDb {
                         }
                     }
                 }
-                eprintln!("hcom: {}, archiving...", reason);
+                eprintln!("comms: {}, archiving...", reason);
 
                 // Snapshot running instances to pidtrack before archive so orphan
                 // recovery can re-register them into the fresh DB.
@@ -507,7 +508,7 @@ impl HcomDb {
                 // refuses to delete a file that still has an open handle; Unix
                 // unlinks an open file fine, so this is a no-op there.
                 //
-                // This only releases *our own* connection. If any other hcom
+                // This only releases *our own* connection. If any other comms
                 // process — another agent instance, a relay worker, a hook
                 // invocation — has the same DB file open at this moment, the
                 // `remove_file` inside `archive_db_at` below can still fail on
@@ -518,8 +519,8 @@ impl HcomDb {
                 // Archive the old DB
                 let archive_path = Self::archive_db_at(&self.db_path)?;
                 if let Some(ref path) = archive_path {
-                    eprintln!("hcom: Archived to {}", path);
-                    eprintln!("       Query with: hcom archive 1");
+                    eprintln!("comms: Archived to {}", path);
+                    eprintln!("       Query with: comms archive 1");
                 }
 
                 // Reconnect to fresh DB file
@@ -794,7 +795,7 @@ impl HcomDb {
     /// Unix path at all.
     ///
     /// In practice this only bites when a schema-version mismatch forces an
-    /// archive-and-reset (rare) while some other hcom process — another agent
+    /// archive-and-reset (rare) while some other comms process — another agent
     /// instance, a relay worker, a hook invocation — still has the same DB
     /// file open anywhere on the machine. When that happens, this call
     /// returns a real, un-recoverable-in-place `Err`; there is no retry that
@@ -830,7 +831,7 @@ impl HcomDb {
         // Copy DB files to archive
         let db_name = db_path
             .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("hcom.db"));
+            .unwrap_or_else(|| std::ffi::OsStr::new("comms.db"));
         std::fs::copy(db_path, archive_dir.join(db_name))?;
         if db_wal.exists() {
             let wal_name = format!("{}-wal", db_name.to_string_lossy());
@@ -851,7 +852,7 @@ impl HcomDb {
 
     /// Snapshot running instances to pidtrack before DB archive.
     ///
-    /// Writes live instances (with their PIDs) to ~/.hcom/.tmp/launched_pids.json
+    /// Writes live instances (with their PIDs) to ~/.comms/.tmp/launched_pids.json
     /// so orphan recovery can re-register them into the fresh DB after schema bump.
     fn snapshot_running_to_pidtrack(&self) {
         let Ok(mut stmt) = self.conn.prepare(
@@ -925,12 +926,12 @@ impl HcomDb {
 
     /// Log _device reset event + set relay timestamp. Call after any DB archive/reset.
     pub fn log_reset_event(&self) -> Result<()> {
-        // Derive hcom_dir from db_path (db is at hcom_dir/hcom.db)
-        let hcom_dir = self
+        // Derive comms_dir from db_path (db is at comms_dir/comms.db)
+        let comms_dir = self
             .db_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
-        let device_id = std::fs::read_to_string(hcom_dir.join(".tmp").join("device_uuid"))
+        let device_id = std::fs::read_to_string(comms_dir.join(".tmp").join("device_uuid"))
             .unwrap_or_else(|_| "unknown".to_string())
             .trim()
             .to_string();
@@ -1031,9 +1032,9 @@ pub(super) mod tests {
     #[test]
     fn open_raw_creates_private_database_files() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("hcom.db");
+        let db_path = tmp.path().join("comms.db");
 
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.conn()
             .execute("CREATE TABLE permission_probe (id INTEGER)", [])
             .unwrap();
@@ -1052,8 +1053,8 @@ pub(super) mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("hcom.db");
-        let first = HcomDb::open_raw(&db_path).unwrap();
+        let db_path = tmp.path().join("comms.db");
+        let first = CommsDb::open_raw(&db_path).unwrap();
         first
             .conn()
             .execute("CREATE TABLE permission_probe (id INTEGER)", [])
@@ -1071,7 +1072,7 @@ pub(super) mod tests {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
         }
 
-        let _second = HcomDb::open_raw(&db_path).unwrap();
+        let _second = CommsDb::open_raw(&db_path).unwrap();
 
         assert_eq!(mode(&db_path), 0o600);
         assert_eq!(mode(&crate::paths::sidecar_path(&db_path, "-wal")), 0o600);
@@ -1086,7 +1087,7 @@ pub(super) mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let db_path = tmp.path().join("state.sqlite");
 
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.conn()
             .execute("CREATE TABLE permission_probe (id INTEGER)", [])
             .unwrap();
@@ -1099,7 +1100,7 @@ pub(super) mod tests {
         std::fs::set_permissions(&wal_path, std::fs::Permissions::from_mode(0o644)).unwrap();
         std::fs::set_permissions(&shm_path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        let _second = HcomDb::open_raw(&db_path).unwrap();
+        let _second = CommsDb::open_raw(&db_path).unwrap();
 
         assert_eq!(mode(&wal_path), 0o600);
         assert_eq!(mode(&shm_path), 0o600);
@@ -1107,15 +1108,15 @@ pub(super) mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn open_restricts_the_configured_hcom_directory_and_database() {
+    fn open_restricts_the_configured_comms_directory_and_database() {
         use std::os::unix::fs::PermissionsExt;
 
-        let (_tmp, hcom_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
-        std::fs::set_permissions(&hcom_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (_tmp, comms_dir, _home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        std::fs::set_permissions(&comms_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let db = HcomDb::open().unwrap();
+        let db = CommsDb::open().unwrap();
 
-        assert_eq!(mode(&hcom_dir), 0o700);
+        assert_eq!(mode(&comms_dir), 0o700);
         assert_eq!(mode(db.path()), 0o600);
     }
 
@@ -1125,15 +1126,15 @@ pub(super) mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let db_path = tmp.path().join("hcom.db");
-        let mut db = HcomDb::open_raw(&db_path).unwrap();
+        let db_path = tmp.path().join("comms.db");
+        let mut db = CommsDb::open_raw(&db_path).unwrap();
 
         // Simulate another process replacing the DB with a broad-mode file
         // (new inode), as reset/schema-archive does.
         std::fs::remove_file(&db_path).unwrap();
         let _ = std::fs::remove_file(crate::paths::sidecar_path(&db_path, "-wal"));
         let _ = std::fs::remove_file(crate::paths::sidecar_path(&db_path, "-shm"));
-        drop(HcomDb::open_raw(&db_path).unwrap());
+        drop(CommsDb::open_raw(&db_path).unwrap());
         std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         assert!(db.reconnect_if_stale());
@@ -1144,9 +1145,9 @@ pub(super) mod tests {
     #[should_panic(expected = "not a registered or temp-tree path")]
     fn test_open_raw_rejects_non_temp_path() {
         let db_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join(".hcom-unsafe-test")
-            .join("hcom.db");
-        let _ = HcomDb::open_raw(&db_path);
+            .join(".comms-unsafe-test")
+            .join("comms.db");
+        let _ = CommsDb::open_raw(&db_path);
     }
 
     #[test]
@@ -1154,7 +1155,7 @@ pub(super) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("allowed.db");
 
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
 
         assert_eq!(db.path(), db_path);
     }
@@ -1168,9 +1169,9 @@ pub(super) mod tests {
         let temp = tempfile::tempdir().unwrap();
         let link = temp.path().join("outside");
         symlink(env!("CARGO_MANIFEST_DIR"), &link).unwrap();
-        let db_path = link.join(".hcom").join("hcom.db");
+        let db_path = link.join(".comms").join("comms.db");
 
-        let _ = HcomDb::open_raw(&db_path);
+        let _ = CommsDb::open_raw(&db_path);
     }
 
     #[test]
@@ -1188,26 +1189,26 @@ pub(super) mod tests {
     }
 
     /// Create a test DB with full init_db() schema
-    pub(super) fn setup_full_test_db() -> (HcomDb, PathBuf) {
+    pub(super) fn setup_full_test_db() -> (CommsDb, PathBuf) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let temp_dir = std::env::temp_dir();
         let test_id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = temp_dir.join(format!(
-            "test_hcom_full_{}_{}.db",
+            "test_comms_full_{}_{}.db",
             std::process::id(),
             test_id
         ));
 
-        let db = HcomDb::open_at(&db_path).unwrap();
+        let db = CommsDb::open_at(&db_path).unwrap();
         (db, db_path)
     }
 
     #[test]
     fn schema_initialization_failure_rolls_back() {
         let dir = tempfile::tempdir().unwrap();
-        let db = HcomDb::open_raw(&dir.path().join("broken.db")).unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("broken.db")).unwrap();
         db.conn()
             .execute_batch("CREATE TABLE instances (name TEXT PRIMARY KEY);")
             .unwrap();
@@ -1237,7 +1238,7 @@ pub(super) mod tests {
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(4));
         // Open connections before spawning: a failed open must fail the test,
         // rather than leave other workers stuck at a barrier forever.
-        let connections: Vec<_> = (0..4).map(|_| HcomDb::open_raw(&path).unwrap()).collect();
+        let connections: Vec<_> = (0..4).map(|_| CommsDb::open_raw(&path).unwrap()).collect();
         let workers: Vec<_> = connections
             .into_iter()
             .map(|db| {
@@ -1255,7 +1256,7 @@ pub(super) mod tests {
         for worker in workers {
             worker.join().unwrap();
         }
-        let db = HcomDb::open_raw(&path).unwrap();
+        let db = CommsDb::open_raw(&path).unwrap();
         let count: i64 = db
             .conn()
             .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
@@ -1402,12 +1403,12 @@ pub(super) mod tests {
         let temp_dir = std::env::temp_dir();
         let test_id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = temp_dir.join(format!(
-            "test_hcom_ensure_{}_{}.db",
+            "test_comms_ensure_{}_{}.db",
             std::process::id(),
             test_id
         ));
 
-        let mut db = HcomDb::open_raw(&db_path).unwrap();
+        let mut db = CommsDb::open_raw(&db_path).unwrap();
         db.ensure_schema().unwrap();
 
         // Should have full schema
@@ -1428,7 +1429,7 @@ pub(super) mod tests {
         let temp_dir = std::env::temp_dir();
         let test_id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = temp_dir.join(format!(
-            "test_hcom_archive_{}_{}.db",
+            "test_comms_archive_{}_{}.db",
             std::process::id(),
             test_id
         ));
@@ -1447,7 +1448,7 @@ pub(super) mod tests {
             .unwrap();
         }
 
-        let mut db = HcomDb::open_raw(&db_path).unwrap();
+        let mut db = CommsDb::open_raw(&db_path).unwrap();
         db.ensure_schema().unwrap();
 
         // Should have been archived and recreated at current version
@@ -1474,7 +1475,7 @@ pub(super) mod tests {
         let temp_dir = std::env::temp_dir();
         let test_id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = temp_dir.join(format!(
-            "test_hcom_migrate_{}_{}.db",
+            "test_comms_migrate_{}_{}.db",
             std::process::id(),
             test_id
         ));
@@ -1507,7 +1508,7 @@ pub(super) mod tests {
             .unwrap();
         }
 
-        let mut db = HcomDb::open_raw(&db_path).unwrap();
+        let mut db = CommsDb::open_raw(&db_path).unwrap();
         db.ensure_schema().unwrap();
 
         let version: i32 = db
@@ -1555,7 +1556,7 @@ pub(super) mod tests {
         let temp_dir = std::env::temp_dir();
         let test_id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = temp_dir.join(format!(
-            "test_hcom_migrate_status_time_{}_{}.db",
+            "test_comms_migrate_status_time_{}_{}.db",
             std::process::id(),
             test_id
         ));
@@ -1586,7 +1587,7 @@ pub(super) mod tests {
             .unwrap();
         }
 
-        let mut db = HcomDb::open_raw(&db_path).unwrap();
+        let mut db = CommsDb::open_raw(&db_path).unwrap();
         db.ensure_schema().unwrap();
 
         let last_seen: i64 = db
@@ -1610,7 +1611,7 @@ pub(super) mod tests {
         let temp_dir = std::env::temp_dir();
         let test_id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = temp_dir.join(format!(
-            "test_hcom_colguard_{}_{}.db",
+            "test_comms_colguard_{}_{}.db",
             std::process::id(),
             test_id
         ));
@@ -1641,7 +1642,7 @@ pub(super) mod tests {
             .unwrap();
         }
 
-        let mut db = HcomDb::open_raw(&db_path).unwrap();
+        let mut db = CommsDb::open_raw(&db_path).unwrap();
 
         // check_schema_compat should detect missing column
         match db.check_schema_compat().unwrap() {
@@ -1674,7 +1675,7 @@ pub(super) mod tests {
         let temp_dir = std::env::temp_dir();
         let test_id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let db_path = temp_dir.join(format!(
-            "test_hcom_repair_{}_{}.db",
+            "test_comms_repair_{}_{}.db",
             std::process::id(),
             test_id
         ));
@@ -1748,7 +1749,7 @@ pub(super) mod tests {
             );
         }
 
-        let mut db = HcomDb::open_raw(&db_path).unwrap();
+        let mut db = CommsDb::open_raw(&db_path).unwrap();
         db.ensure_schema().unwrap();
 
         // Should be at current version

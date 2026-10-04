@@ -1,8 +1,8 @@
-//! Shared runtime helpers for invoking hcom and locating tool config roots.
+//! Shared runtime helpers for invoking comms and locating tool config roots.
 
-/// Cached hcom invocation prefix (computed once per process lifetime).
-static HCOM_PREFIX: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-    if std::env::var("HCOM_DEV_ROOT").is_ok() {
+/// Cached comms invocation prefix (computed once per process lifetime).
+static COMMS_PREFIX: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+    if std::env::var("COMMS_DEV_ROOT").is_ok() {
         #[cfg(windows)]
         if let Ok(exe) = std::env::current_exe()
             && let Ok(resolved) = exe.canonicalize()
@@ -10,7 +10,7 @@ static HCOM_PREFIX: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(
             let resolved = crate::shared::platform::child_process_path(&resolved);
             return vec![resolved.to_string_lossy().replace('\\', "/")];
         }
-        return vec!["hcom".into()];
+        return vec!["comms".into()];
     }
 
     if let Ok(exe) = std::env::current_exe()
@@ -18,32 +18,32 @@ static HCOM_PREFIX: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(
     {
         let has_uv = resolved.components().any(|c| c.as_os_str() == "uv");
         if has_uv {
-            return vec!["uvx".into(), "hcom".into()];
+            return vec!["uvx".into(), "comms".into()];
         }
     }
 
-    vec!["hcom".into()]
+    vec!["comms".into()]
 });
 
-/// Detect hcom invocation prefix based on execution context.
-pub(crate) fn get_hcom_prefix() -> Vec<String> {
-    HCOM_PREFIX.clone()
+/// Detect comms invocation prefix based on execution context.
+pub(crate) fn get_comms_prefix() -> Vec<String> {
+    COMMS_PREFIX.clone()
 }
 
 /// Base directory for each tool's default config dir (`.claude/`, `.codex/`, ...)
-/// when the tool's own env override is unset. HCOM_DIR only isolates hcom state;
+/// when the tool's own env override is unset. COMMS_DIR only isolates comms state;
 /// it never relocates tool config.
 pub(crate) fn tool_home() -> std::path::PathBuf {
     user_home().unwrap_or_default()
 }
 
-/// Parent of a non-default HCOM_DIR. Older hcom versions installed tool hooks,
+/// Parent of a non-default COMMS_DIR. Older comms versions installed tool hooks,
 /// plugins and config under `<this>/.<tool>/`; only legacy cleanup looks here.
 pub(crate) fn legacy_tool_config_root() -> Option<std::path::PathBuf> {
     let env: std::collections::HashMap<String, String> = std::env::vars().collect();
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let (hcom_dir, _) = crate::paths::resolve_hcom_dir_from_env(&env, &cwd);
-    let root = hcom_dir.parent()?.to_path_buf();
+    let (comms_dir, _) = crate::paths::resolve_comms_dir_from_env(&env, &cwd);
+    let root = comms_dir.parent()?.to_path_buf();
     let canonical = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
     let root_canonical = canonical(&root);
     let is_home = [user_home(), dirs::home_dir()]
@@ -53,8 +53,8 @@ pub(crate) fn legacy_tool_config_root() -> Option<std::path::PathBuf> {
     (!is_home).then_some(root)
 }
 
-/// Every dir that may hold an hcom install for a tool, deduplicated: the
-/// default `~/<dirname>`, `$<env_var>`, and the legacy `<HCOM_DIR parent>/<dirname>`.
+/// Every dir that may hold an comms install for a tool, deduplicated: the
+/// default `~/<dirname>`, `$<env_var>`, and the legacy `<COMMS_DIR parent>/<dirname>`.
 pub(crate) fn tool_config_cleanup_dirs(dirname: &str, env_var: &str) -> Vec<std::path::PathBuf> {
     let candidates = [
         Some(tool_home().join(dirname)),
@@ -73,9 +73,9 @@ pub(crate) fn tool_config_cleanup_dirs(dirname: &str, env_var: &str) -> Vec<std:
     dirs
 }
 
-/// Build hcom command string for prompts, config, and hook commands.
-pub(crate) fn build_hcom_command() -> String {
-    get_hcom_prefix().join(" ")
+/// Build comms command string for prompts, config, and hook commands.
+pub(crate) fn build_comms_command() -> String {
+    get_comms_prefix().join(" ")
 }
 
 /// Gemini / Antigravity shared config directory (`~/.gemini` or under `GEMINI_CLI_HOME`).
@@ -88,8 +88,8 @@ pub(crate) fn gemini_family_config_dir() -> std::path::PathBuf {
     tool_home().join(".gemini")
 }
 
-/// Every `.gemini` dir that may hold an hcom install: `~/.gemini`,
-/// `$GEMINI_CLI_HOME/.gemini`, and the legacy `<HCOM_DIR parent>/.gemini`.
+/// Every `.gemini` dir that may hold an comms install: `~/.gemini`,
+/// `$GEMINI_CLI_HOME/.gemini`, and the legacy `<COMMS_DIR parent>/.gemini`.
 pub(crate) fn gemini_family_cleanup_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs = vec![tool_home().join(".gemini")];
     for dir in [
@@ -127,7 +127,7 @@ pub(crate) fn user_home() -> Option<std::path::PathBuf> {
 /// package, which has no Windows- or macOS-specific branch at all: it always
 /// resolves to `~/.config` (falling back to `$XDG_CONFIG_HOME` when set) on
 /// every OS. There is no `%APPDATA%` or `~/Library/Application Support`
-/// involved, so hcom must not special-case Windows here either.
+/// involved, so comms must not special-case Windows here either.
 pub(crate) fn user_config_home() -> Option<std::path::PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
         && !xdg.is_empty()
@@ -222,7 +222,7 @@ pub(crate) fn set_terminal_title(instance_name: &str) {
 
     #[cfg(not(test))]
     {
-        let title = format!("hcom: {}", instance_name);
+        let title = format!("comms: {}", instance_name);
         if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
             use std::io::Write;
             let _ = write!(tty, "\x1b]1;{}\x07\x1b]2;{}\x07", title, title);
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn legacy_tool_config_root_none_for_default_hcom_dir() {
+    fn legacy_tool_config_root_none_for_default_comms_dir() {
         let _guard = EnvGuard::new();
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
@@ -264,17 +264,17 @@ mod tests {
 
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", home.join(".hcom"));
+            std::env::set_var("COMMS_DIR", home.join(".comms"));
         }
         assert_eq!(super::legacy_tool_config_root(), None);
 
-        unsafe { std::env::set_var("HCOM_DIR", "/") };
+        unsafe { std::env::set_var("COMMS_DIR", "/") };
         assert_eq!(super::legacy_tool_config_root(), None);
     }
 
     #[test]
     #[serial]
-    fn tool_home_ignores_project_local_hcom_dir() {
+    fn tool_home_ignores_project_local_comms_dir() {
         let _guard = EnvGuard::new();
         let temp = tempfile::tempdir().unwrap();
         let workspace = temp.path().join("workspace");
@@ -287,7 +287,7 @@ mod tests {
         std::env::set_current_dir(&workspace).unwrap();
         unsafe {
             std::env::set_var("HOME", &home);
-            std::env::set_var("HCOM_DIR", ".sandbox/.hcom");
+            std::env::set_var("COMMS_DIR", ".sandbox/.comms");
         }
 
         let tool_home = super::tool_home();

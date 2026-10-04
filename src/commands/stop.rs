@@ -1,10 +1,10 @@
-//! `hcom stop` command — end hcom participation.
+//! `comms stop` command — end comms participation.
 //!
 //!
 //! Supports: self-stop, named stop, multi-stop, `all`, `tag:<name>`.
 //! Inside AI tools, destructive ops require `--go` flag.
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::hooks::common::stop_instance;
 use crate::identity;
 use crate::identity::{get_full_name, resolve_display_name};
@@ -12,9 +12,9 @@ use crate::instances::{is_remote_instance, is_subagent_instance};
 use crate::log::log_info;
 use crate::shared::{CommandContext, SENDER, SenderKind, is_inside_ai_tool};
 
-/// Parsed arguments for `hcom stop`.
+/// Parsed arguments for `comms stop`.
 #[derive(clap::Parser, Debug)]
-#[command(name = "stop", about = "Stop hcom participation")]
+#[command(name = "stop", about = "Stop comms participation")]
 pub struct StopArgs {
     /// Targets to stop (names, tag:X, or "all")
     pub targets: Vec<String>,
@@ -22,7 +22,7 @@ pub struct StopArgs {
 
 /// Resolve the initiator name for event logging.
 fn resolve_initiator(
-    db: &HcomDb,
+    db: &CommsDb,
     ctx: Option<&CommandContext>,
     explicit_name: Option<&str>,
 ) -> String {
@@ -41,15 +41,15 @@ fn resolve_initiator(
     }
 }
 
-/// Main entry point for `hcom stop` command.
+/// Main entry point for `comms stop` command.
 ///
 /// Returns exit code (0 = success, 1 = error).
-pub fn cmd_stop(db: &HcomDb, args: &StopArgs, ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_stop(db: &CommsDb, args: &StopArgs, ctx: Option<&CommandContext>) -> i32 {
     let explicit_name = ctx.and_then(|c| c.explicit_name.as_deref());
 
     // Give rejoined PTYs back their pid first, so stopping one tracks its
     // process under the name it runs as now.
-    crate::pidtrack::claim_orphans(db, &crate::paths::hcom_dir());
+    crate::pidtrack::claim_orphans(db, &crate::paths::comms_dir());
 
     let targets: Vec<&str> = args.targets.iter().map(|s| s.as_str()).collect();
 
@@ -133,7 +133,7 @@ pub fn cmd_stop(db: &HcomDb, args: &StopArgs, ctx: Option<&CommandContext>) -> i
 
         if tag_matches.is_empty() {
             // Check orphans for this tag (already stopped but process may still be running)
-            let orphans = crate::pidtrack::get_orphan_processes(&crate::paths::hcom_dir(), None);
+            let orphans = crate::pidtrack::get_orphan_processes(&crate::paths::comms_dir(), None);
             let tagged_orphans: Vec<_> = orphans.iter().filter(|o| o.tag == tag).collect();
             if !tagged_orphans.is_empty() {
                 let names: Vec<_> = tagged_orphans
@@ -145,7 +145,7 @@ pub fn cmd_stop(db: &HcomDb, args: &StopArgs, ctx: Option<&CommandContext>) -> i
                     "No active agents with tag '{tag}' (already stopped: {})",
                     names.join(", ")
                 );
-                println!("Use 'hcom kill tag:{tag}' to terminate their processes.");
+                println!("Use 'comms kill tag:{tag}' to terminate their processes.");
                 return 0;
             }
             eprintln!("Error: No agents with tag '{tag}'");
@@ -282,7 +282,7 @@ pub fn cmd_stop(db: &HcomDb, args: &StopArgs, ctx: Option<&CommandContext>) -> i
             Some(id) => id.name,
             None => {
                 eprintln!(
-                    "Error: Cannot determine identity\nUsage: hcom stop <name> | hcom stop all | run 'hcom stop' inside Claude/Gemini/Codex/Antigravity"
+                    "Error: Cannot determine identity\nUsage: comms stop <name> | comms stop all | run 'comms stop' inside Claude/Gemini/Codex/Antigravity"
                 );
                 return 1;
             }
@@ -291,7 +291,7 @@ pub fn cmd_stop(db: &HcomDb, args: &StopArgs, ctx: Option<&CommandContext>) -> i
 
     // Handle SENDER (not real instance)
     if instance_name == SENDER {
-        eprintln!("Error: Cannot resolve identity - launch via 'hcom <n>' for stable identity");
+        eprintln!("Error: Cannot resolve identity - launch via 'comms <n>' for stable identity");
         return 1;
     }
 
@@ -312,7 +312,7 @@ pub fn cmd_stop(db: &HcomDb, args: &StopArgs, ctx: Option<&CommandContext>) -> i
     };
 
     // Remote instances are mirrors only. Stopping them remotely would strand the
-    // agent from hcom without giving a useful way to recover/control it remotely.
+    // agent from comms without giving a useful way to recover/control it remotely.
     if is_remote_instance(&position) {
         eprintln!(
             "Error: Remote stop is not supported for '{instance_name}'. Use remote kill or ask the agent to stop itself locally."
@@ -334,9 +334,9 @@ pub fn cmd_stop(db: &HcomDb, args: &StopArgs, ctx: Option<&CommandContext>) -> i
     stop_instance(db, &instance_name, &launcher, reason);
 
     if is_subagent_instance(&position) {
-        println!("Stopped hcom for subagent {display}.");
+        println!("Stopped comms for subagent {display}.");
     } else {
-        println!("Stopped hcom for {display}.");
+        println!("Stopped comms for {display}.");
     }
 
     if position.background != 0 && !position.background_log_file.is_empty() {
@@ -373,7 +373,7 @@ fn print_stop_preview(scope: &str, cmd_suffix: &str, instances: &[crate::db::Ins
     println!("  • Subagents: recursively stopped when parent stops\n");
     println!("Instance data preserved in events table (life.stopped with snapshot).\n");
     println!("Add --go flag and run again to proceed:");
-    println!("  hcom --go stop {cmd_suffix}\n");
+    println!("  comms --go stop {cmd_suffix}\n");
 }
 
 /// A stop can leave the PTY process running (tracked as an orphan), so an
@@ -385,9 +385,9 @@ fn print_already_stopped(target: &str, stopped: &identity::StoppedAgent) {
     let display = stopped.display_name();
     match crate::commands::kill::find_orphan_for_session(&stopped.session_id) {
         Some(orphan) => println!(
-            "  Its process is still running (pid {pid}). To end it: hcom kill {pid}",
+            "  Its process is still running (pid {pid}). To end it: comms kill {pid}",
             pid = orphan.pid
         ),
-        None => println!("  To resume: hcom r {display}"),
+        None => println!("  To resume: comms r {display}"),
     }
 }

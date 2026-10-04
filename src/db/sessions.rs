@@ -3,7 +3,7 @@
 use anyhow::{Result, bail};
 use rusqlite::{OptionalExtension, Transaction, params};
 
-use super::HcomDb;
+use super::CommsDb;
 use crate::shared::time::now_epoch_f64;
 
 const CLAUDE_LINEAGE_VALIDATION_PREFIX: &str = "claude_lineage_validated:";
@@ -87,7 +87,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 static TEST_MIGRATE_NOTIFY_FAIL: AtomicBool = AtomicBool::new(false);
 
-impl HcomDb {
+impl CommsDb {
     /// Delete process binding (for cleanup)
     pub fn delete_process_binding(&self, process_id: &str) -> Result<()> {
         self.conn.execute(
@@ -169,7 +169,7 @@ impl HcomDb {
         // callers to include endpoint migration in a larger identity-binding
         // transaction.
         self.conn
-            .execute_batch("SAVEPOINT hcom_migrate_notify_endpoints")?;
+            .execute_batch("SAVEPOINT comms_migrate_notify_endpoints")?;
         let merge = (|| -> Result<()> {
             // Drop target rows for kinds the source will bring (source wins), keeping
             // target-only kinds like `plugin`.
@@ -190,14 +190,14 @@ impl HcomDb {
         if let Err(error) = merge {
             let _ = self
                 .conn
-                .execute_batch("ROLLBACK TO hcom_migrate_notify_endpoints");
+                .execute_batch("ROLLBACK TO comms_migrate_notify_endpoints");
             let _ = self
                 .conn
-                .execute_batch("RELEASE hcom_migrate_notify_endpoints");
+                .execute_batch("RELEASE comms_migrate_notify_endpoints");
             return Err(error);
         }
         self.conn
-            .execute_batch("RELEASE hcom_migrate_notify_endpoints")?;
+            .execute_batch("RELEASE comms_migrate_notify_endpoints")?;
 
         Ok(())
     }
@@ -451,7 +451,7 @@ impl HcomDb {
             .is_ok()
     }
 
-    /// Check if instance has a process binding (hcom-launched).
+    /// Check if instance has a process binding (comms-launched).
     pub fn has_process_binding_for_instance(&self, instance_name: &str) -> bool {
         if instance_name.is_empty() {
             return false;
@@ -675,7 +675,7 @@ impl HcomDb {
 }
 
 #[cfg(test)]
-impl HcomDb {
+impl CommsDb {
     pub fn set_test_migrate_notify_fail(fail: bool) {
         TEST_MIGRATE_NOTIFY_FAIL.store(fail, Ordering::SeqCst);
     }
@@ -683,14 +683,14 @@ impl HcomDb {
 
 #[cfg(test)]
 mod tests {
-    use super::super::HcomDb;
+    use super::super::CommsDb;
     use super::super::tests::{cleanup_test_db, setup_full_test_db};
     use rusqlite::params;
     use serial_test::serial;
 
-    fn reopen_broken_schema(db_path: &std::path::Path) -> HcomDb {
+    fn reopen_broken_schema(db_path: &std::path::Path) -> CommsDb {
         // Use open_raw here: open_at would repair the table we deliberately dropped.
-        HcomDb::open_raw(db_path).unwrap()
+        CommsDb::open_raw(db_path).unwrap()
     }
 
     // Regression: a deleted/missing instance row must not make has_pending fall back
@@ -1197,7 +1197,7 @@ mod tests {
         cleanup_test_db(db_path);
     }
 
-    fn endpoint_port(db: &HcomDb, instance: &str, kind: &str) -> Option<i64> {
+    fn endpoint_port(db: &CommsDb, instance: &str, kind: &str) -> Option<i64> {
         db.conn
             .query_row(
                 "SELECT port FROM notify_endpoints WHERE instance = ? AND kind = ?",
@@ -1207,7 +1207,7 @@ mod tests {
             .ok()
     }
 
-    fn endpoint_count_for(db: &HcomDb, instance: &str) -> i64 {
+    fn endpoint_count_for(db: &CommsDb, instance: &str) -> i64 {
         db.conn
             .query_row(
                 "SELECT COUNT(*) FROM notify_endpoints WHERE instance = ?",
@@ -1221,7 +1221,7 @@ mod tests {
     #[serial]
     fn test_migrate_notify_endpoints_preserves_plugin_on_target() {
         let (db, db_path) = setup_full_test_db();
-        HcomDb::set_test_migrate_notify_fail(false);
+        CommsDb::set_test_migrate_notify_fail(false);
 
         // Canonical already has plugin from opencode-start; placeholder has PTY ports.
         db.upsert_notify_endpoint("fano", "plugin", 58_898).unwrap();
@@ -1242,7 +1242,7 @@ mod tests {
     #[serial]
     fn test_migrate_notify_endpoints_source_wins_on_conflict() {
         let (db, db_path) = setup_full_test_db();
-        HcomDb::set_test_migrate_notify_fail(false);
+        CommsDb::set_test_migrate_notify_fail(false);
 
         // Target (fano) holds a stale pty from a prior process; source (mozi) is the
         // freshly launched process. Source's pty must win; target-only plugin is kept.
@@ -1263,7 +1263,7 @@ mod tests {
     #[serial]
     fn test_migrate_notify_endpoints_moves_kind_missing_on_target() {
         let (db, db_path) = setup_full_test_db();
-        HcomDb::set_test_migrate_notify_fail(false);
+        CommsDb::set_test_migrate_notify_fail(false);
 
         db.upsert_notify_endpoint("fano", "plugin", 58_898).unwrap();
         db.upsert_notify_endpoint("mozi", "pty", 55_568).unwrap();
@@ -1281,14 +1281,14 @@ mod tests {
 
     impl MigrateNotifyFailGuard {
         fn enable() -> Self {
-            HcomDb::set_test_migrate_notify_fail(true);
+            CommsDb::set_test_migrate_notify_fail(true);
             Self
         }
     }
 
     impl Drop for MigrateNotifyFailGuard {
         fn drop(&mut self) {
-            HcomDb::set_test_migrate_notify_fail(false);
+            CommsDb::set_test_migrate_notify_fail(false);
         }
     }
 
@@ -1319,7 +1319,7 @@ mod tests {
     #[serial]
     fn test_migrate_notify_endpoints_commits_on_success_after_fail_guard_cleared() {
         let (db, db_path) = setup_full_test_db();
-        HcomDb::set_test_migrate_notify_fail(false);
+        CommsDb::set_test_migrate_notify_fail(false);
 
         db.upsert_notify_endpoint("fano", "plugin", 58_898).unwrap();
         db.upsert_notify_endpoint("mozi", "pty", 55_568).unwrap();

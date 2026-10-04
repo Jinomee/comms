@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use rusqlite::params;
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 
 use super::WakeKind;
 
@@ -41,16 +41,16 @@ fn wake_kinds_sql_list() -> String {
 ///
 /// If `kinds` is empty, wakes the instance loops registered for the instance.
 /// `inject` is never woken regardless.
-pub fn wake(db: &HcomDb, instance: &str, kinds: &[WakeKind]) {
+pub fn wake(db: &CommsDb, instance: &str, kinds: &[WakeKind]) {
     let ports = lookup_ports(db, instance, kinds);
     wake_ports(&ports, WAKE_TARGETED_MS);
 }
 
 /// Wake every wake endpoint registered system-wide.
 ///
-/// Used by `hcom send`, relay pull, and config changes to broadcast new state.
+/// Used by `comms send`, relay pull, and config changes to broadcast new state.
 /// Filters out inject ports — their protocol is RPC, not connect-drop.
-pub fn wake_all(db: &HcomDb) {
+pub fn wake_all(db: &CommsDb) {
     let sql = format!(
         "SELECT DISTINCT port FROM notify_endpoints \
          WHERE port > 0 AND kind IN ({})",
@@ -76,7 +76,7 @@ pub fn wake_all(db: &HcomDb) {
 /// Wake launch confirmations for this batch, including aggregate waiters.
 /// Events without batch metadata still wake all launch waiters; their status
 /// query may discover a stopped or failed child, so skipping them is unsafe.
-pub fn wake_launch_waiters(db: &HcomDb, batch_id: Option<&str>) {
+pub fn wake_launch_waiters(db: &CommsDb, batch_id: Option<&str>) {
     let kind = WakeKind::LaunchWait;
     let Ok(mut stmt) = db
         .conn()
@@ -156,7 +156,7 @@ pub fn wake_launch_waiters(db: &HcomDb, batch_id: Option<&str>) {
 /// Used by the stop pattern in `hooks::common::finalize_instance_inner`,
 /// which must capture ports BEFORE `delete_notify_endpoints` removes the rows
 /// and wake them AFTER `delete_instance` so listeners see the row gone.
-pub fn snapshot_wake_ports(db: &HcomDb, instance: &str) -> Vec<u16> {
+pub fn snapshot_wake_ports(db: &CommsDb, instance: &str) -> Vec<u16> {
     lookup_ports(db, instance, WakeKind::ALL)
 }
 
@@ -180,7 +180,7 @@ pub fn wake_ports(ports: &[u16], timeout_ms: u64) {
 
 /// SELECT ports for an instance, filtered to wake kinds. Empty `kinds` means
 /// all wake kinds. Inject is excluded in either case.
-fn lookup_ports(db: &HcomDb, instance: &str, kinds: &[WakeKind]) -> Vec<u16> {
+fn lookup_ports(db: &CommsDb, instance: &str, kinds: &[WakeKind]) -> Vec<u16> {
     let kinds_sql = if kinds.is_empty() {
         wake_kinds_sql_list()
     } else {
@@ -210,7 +210,7 @@ fn lookup_ports(db: &HcomDb, instance: &str, kinds: &[WakeKind]) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::HcomDb;
+    use crate::db::CommsDb;
     use rusqlite::Connection;
     use std::io::ErrorKind;
     use std::net::TcpListener;
@@ -247,14 +247,14 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
-            "hcom_wake_test_{}_{}_{}.db",
+            "comms_wake_test_{}_{}_{}.db",
             std::process::id(),
             id,
             tag
         ))
     }
 
-    fn open_db_with_endpoints(path: &std::path::Path) -> HcomDb {
+    fn open_db_with_endpoints(path: &std::path::Path) -> CommsDb {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(
             "CREATE TABLE notify_endpoints (
@@ -267,7 +267,7 @@ mod tests {
         )
         .unwrap();
         drop(conn);
-        HcomDb::open_raw(path).unwrap()
+        CommsDb::open_raw(path).unwrap()
     }
 
     #[test]

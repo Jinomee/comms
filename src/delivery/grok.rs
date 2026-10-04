@@ -1,18 +1,18 @@
 //! Grok: session binding, status and message delivery, all over Grok's own ACP.
-//! hcom installs no Grok hooks.
+//! comms installs no Grok hooks.
 //!
-//! `hcom grok` runs the TUI against a private leader socket. This thread
+//! `comms grok` runs the TUI against a private leader socket. This thread
 //! attaches a second client to that leader (`grok agent --leader
 //! --leader-socket <sock> stdio`, the official stdio bridge, which handles
 //! leader framing and reconnects). On this leader only the TUI opens
 //! sessions, so:
 //!
 //! - **Binding.** Every visible resident session in the roster
-//!   (`x.ai/sessions/list`) belongs to the TUI. hcom loads each with
+//!   (`x.ai/sessions/list`) belongs to the TUI. comms loads each with
 //!   `noReplay` (live events, no history) and binds the instance to the TUI's
 //!   current one: the first to appear, then any that newly appears idle
 //!   (`/new`, `/resume` from disk). Switching the TUI to a session that is
-//!   already open emits nothing, so hcom follows that switch when a user
+//!   already open emits nothing, so comms follows that switch when a user
 //!   prompt starts running there.
 //! - **Status.** The leader broadcasts each session's queue, tool calls,
 //!   pending approvals and turn ends to every attached client.
@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::hooks::{DeliveryAck, common};
 use crate::instance_lifecycle as lifecycle;
 use crate::notify::NotifyServer;
@@ -61,9 +61,9 @@ const ROSTER_SLOW_POLL: Duration = Duration::from_secs(15);
 const REQUEUE_DELAY: Duration = Duration::from_secs(10);
 /// Wait before loading the bound session again after a failed load.
 const LOAD_RETRY_DELAY: Duration = Duration::from_secs(2);
-/// Prompts hcom queues carry this `promptId` prefix.
-const HCOM_PROMPT_ID_PREFIX: &str = "hcom-";
-/// Leader-mode Grok ignores these (it warns and continues). Since hcom must
+/// Prompts comms queues carry this `promptId` prefix.
+const COMMS_PROMPT_ID_PREFIX: &str = "comms-";
+/// Leader-mode Grok ignores these (it warns and continues). Since comms must
 /// run Grok against a leader, reject them rather than silently drop a
 /// restriction the user asked for.
 const LEADER_IGNORED_FLAGS: &[&str] = &[
@@ -74,9 +74,9 @@ const LEADER_IGNORED_FLAGS: &[&str] = &[
     "--disable-web-search",
 ];
 
-/// Grok gets nothing injected per run: everything hcom needs arrives over the
+/// Grok gets nothing injected per run: everything comms needs arrives over the
 /// ACP client above. Registering as per-run keeps it out of the global
-/// hook-install paths (`hcom hooks`, status, launch).
+/// hook-install paths (`comms hooks`, status, launch).
 pub(crate) static PER_RUN: crate::hooks::runtime::PerRunAdapter =
     crate::hooks::runtime::PerRunAdapter {
         prepare: |ctx| {
@@ -109,11 +109,11 @@ impl Launch {
         for arg in flags(args) {
             let flag = arg.split('=').next().unwrap_or(arg);
             if matches!(flag, "--leader" | "--no-leader" | "--leader-socket") {
-                bail!("hcom manages Grok's leader connection; remove {flag}");
+                bail!("comms manages Grok's leader connection; remove {flag}");
             }
             if LEADER_IGNORED_FLAGS.contains(&flag) {
                 bail!(
-                    "Grok ignores {flag} when attached to a leader, which hcom needs for \
+                    "Grok ignores {flag} when attached to a leader, which comms needs for \
                      message delivery; set the rule in Grok's config instead"
                 );
             }
@@ -127,7 +127,7 @@ impl Launch {
             command: command.to_string(),
             prefix: prefix.to_vec(),
             socket: std::env::temp_dir()
-                .join(format!("hcom-grok-{}.sock", uuid::Uuid::new_v4()))
+                .join(format!("comms-grok-{}.sock", uuid::Uuid::new_v4()))
                 .to_string_lossy()
                 .into_owned(),
             no_subagents: flags(args).any(|arg| arg == "--no-subagents"),
@@ -190,7 +190,7 @@ enum Event {
     },
     /// A request from Grok. Shared interactions (permission, question, plan
     /// approval) reach every client, first answer wins; the TUI answers them
-    /// unless hcom auto-approves.
+    /// unless comms auto-approves.
     Request {
         id: Value,
         method: String,
@@ -279,7 +279,7 @@ impl Client {
             json!({
                 "protocolVersion": 1,
                 "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
-                "clientInfo": {"name": "hcom", "version": env!("CARGO_PKG_VERSION")}
+                "clientInfo": {"name": "comms", "version": env!("CARGO_PKG_VERSION")}
             }),
             running,
             deadline,
@@ -395,7 +395,7 @@ fn permission_option(params: &Value, kind: &str) -> Option<String> {
 fn permission_command(params: &Value) -> Option<&str> {
     let call = &params["toolCall"];
     let input = &call["rawInput"];
-    // POSIX shell only: `is_safe_hcom_command` parses POSIX quoting, and
+    // POSIX shell only: `is_safe_comms_command` parses POSIX quoting, and
     // PowerShell reads `\;` as a separator, so it never auto-approves.
     let posix = match input["variant"].as_str() {
         Some(variant) => variant == "Bash",
@@ -582,7 +582,7 @@ impl Tracker {
     }
 
     /// Whether a permission request belongs to the bound session or its
-    /// subagents, i.e. is hcom's to auto-approve.
+    /// subagents, i.e. is comms's to auto-approve.
     fn owns(&self, params: &Value) -> bool {
         self.speaks_for_bound(str_of(params, "sessionId").unwrap_or_default())
     }
@@ -616,8 +616,8 @@ impl Tracker {
                     return Vec::new();
                 }
                 self.running.insert(session.to_string(), prompt.to_string());
-                // hcom's own batches set their status on ack.
-                let user_prompt = !prompt.starts_with(HCOM_PROMPT_ID_PREFIX)
+                // comms's own batches set their status on ack.
+                let user_prompt = !prompt.starts_with(COMMS_PROMPT_ID_PREFIX)
                     && str_of(params, "runningKind").is_none_or(|kind| kind == "prompt");
                 if !user_prompt {
                     return Vec::new();
@@ -844,7 +844,7 @@ fn roster_sessions(result: &Value) -> &[Value] {
 /// Returns the instance name, which a switch to a session bound to another
 /// identity changes.
 fn apply_bind(
-    db: &HcomDb,
+    db: &CommsDb,
     process_id: &str,
     current_name: &str,
     session: &str,
@@ -888,7 +888,7 @@ fn apply_bind(
 /// Report a pending launch as blocked. `drive_launch_outcome` clears it to
 /// ready once the cause goes away.
 fn block_launch(
-    db: &HcomDb,
+    db: &CommsDb,
     state: &DeliveryState,
     name: &str,
     outcome: &mut LaunchOutcome,
@@ -903,7 +903,7 @@ fn block_launch(
     super::mark_launch_phase_complete(state, outcome, LaunchOutcome::Blocked);
 }
 
-fn apply_status(db: &HcomDb, name: &str, status: &Status) {
+fn apply_status(db: &CommsDb, name: &str, status: &Status) {
     match status {
         Status::Prompt => lifecycle::set_status(db, name, ST_ACTIVE, "prompt", Default::default()),
         Status::Tool { name: tool, input } => {
@@ -922,7 +922,7 @@ fn apply_status(db: &HcomDb, name: &str, status: &Status) {
 pub(super) fn run(
     launch: &Launch,
     running: &Arc<AtomicBool>,
-    db: &mut HcomDb,
+    db: &mut CommsDb,
     notify: &NotifyServer,
     state: &DeliveryState,
     process_id: &str,
@@ -1113,7 +1113,7 @@ pub(super) fn run(
                 Event::Request { id, method, params } => {
                     let approve = (method == "session/request_permission"
                         && tracker.owns(&params)
-                        && permission_command(&params).is_some_and(common::is_safe_hcom_command)
+                        && permission_command(&params).is_some_and(common::is_safe_comms_command)
                         && crate::config::load_config_snapshot().core.auto_approve)
                         .then(|| permission_option(&params, "allow_once"))
                         .flatten();
@@ -1316,13 +1316,13 @@ pub(super) fn run(
             && !matches!(current_status.as_str(), "stopped" | "inactive")
             && let Some(prepared) = common::prepare_pending_messages(db, current_name)
         {
-            let prompt_id = format!("{HCOM_PROMPT_ID_PREFIX}{}", uuid::Uuid::new_v4());
+            let prompt_id = format!("{COMMS_PROMPT_ID_PREFIX}{}", uuid::Uuid::new_v4());
             match conn.send(
                 "session/prompt",
                 json!({
                     "sessionId": session,
                     "prompt": [{"type": "text", "text": &prepared.formatted}],
-                    "_meta": {"promptId": prompt_id, "sendNow": false, "clientIdentifier": "hcom"}
+                    "_meta": {"promptId": prompt_id, "sendNow": false, "clientIdentifier": "comms"}
                 }),
             ) {
                 Ok(request_id) => {
@@ -1371,13 +1371,13 @@ pub(super) fn run(
 mod tests {
     use super::*;
 
-    const BATCH: &str = "<hcom>[request #7] luna → nova: hi</hcom>";
+    const BATCH: &str = "<comms>[request #7] luna → nova: hi</comms>";
 
     fn flight(removed: bool) -> InFlight {
         InFlight {
             request_id: Some(4),
             session: "s".into(),
-            prompt_id: "hcom-1".into(),
+            prompt_id: "comms-1".into(),
             text: BATCH.into(),
             transcript: std::path::PathBuf::new(),
             ack: DeliveryAck {
@@ -1394,7 +1394,7 @@ mod tests {
 
     #[test]
     fn running_prompt_is_delivered() {
-        let params = json!({"sessionId": "s", "runningPromptId": "hcom-1", "entries": []});
+        let params = json!({"sessionId": "s", "runningPromptId": "comms-1", "entries": []});
         assert_eq!(
             queue_outcome(&params, &flight(false)),
             Some(Outcome::Delivered)
@@ -1404,7 +1404,7 @@ mod tests {
     #[test]
     fn absence_alone_proves_nothing() {
         for params in [
-            json!({"sessionId": "s", "runningPromptId": "user-1", "entries": [{"id": "hcom-1"}]}),
+            json!({"sessionId": "s", "runningPromptId": "user-1", "entries": [{"id": "comms-1"}]}),
             json!({"sessionId": "s", "runningPromptId": "user-1", "entries": []}),
             // Someone else's combined turn is running.
             json!({"sessionId": "s", "runningPromptId": "user-1",
@@ -1438,9 +1438,9 @@ mod tests {
         let mut detached = flight(false);
         detached.detached_at = Some(Instant::now());
         let still_queued = json!({"sessionId": "s", "runningPromptId": "user-1",
-                                  "entries": [{"id": "hcom-1"}]});
+                                  "entries": [{"id": "comms-1"}]});
         assert_eq!(queue_outcome(&still_queued, &detached), None);
-        let running = json!({"sessionId": "s", "runningPromptId": "hcom-1", "entries": []});
+        let running = json!({"sessionId": "s", "runningPromptId": "comms-1", "entries": []});
         assert_eq!(queue_outcome(&running, &detached), Some(Outcome::Delivered));
         let gone = json!({"sessionId": "s", "runningPromptId": "user-2", "entries": []});
         assert!(matches!(
@@ -1555,7 +1555,7 @@ mod tests {
 
     fn ask(session: &str, call: &str) -> Value {
         json!({"sessionId": session, "toolCall": {"toolCallId": call, "kind": "execute",
-               "rawInput": {"variant": "Bash", "command": "hcom list"}},
+               "rawInput": {"variant": "Bash", "command": "comms list"}},
                "options": [{"optionId": "allow-once", "kind": "allow_once"},
                            {"optionId": "reject-once", "kind": "reject_once"}]})
     }
@@ -1563,15 +1563,15 @@ mod tests {
     #[test]
     fn permission_request_parts() {
         let request = ask("a", "t1");
-        assert_eq!(permission_command(&request), Some("hcom list"));
+        assert_eq!(permission_command(&request), Some("comms list"));
         assert_eq!(
             permission_option(&request, "allow_once").as_deref(),
             Some("allow-once")
         );
-        let edit = json!({"toolCall": {"kind": "edit", "rawInput": {"command": "hcom list"}}});
+        let edit = json!({"toolCall": {"kind": "edit", "rawInput": {"command": "comms list"}}});
         assert_eq!(permission_command(&edit), None);
         let powershell = json!({"toolCall": {"kind": "execute",
-            "rawInput": {"variant": "PowerShell", "command": "hcom list \\; Write-Output x"}}});
+            "rawInput": {"variant": "PowerShell", "command": "comms list \\; Write-Output x"}}});
         assert_eq!(permission_command(&powershell), None);
     }
 
@@ -1614,10 +1614,10 @@ mod tests {
         let mut tracker = Tracker::default();
         tracker.on_roster(&[entry("a", "idle", 2), entry("b", "idle", 1)]);
         assert_eq!(tracker.bound.as_deref(), Some("a"));
-        // hcom's own batch running in b (queued before a switch) is not a switch.
+        // comms's own batch running in b (queued before a switch) is not a switch.
         assert!(
             tracker
-                .on_notification("x.ai/queue/changed", &queue("b", Some("hcom-9")))
+                .on_notification("x.ai/queue/changed", &queue("b", Some("comms-9")))
                 .is_empty()
         );
         let effects = tracker.on_notification("x.ai/queue/changed", &queue("b", Some("u1")));

@@ -4,7 +4,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::db::{HcomDb, InstanceRow};
+use crate::db::{CommsDb, InstanceRow};
 use crate::shared::time::{now_epoch_f64, now_epoch_i64};
 use crate::shared::{ST_ACTIVE, ST_BLOCKED, ST_INACTIVE, ST_LAUNCHING, ST_LISTENING};
 
@@ -120,7 +120,7 @@ pub fn is_in_wake_grace() -> bool {
 /// cleanup would grace itself into never running. The one write it does make is
 /// `_wake_beacon_armed`, recording that a given beacon value has already been
 /// graced so a frozen beacon cannot suppress cleanup indefinitely.
-pub fn is_in_wake_grace_shared(db: &crate::db::HcomDb) -> bool {
+pub fn is_in_wake_grace_shared(db: &crate::db::CommsDb) -> bool {
     wake_grace(Some(db), false)
 }
 
@@ -130,11 +130,11 @@ pub fn is_in_wake_grace_shared(db: &crate::db::HcomDb) -> bool {
 /// Call it every poll: the beacon write is what tells short-lived processes that
 /// a loop is running and up to date, and the drift branch is what arms the grace
 /// window for them the instant this process observes a wake.
-pub fn is_in_wake_grace_publishing(db: &crate::db::HcomDb) -> bool {
+pub fn is_in_wake_grace_publishing(db: &crate::db::CommsDb) -> bool {
     wake_grace(Some(db), true)
 }
 
-fn wake_grace(db: Option<&crate::db::HcomDb>, publish: bool) -> bool {
+fn wake_grace(db: Option<&crate::db::CommsDb>, publish: bool) -> bool {
     let now_mono = Instant::now();
     let now_wall = now_epoch_f64();
 
@@ -199,7 +199,7 @@ fn wake_grace(db: Option<&crate::db::HcomDb>, publish: bool) -> bool {
 
         // An explicit window from a loop that already saw the wake. Read
         // independently of the beacon: a window that was published must still
-        // be honored when the beacon is missing (fresh db, after `hcom reset`),
+        // be honored when the beacon is missing (fresh db, after `comms reset`),
         // and it must never shorten a grace the beacon already granted.
         if let Ok(Some(grace_until)) = db.kv_get("_wake_grace_until")
             && let Ok(grace_wall) = grace_until.parse::<f64>()
@@ -245,7 +245,7 @@ fn wake_grace(db: Option<&crate::db::HcomDb>, publish: bool) -> bool {
 }
 
 /// Compute the current status from stored fields and heartbeat.
-pub fn get_instance_status(data: &InstanceRow, db: &HcomDb) -> ComputedStatus {
+pub fn get_instance_status(data: &InstanceRow, db: &CommsDb) -> ComputedStatus {
     let status = &data.status;
     let status_time = data.status_time;
     let status_context = &data.status_context;
@@ -271,7 +271,7 @@ pub fn get_instance_status(data: &InstanceRow, db: &HcomDb) -> ComputedStatus {
 
         let detail = get_or_finalize_launch_failure_detail(db, data)
             .or_else(|| extract_launch_failure_detail(data))
-            .unwrap_or_else(|| "launch probably failed - check logs or hcom list -v".to_string());
+            .unwrap_or_else(|| "launch probably failed - check logs or comms list -v".to_string());
         return ComputedStatus {
             status: ST_INACTIVE.to_string(),
             age_string: format_age(age),
@@ -386,7 +386,7 @@ pub fn get_instance_status(data: &InstanceRow, db: &HcomDb) -> ComputedStatus {
 }
 
 pub(crate) fn get_or_finalize_launch_failure_detail(
-    db: &HcomDb,
+    db: &CommsDb,
     data: &InstanceRow,
 ) -> Option<String> {
     finalize_launch_failure_detail(db, data, None)
@@ -397,7 +397,7 @@ pub(crate) fn get_launch_blocker_detail(data: &InstanceRow) -> Option<String> {
 }
 
 pub(crate) fn finalize_launch_failure_detail(
-    db: &HcomDb,
+    db: &CommsDb,
     data: &InstanceRow,
     fallback_detail: Option<&str>,
 ) -> Option<String> {
@@ -434,7 +434,7 @@ pub(crate) fn finalize_launch_failure_detail(
         0
     };
     // Name what the pid actually is. For a background launch this is the
-    // wrapper shell hcom spawned, not the tool: the tool is its grandchild, and
+    // wrapper shell comms spawned, not the tool: the tool is its grandchild, and
     // a wrapper that is alive says nothing about whether the tool ever started.
     // The old wording ("process alive Ns, never bound") read as "the tool is
     // running but won't bind" and sent a Windows launch-chain stall investigation
@@ -542,7 +542,7 @@ fn add_tmux_server_remediation(detail: &str) -> String {
         return detail.to_string();
     }
     format!(
-        "{detail} Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s hcom-external`), then retry."
+        "{detail} Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s comms-external`), then retry."
     )
 }
 
@@ -635,7 +635,7 @@ pub fn get_status_description(status: &str, context: &str) -> String {
 /// Set instance status with timestamp and log the status-change event.
 #[track_caller]
 pub fn set_status(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     status: &str,
     context: &str,
@@ -656,7 +656,7 @@ pub fn set_status(
         let current_data = match db.get_instance_full(instance_name) {
             Ok(data) => data,
             Err(e) => {
-                eprintln!("[hcom] warn: set_status DB read failed for {instance_name}: {e}");
+                eprintln!("[comms] warn: set_status DB read failed for {instance_name}: {e}");
                 None
             }
         };
@@ -755,7 +755,7 @@ pub fn set_status(
 }
 
 /// Delete placeholder instances that have been launching too long.
-pub fn cleanup_stale_placeholders(db: &HcomDb) -> i32 {
+pub fn cleanup_stale_placeholders(db: &CommsDb) -> i32 {
     let mut deleted = 0;
     let now = now_epoch_f64();
 
@@ -790,7 +790,7 @@ const ORPHAN_ENDPOINT_GRACE_SECS: f64 = 60.0;
 /// `Some(stopped)`. Returns `None` when the row isn't eligible or its process
 /// is still the one it launched. Rows without a stored identity are left to
 /// the clock-based cleanup: plain liveness can't rule out PID reuse.
-fn reap_if_process_gone(db: &HcomDb, data: &crate::db::InstanceRow) -> Option<bool> {
+fn reap_if_process_gone(db: &CommsDb, data: &crate::db::InstanceRow) -> Option<bool> {
     if data.status == ST_INACTIVE
         || data.status == ST_LAUNCHING
         || crate::instances::is_launching_placeholder(data)
@@ -837,7 +837,7 @@ fn reap_if_process_gone(db: &HcomDb, data: &crate::db::InstanceRow) -> Option<bo
 /// Stop every local instance whose tracked process is verifiably gone.
 /// Identity-only: no clock inference, so it is safe during wake grace.
 /// Returns the number stopped, or `None` if instances couldn't be listed.
-fn reap_dead_processes(db: &HcomDb) -> Option<i32> {
+fn reap_dead_processes(db: &CommsDb) -> Option<i32> {
     let instances = db.iter_instances_full().ok()?;
     Some(
         instances
@@ -848,10 +848,10 @@ fn reap_dead_processes(db: &HcomDb) -> Option<i32> {
     )
 }
 
-/// Stop dead-process rows (see [`reap_if_process_gone`]) at most once per interval across all hcom
+/// Stop dead-process rows (see [`reap_if_process_gone`]) at most once per interval across all comms
 /// processes. Cheap enough for every CLI command: one KV read in the common
 /// case, and after a reboot or crash the first command clears the dead rows.
-pub fn reap_dead_processes_throttled(db: &HcomDb) -> i32 {
+pub fn reap_dead_processes_throttled(db: &CommsDb) -> i32 {
     let now = crate::shared::time::now_epoch_f64();
     let last = db
         .kv_get(DEAD_PROCESS_SWEEP_KV)
@@ -877,11 +877,11 @@ pub fn reap_dead_processes_throttled(db: &HcomDb) -> i32 {
 /// Delete instances that have been inactive too long.
 /// Three tiers: exit contexts (1 min), stale (1 hr), other inactive (12 hr).
 pub fn cleanup_stale_instances(
-    db: &HcomDb,
+    db: &CommsDb,
     max_stale_seconds: i64,
     max_inactive_seconds: i64,
 ) -> i32 {
-    // Short-lived callers dominate this path (it runs from `hcom list`), and
+    // Short-lived callers dominate this path (it runs from `comms list`), and
     // they cannot detect a wake on their own — see is_in_wake_grace_shared.
     // Wake grace only suppresses clock-based inference below; a stored process
     // identity mismatch is direct evidence that the original process is gone.
@@ -938,7 +938,7 @@ pub fn cleanup_stale_instances(
             //
             // Rows with a stored pid_identity already had PID reuse ruled out
             // above. For legacy rows without one, a recycled PID can keep a dead
-            // row listed. That costs a stale line in `hcom list`; the opposite
+            // row listed. That costs a stale line in `comms list`; the opposite
             // mistake costs a running agent.
             if reason != "exit_cleanup"
                 && let Some(pid) = data.pid
@@ -974,7 +974,7 @@ pub fn cleanup_stale_instances(
     deleted
 }
 
-fn cleanup_stale_remote_instances(db: &HcomDb) {
+fn cleanup_stale_remote_instances(db: &CommsDb) {
     let now = now_epoch_f64();
     let sync_map: std::collections::HashMap<String, String> = db
         .kv_prefix("relay_sync_time_")
@@ -1015,7 +1015,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn setup_test_db() -> (HcomDb, PathBuf) {
+    fn setup_test_db() -> (CommsDb, PathBuf) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1027,7 +1027,7 @@ mod tests {
             test_id
         ));
 
-        let db = HcomDb::open_at(&db_path).unwrap();
+        let db = CommsDb::open_at(&db_path).unwrap();
         (db, db_path)
     }
 
@@ -1054,7 +1054,13 @@ mod tests {
 
     /// Insert an instance parked in `active` with a stale status clock — the
     /// shape a launched agent has when its heartbeat froze (system sleep).
-    fn insert_stale_active(db: &HcomDb, name: &str, status_age: i64, heartbeat_age: i64, pid: i64) {
+    fn insert_stale_active(
+        db: &CommsDb,
+        name: &str,
+        status_age: i64,
+        heartbeat_age: i64,
+        pid: i64,
+    ) {
         let now = now_epoch_i64();
         db.conn()
             .execute(
@@ -1073,7 +1079,7 @@ mod tests {
             .unwrap();
     }
 
-    fn instance_exists(db: &HcomDb, name: &str) -> bool {
+    fn instance_exists(db: &CommsDb, name: &str) -> bool {
         db.get_instance_full(name).unwrap().is_some()
     }
 
@@ -1187,7 +1193,7 @@ mod tests {
         cleanup(path);
     }
 
-    fn insert_with_identity(db: &HcomDb, name: &str, pid: u32, identity: &str) {
+    fn insert_with_identity(db: &CommsDb, name: &str, pid: u32, identity: &str) {
         insert_stale_active(db, name, 0, 0, pid as i64);
         db.update_instance_pid_with_identity(name, pid, Some(identity))
             .unwrap();
@@ -1434,7 +1440,7 @@ mod tests {
         );
         assert!(instance_exists(&db, "dead"));
 
-        // A later `hcom list` is a fresh process, so it starts from a clean
+        // A later `comms list` is a fresh process, so it starts from a clean
         // WAKE_STATE and re-reads the same unchanged beacon.
         reset_wake_state_for_test();
 
@@ -1842,7 +1848,7 @@ Error: Operation not permitted (os error 1)
         assert_eq!(
             result.as_deref(),
             Some(
-                "Error: Operation not permitted (os error 1) Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s hcom-external`), then retry."
+                "Error: Operation not permitted (os error 1) Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s comms-external`), then retry."
             )
         );
     }
@@ -1858,7 +1864,7 @@ WARNING: proceeding, even though we could not update PATH: Operation not permitt
         assert_eq!(
             result.as_deref(),
             Some(
-                "WARNING: proceeding, even though we could not update PATH: Operation not permitted (os error 1) Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s hcom-external`), then retry."
+                "WARNING: proceeding, even though we could not update PATH: Operation not permitted (os error 1) Fully reset tmux first (`tmux kill-server`), then start a fresh tmux server with approval/escalation (for example: `tmux new-session -d -s comms-external`), then retry."
             )
         );
     }

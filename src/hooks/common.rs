@@ -10,14 +10,14 @@ use rusqlite::params;
 use serde_json::Value;
 
 use crate::bootstrap;
-use crate::db::{HcomDb, InstanceRow, Message};
+use crate::db::{CommsDb, InstanceRow, Message};
 use crate::identity;
 use crate::instance_lifecycle as lifecycle;
 use crate::instances;
 use crate::log;
 use crate::messages;
 use crate::shared::constants::MAX_MESSAGES_PER_DELIVERY;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 use crate::shared::{ST_ACTIVE, ST_INACTIVE, ST_LISTENING};
 
 /// Run a hook handler with panic safety.
@@ -49,7 +49,7 @@ pub(crate) fn dispatch_with_panic_guard<R>(
 /// agents need to run without user approval prompts.
 /// Excluded: `stop`, `kill`, `run`, `reset` — these are destructive or
 /// admin-level and require explicit user approval.
-pub(crate) const SAFE_HCOM_COMMANDS: &[&str] = &[
+pub(crate) const SAFE_COMMS_COMMANDS: &[&str] = &[
     "send",
     "claim",
     "release",
@@ -74,13 +74,13 @@ pub(crate) const SAFE_HCOM_COMMANDS: &[&str] = &[
     "--new-terminal",
 ];
 
-/// Whether a shell command line is exactly one `hcom <safe command> …` (or
-/// `uvx hcom …`), for tools where hcom approves commands at runtime.
+/// Whether a shell command line is exactly one `comms <safe command> …` (or
+/// `uvx comms …`), for tools where comms approves commands at runtime.
 ///
 /// Anything the shell could turn into a second command fails: unquoted
 /// `; & | < > ( )`, backticks, newlines, and `$` outside single quotes. A
-/// prefix match alone would approve `hcom send @x -- hi; rm -rf ~`.
-pub(crate) fn is_safe_hcom_command(command: &str) -> bool {
+/// prefix match alone would approve `comms send @x -- hi; rm -rf ~`.
+pub(crate) fn is_safe_comms_command(command: &str) -> bool {
     let (mut single, mut double, mut escaped) = (false, false, false);
     for ch in command.chars() {
         if escaped {
@@ -105,18 +105,18 @@ pub(crate) fn is_safe_hcom_command(command: &str) -> bool {
         return false;
     };
     let rest = match words.as_slice() {
-        [hcom, rest @ ..] if hcom == "hcom" => rest,
-        [uvx, hcom, rest @ ..] if uvx == "uvx" && hcom == "hcom" => rest,
+        [comms, rest @ ..] if comms == "comms" => rest,
+        [uvx, comms, rest @ ..] if uvx == "uvx" && comms == "comms" => rest,
         _ => return false,
     };
     rest.first()
-        .is_none_or(|command| SAFE_HCOM_COMMANDS.contains(&command.as_str()))
+        .is_none_or(|command| SAFE_COMMS_COMMANDS.contains(&command.as_str()))
 }
 
 /// Working directory a hook's relative paths resolve against: the payload's
 /// `cwd`, else the instance's directory, else this process's cwd.
 pub(crate) fn hook_cwd(
-    db: &HcomDb,
+    db: &CommsDb,
     payload: &crate::hooks::HookPayload,
     instance_name: &str,
 ) -> std::path::PathBuf {
@@ -141,11 +141,11 @@ pub(crate) fn hook_cwd(
 /// Pre-gate check: should hooks proceed?
 ///
 ///
-/// - HCOM-launched (process_id or is_launched) → always proceed
+/// - COMMS-launched (process_id or is_launched) → always proceed
 /// - Otherwise: check if DB has any instances → if not, skip (exit 0, empty output)
 ///
-/// This prevents outputting hints/errors when hcom is installed but not actively used.
-pub fn hook_gate_check(ctx: &HcomContext, db: &HcomDb) -> bool {
+/// This prevents outputting hints/errors when comms is installed but not actively used.
+pub fn hook_gate_check(ctx: &CommsContext, db: &CommsDb) -> bool {
     if ctx.process_id.is_some() || ctx.is_launched {
         return true;
     }
@@ -196,25 +196,25 @@ pub(crate) fn message_to_value(m: &Message) -> Value {
 /// Load config hints string (from instance-level or global config).
 /// Call once per hook invocation and pass to format functions.
 pub(crate) fn load_config_hints() -> String {
-    crate::config::HcomConfig::load(None)
+    crate::config::CommsConfig::load(None)
         .map(|c| c.hints.clone())
         .unwrap_or_default()
 }
 
 /// Build instance-data lookup function for message formatting.
-pub(crate) fn make_instance_lookup(db: &HcomDb) -> impl Fn(&str) -> Option<Value> + '_ {
+pub(crate) fn make_instance_lookup(db: &CommsDb) -> impl Fn(&str) -> Option<Value> + '_ {
     |name: &str| db.get_instance(name).ok().flatten()
 }
 
 /// Build a tip-tracking callback for hook message formatting.
-pub(crate) fn make_tip_checker(db: &HcomDb) -> impl Fn(&str, &str) -> (bool, Box<dyn Fn()>) + '_ {
+pub(crate) fn make_tip_checker(db: &CommsDb) -> impl Fn(&str, &str) -> (bool, Box<dyn Fn()>) + '_ {
     move |instance_name: &str, tip_key: &str| {
         let seen = crate::core::tips::has_seen_tip(db, instance_name, tip_key);
         let db_path = db.path().to_path_buf();
         let instance_name = instance_name.to_string();
         let tip_key = tip_key.to_string();
         let mark = Box::new(move || {
-            if let Ok(mark_db) = HcomDb::open_at(&db_path) {
+            if let Ok(mark_db) = CommsDb::open_at(&db_path) {
                 crate::core::tips::mark_tip_seen(&mark_db, &instance_name, &tip_key);
             }
         }) as Box<dyn Fn()>;
@@ -250,8 +250,8 @@ pub(crate) struct GeminiFamilyLifecycleOutput {
 
 /// Shared beforeagent/aftertool output assembly for Gemini and Antigravity.
 pub(crate) fn assemble_gemini_family_lifecycle_outputs(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     instance: &InstanceRow,
     is_agy: bool,
     opts: GeminiFamilyLifecycleOpts,
@@ -310,7 +310,7 @@ pub(crate) fn limit_delivery_messages(messages: &[Value]) -> Vec<Value> {
 }
 
 pub(crate) fn format_messages_json_for_instance(
-    db: &HcomDb,
+    db: &CommsDb,
     messages: &[Value],
     instance_name: &str,
 ) -> String {
@@ -328,7 +328,7 @@ pub(crate) fn format_messages_json_for_instance(
 }
 
 pub(crate) fn format_hook_messages_for_instance(
-    db: &HcomDb,
+    db: &CommsDb,
     messages: &[Value],
     instance_name: &str,
 ) -> String {
@@ -348,13 +348,13 @@ pub(crate) fn format_hook_messages_for_instance(
 ///
 /// Returns formatted text + ack token. Caller must call `commit_delivery_ack`
 /// after the output is successfully written (e.g. stdout flush).
-pub fn prepare_pending_messages(db: &HcomDb, instance_name: &str) -> Option<PreparedDelivery> {
+pub fn prepare_pending_messages(db: &CommsDb, instance_name: &str) -> Option<PreparedDelivery> {
     let raw_messages = db.get_unread_messages(instance_name);
     prepare_raw_messages(db, instance_name, raw_messages)
 }
 
 /// Commit a deferred delivery ack — advance cursor and set status.
-pub fn commit_delivery_ack(db: &HcomDb, ack: &super::DeliveryAck) {
+pub fn commit_delivery_ack(db: &CommsDb, ack: &super::DeliveryAck) {
     // Forward-only: a delayed ack must not rewind a newer concurrent delivery.
     // Cursor and announcement move together so a partial ack can't re-announce.
     if let Err(e) = db.ack_hook_delivery(&ack.instance_name, ack.last_event_id, ack.mark_announced)
@@ -378,7 +378,7 @@ pub fn commit_delivery_ack(db: &HcomDb, ack: &super::DeliveryAck) {
 ///
 /// Cursor advance and status update are deferred to `commit_delivery_ack`.
 fn prepare_raw_messages(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     raw_messages: Vec<Message>,
 ) -> Option<PreparedDelivery> {
@@ -423,7 +423,7 @@ fn prepare_raw_messages(
 /// Returns (delivered_messages, formatted_json). Empty vec and None if no messages.
 /// Callers that need additional formatting can use the returned messages vec.
 ///
-pub fn deliver_pending_messages(db: &HcomDb, instance_name: &str) -> (Vec<Value>, Option<String>) {
+pub fn deliver_pending_messages(db: &CommsDb, instance_name: &str) -> (Vec<Value>, Option<String>) {
     let raw_messages = db.get_unread_messages(instance_name);
     let Some(prepared) = prepare_raw_messages(db, instance_name, raw_messages) else {
         return (vec![], None);
@@ -450,7 +450,7 @@ pub struct PollResult {
 /// Stop hook polling loop — NOT used by main PTY path.
 ///
 /// Runs for: headless instances and subagent polling.
-/// Main PTY path bypasses this (HCOM_PTY_MODE=1, PTY wrapper handles injection).
+/// Main PTY path bypasses this (COMMS_PTY_MODE=1, PTY wrapper handles injection).
 ///
 /// Uses select() on a TCP socket for efficient wake-on-message delivery.
 /// Senders call `crate::notify::wake` (kind=`hook`) to wake the select().
@@ -459,7 +459,7 @@ pub struct PollResult {
 /// (stderr-only feedback), so a delivered message must go out as exit 0 +
 /// `{"decision":"block"}` or Claude never sees it.
 pub fn poll_messages(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     timeout_secs: u64,
     is_background: bool,
@@ -483,7 +483,7 @@ pub fn poll_messages(
 }
 
 fn poll_messages_inner(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     timeout_secs: u64,
     is_background: bool,
@@ -541,7 +541,7 @@ fn poll_messages_inner(
 }
 
 fn poll_loop(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     timeout: Duration,
     start: Instant,
@@ -671,7 +671,7 @@ fn setup_tcp_notification(instance_name: &str) -> (Option<TcpListener>, bool) {
 }
 
 /// Register hook notify port in DB.
-fn register_hook_notify_port(db: &HcomDb, instance_name: &str, port: u16) {
+fn register_hook_notify_port(db: &CommsDb, instance_name: &str, port: u16) {
     if let Err(e) = db.upsert_notify_endpoint(instance_name, "hook", port) {
         log::log_warn(
             "native",
@@ -685,7 +685,7 @@ fn register_hook_notify_port(db: &HcomDb, instance_name: &str, port: u16) {
 }
 
 /// Remove hook notify endpoint from DB.
-fn delete_hook_notify_endpoint(db: &HcomDb, instance_name: &str) {
+fn delete_hook_notify_endpoint(db: &CommsDb, instance_name: &str) {
     let _ = db.conn().execute(
         "DELETE FROM notify_endpoints WHERE instance = ? AND kind = 'hook'",
         params![instance_name],
@@ -699,8 +699,8 @@ fn delete_hook_notify_endpoint(db: &HcomDb, instance_name: &str) {
 /// None if already announced.
 ///
 pub fn inject_bootstrap_once(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     instance_name: &str,
     instance_data: &InstanceRow,
     tool: &str,
@@ -729,10 +729,10 @@ pub(crate) enum TranscriptOwnerResolution {
 /// Resolve Claude ownership from bounded, structured transcript/session evidence.
 ///
 /// Only envelope metadata is inspected. Ordinary message content, summaries,
-/// tool output, bootstrap text, and `[hcom:name]` markers are intentionally out
+/// tool output, bootstrap text, and `[comms:name]` markers are intentionally out
 /// of scope for lineage resolution.
 pub(crate) fn resolve_claude_transcript_owner(
-    db: &HcomDb,
+    db: &CommsDb,
     transcript_path: &str,
     incoming_session_id: Option<&str>,
 ) -> Result<TranscriptOwnerResolution> {
@@ -842,7 +842,7 @@ pub(crate) struct ClaudeIdentityEvidence {
 /// The caller supplies only the lineage-scan policy; owner selection remains
 /// local to each resolution path.
 pub(crate) fn load_claude_identity_evidence(
-    db: &HcomDb,
+    db: &CommsDb,
     process_id: &str,
     session_id: &str,
     transcript_path: &str,
@@ -893,7 +893,7 @@ pub(crate) fn load_claude_identity_evidence(
 
 /// Initialize instance context from hook data via binding lookup.
 ///
-/// Hooks only run in hcom-launched Claude processes, but one process can
+/// Hooks only run in comms-launched Claude processes, but one process can
 /// switch sessions (`/resume`, `/clear`, `/branch`, `--fork-session`) while
 /// its process binding still names the previous generation's owner. So
 /// structured session/transcript identity wins over a conflicting process
@@ -901,10 +901,10 @@ pub(crate) fn load_claude_identity_evidence(
 /// when the session is unbound or its binding has not yet been validated.
 ///
 /// Returns (instance_name, metadata_updates, is_matched_resume). A hook with
-/// no hcom process id never resolves an identity.
+/// no comms process id never resolves an identity.
 pub fn init_hook_context(
-    db: &HcomDb,
-    ctx: &HcomContext,
+    db: &CommsDb,
+    ctx: &CommsContext,
     session_id: &str,
     transcript_path: &str,
 ) -> (Option<String>, serde_json::Map<String, Value>, bool) {
@@ -1034,7 +1034,7 @@ pub fn init_hook_context(
         && let Some(ref bg_name) = ctx.background_name
     {
         updates.insert("background".into(), serde_json::json!(true));
-        let log_file = ctx.hcom_dir.join(".tmp").join("logs").join(bg_name);
+        let log_file = ctx.comms_dir.join(".tmp").join("logs").join(bg_name);
         updates.insert(
             "background_log_file".into(),
             Value::String(log_file.to_string_lossy().to_string()),
@@ -1100,13 +1100,13 @@ pub fn init_hook_context(
 /// PTY/listen wakes go through `crate::notify::wake` directly.
 ///
 pub fn notify_hook_instance(instance_name: &str) {
-    if let Ok(db) = HcomDb::open() {
+    if let Ok(db) = CommsDb::open() {
         notify_hook_instance_with_db(&db, instance_name);
     }
 }
 
 /// Wake hook poll loop with an existing DB handle.
-pub fn notify_hook_instance_with_db(db: &HcomDb, instance_name: &str) {
+pub fn notify_hook_instance_with_db(db: &CommsDb, instance_name: &str) {
     crate::notify::wake(db, instance_name, &[crate::notify::WakeKind::Hook]);
 }
 
@@ -1115,7 +1115,7 @@ pub fn notify_hook_instance_with_db(db: &HcomDb, instance_name: &str) {
 /// Handles: snapshot capture, session/process/notify/subscription cleanup,
 /// life event logging, and instance deletion.
 pub fn stop_instance(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     initiated_by: &str,
     reason: &str,
@@ -1125,7 +1125,7 @@ pub fn stop_instance(
 
 /// Stop a row only while it still owns the inspected dead process incarnation.
 pub(crate) fn stop_instance_if_pid_identity(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     initiated_by: &str,
     reason: &str,
@@ -1151,7 +1151,7 @@ pub enum StopOutcome {
 }
 
 pub(crate) fn stop_placeholder_instance(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     initiated_by: &str,
     reason: &str,
@@ -1163,7 +1163,7 @@ pub(crate) fn stop_placeholder_instance(
 /// corruption creates a parent_session_id cycle.
 const MAX_STOP_DEPTH: u32 = 10;
 
-fn child_instance_names(db: &HcomDb, column: &str, value: &str) -> Result<Vec<String>> {
+fn child_instance_names(db: &CommsDb, column: &str, value: &str) -> Result<Vec<String>> {
     let sql = match column {
         "parent_session_id" => "SELECT name FROM instances WHERE parent_session_id = ?",
         "parent_name" => "SELECT name FROM instances WHERE parent_name = ?",
@@ -1175,7 +1175,7 @@ fn child_instance_names(db: &HcomDb, column: &str, value: &str) -> Result<Vec<St
 }
 
 fn stop_instance_inner(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     initiated_by: &str,
     reason: &str,
@@ -1258,7 +1258,7 @@ fn stop_instance_inner(
             // Track surviving PTY processes in pidtrack
             let alive = crate::sys::process::is_alive(pid_u32);
             if alive {
-                let hcom_dir = crate::paths::hcom_dir();
+                let comms_dir = crate::paths::comms_dir();
 
                 let ti = crate::terminal::resolve_terminal_info(
                     instance_data.terminal_preset_effective.as_deref(),
@@ -1300,7 +1300,7 @@ fn stop_instance_inner(
                 }
 
                 crate::pidtrack::record_pid(&crate::pidtrack::PidRecord {
-                    hcom_dir: &hcom_dir,
+                    comms_dir: &comms_dir,
                     pid: pid_val as u32,
                     tool: &instance_data.tool,
                     name: instance_name,
@@ -1507,7 +1507,7 @@ fn stop_instance_inner(
 /// wild — instances soft-stopped here go straight back to listening/active). So the
 /// hook path must never hard-delete: doing so would strand a still-running agent.
 /// agy's real teardown is the PTY exit (`cleanup_antigravity_pty_exit`), which sees
-/// the inactive status and preserves the row for `hcom r`.
+/// the inactive status and preserves the row for `comms r`.
 ///
 /// Clears session bindings (and process bindings unless `keep_process_binding`),
 /// and logs a stopped life event with snapshot, but does not delete the instance row.
@@ -1515,7 +1515,7 @@ fn stop_instance_inner(
 /// OMP soft-stop passes `keep_process_binding: true` so the live process can rebind
 /// via `bind_session_to_process` on the next turn. Antigravity passes `false`.
 pub fn soft_finalize_session(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     reason: &str,
     updates: Option<&serde_json::Map<String, Value>>,
@@ -1611,7 +1611,7 @@ pub fn soft_finalize_session(
 /// internally — callers don't need error handling.
 ///
 pub fn finalize_session(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     reason: &str,
     updates: Option<&serde_json::Map<String, Value>>,
@@ -1622,7 +1622,7 @@ pub fn finalize_session(
         &format!("instance={} reason={}", instance_name, reason),
     );
 
-    // `hcom kill` records exit:killed + its initiator before signalling, and the
+    // `comms kill` records exit:killed + its initiator before signalling, and the
     // tool's SessionEnd fires in response to that signal. Keep the kill as the
     // stop reason: overwriting it here would make whichever finalizer wins (this
     // hook, the PTY cleanup, or the kill command) record a plain session exit.
@@ -1659,7 +1659,7 @@ pub fn finalize_session(
 }
 
 /// Whether launch `batch_id` has emitted `ready` for `instance_name`.
-pub fn launch_reached_ready(db: &HcomDb, instance_name: &str, batch_id: &str) -> bool {
+pub fn launch_reached_ready(db: &CommsDb, instance_name: &str, batch_id: &str) -> bool {
     db.conn()
         .query_row(
             "SELECT EXISTS(
@@ -1680,7 +1680,7 @@ pub fn launch_reached_ready(db: &HcomDb, instance_name: &str, batch_id: &str) ->
 /// then sets status to active with tool context.
 ///
 pub fn update_tool_status(
-    db: &HcomDb,
+    db: &CommsDb,
     instance_name: &str,
     tool: &str,
     tool_name: &str,
@@ -1731,19 +1731,19 @@ mod tests {
     fn test_notify_hook_instance_missing_instance() {
         // Best-effort wake must not panic when the DB opens but the named
         // instance has no row (the common case for a stale notify target).
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
         notify_hook_instance("nonexistent");
     }
 
-    fn make_test_db() -> (tempfile::TempDir, crate::db::HcomDb) {
+    fn make_test_db() -> (tempfile::TempDir, crate::db::CommsDb) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = crate::db::HcomDb::open_raw(&db_path).unwrap();
+        let db = crate::db::CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         (dir, db)
     }
 
-    fn insert_test_instance(db: &crate::db::HcomDb, name: &str) {
+    fn insert_test_instance(db: &crate::db::CommsDb, name: &str) {
         db.conn()
             .execute(
                 "INSERT INTO instances (name, tool, status, status_context, status_time, created_at, last_event_id)
@@ -1754,7 +1754,7 @@ mod tests {
     }
 
     fn insert_bound_claude_instance(
-        db: &crate::db::HcomDb,
+        db: &crate::db::CommsDb,
         name: &str,
         session_id: &str,
         transcript_path: &str,
@@ -1804,12 +1804,12 @@ mod tests {
     fn context_with_process_id(
         cwd: &std::path::Path,
         process_id: Option<&str>,
-    ) -> crate::shared::context::HcomContext {
+    ) -> crate::shared::context::CommsContext {
         let mut env = std::collections::HashMap::new();
         if let Some(process_id) = process_id {
-            env.insert("HCOM_PROCESS_ID".to_string(), process_id.to_string());
+            env.insert("COMMS_PROCESS_ID".to_string(), process_id.to_string());
         }
-        crate::shared::context::HcomContext::from_env(&env, cwd.to_path_buf())
+        crate::shared::context::CommsContext::from_env(&env, cwd.to_path_buf())
     }
 
     #[test]
@@ -1975,9 +1975,9 @@ mod tests {
     }
 
     #[test]
-    fn hook_context_requires_hcom_process_id() {
-        // Per-run Claude hooks only load in hcom launches, which always set
-        // HCOM_PROCESS_ID; a hook without one is not an hcom participant.
+    fn hook_context_requires_comms_process_id() {
+        // Per-run Claude hooks only load in comms launches, which always set
+        // COMMS_PROCESS_ID; a hook without one is not an comms participant.
         let (dir, db) = make_test_db();
         insert_bound_claude_instance(&db, "niza", "session-niza", "");
         for process_id in [None, Some("")] {
@@ -2115,7 +2115,7 @@ mod tests {
     }
 
     fn insert_test_message(
-        db: &crate::db::HcomDb,
+        db: &crate::db::CommsDb,
         instance: &str,
         from: &str,
         text: &str,
@@ -2714,7 +2714,7 @@ mod tests {
         );
 
         let transcript = dir.path().join("transcript.jsonl");
-        std::fs::write(&transcript, "assistant output [hcom:luna]\n").unwrap();
+        std::fs::write(&transcript, "assistant output [comms:luna]\n").unwrap();
 
         // A launched process with no binding: only structured lineage could
         // name an owner, and marker text is never lineage.
@@ -2743,7 +2743,7 @@ mod tests {
     fn soft_finalize_session_keeps_instance_row() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = crate::db::HcomDb::open_raw(&db_path).unwrap();
+        let db = crate::db::CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         let now = chrono::Utc::now().timestamp() as f64;
         db.conn()
@@ -2788,7 +2788,7 @@ mod tests {
     fn soft_finalize_session_can_keep_process_binding() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = crate::db::HcomDb::open_raw(&db_path).unwrap();
+        let db = crate::db::CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         let now = chrono::Utc::now().timestamp() as f64;
         db.conn()

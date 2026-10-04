@@ -81,13 +81,13 @@ fn last_osc_title(buffer: &[u8]) -> Option<String> {
     last_title
 }
 
-/// Max `char`s of a wrapped tool's title to embed in hcom's own title.
+/// Max `char`s of a wrapped tool's title to embed in comms's own title.
 /// Codex/gemini cap their own titles at 80–240; this keeps the combined string
-/// readable in tab bars after hcom's `{icon} name [tool]` prefix.
+/// readable in tab bars after comms's `{icon} name [tool]` prefix.
 const MAX_CHILD_TITLE_CHARS: usize = 160;
 
 /// Normalize a wrapped tool's raw title into a single bounded line safe to embed
-/// inside hcom's own OSC sequence.
+/// inside comms's own OSC sequence.
 ///
 /// The input is untrusted display text (model output, project paths, etc.). We
 /// drop control characters (which could terminate or reshape our OSC) and other
@@ -217,7 +217,7 @@ impl ScreenTracker {
         instance_name: Option<&str>,
     ) -> Self {
         let config = Config::get();
-        let debug_flag_path = config.hcom_dir.join(".tmp").join("pty_debug_on");
+        let debug_flag_path = config.comms_dir.join(".tmp").join("pty_debug_on");
         // Enable if runtime flag file exists
         let debug_enabled = debug_flag_path.exists();
         let debug_file = if debug_enabled {
@@ -259,7 +259,7 @@ impl ScreenTracker {
 
     /// Open debug log file
     fn open_debug_file(instance_name: Option<&str>) -> Option<File> {
-        let base = Config::get().hcom_dir;
+        let base = Config::get().comms_dir;
 
         let debug_dir = base.join(".tmp").join("logs").join("pty_debug");
         if create_dir_all(&debug_dir).is_err() {
@@ -311,7 +311,7 @@ impl ScreenTracker {
         // Feed to vt100 parser. vt100 has known panics on malformed/edge-case
         // terminal frames (e.g. https://github.com/doy/vt100-rust/issues/28 —
         // a wide character orphaned by a resize, then erased). Catch rather
-        // than let it unwind and kill the PTY wrapper (hcom issue #73); the
+        // than let it unwind and kill the PTY wrapper (comms issue #73); the
         // panic hook still logs the underlying panic, so this just contains
         // the blast radius. A parser that panicked mid-mutation may be left
         // in an inconsistent state, so rebuild it from scratch rather than
@@ -419,7 +419,7 @@ impl ScreenTracker {
 
     /// The wrapped tool's last complete, sanitized terminal title, if any.
     /// Used by combined title mode to append the tool's own live title
-    /// to hcom's `{icon} name [tool]` label.
+    /// to comms's `{icon} name [tool]` label.
     pub fn child_title(&self) -> Option<&str> {
         self.last_child_title.as_deref()
     }
@@ -521,8 +521,8 @@ impl ScreenTracker {
     /// panel listing the `main` conversation plus sub-sessions, each on a row
     /// like `<glyph> <type>  <task>   <age> · ↓ 26.7k tokens`, above a key-hint
     /// line ("Enter to view · …"). A human can navigate into a subagent to view
-    /// or type into ITS input box, which shares the parent's single PTY. hcom
-    /// delivers by writing the `<hcom>` wake trigger to that one stdin, and the
+    /// or type into ITS input box, which shares the parent's single PTY. comms
+    /// delivers by writing the `<comms>` wake trigger to that one stdin, and the
     /// tool routes stdin to whichever view is focused — so a trigger meant for
     /// the root prompt lands in the focused subagent's box instead. There is one
     /// stdin; we cannot target a specific box. The only safe move is to defer
@@ -1141,7 +1141,7 @@ impl ScreenTracker {
         false
     }
 
-    /// Dump screen state to debug log (when HCOM_PTY_DEBUG=1)
+    /// Dump screen state to debug log (when COMMS_PTY_DEBUG=1)
     pub fn dump_screen(&mut self, tool: &str, inject_port: u16, label: &str) {
         if !self.debug_enabled {
             return;
@@ -1339,7 +1339,7 @@ mod tests {
         // (upstream doy/vt100-rust#28: `Row::clear_wide` indexes one past
         // the row's new length) the next time that cell was erased. That
         // panic used to unwind straight through `process`/`resize` and kill
-        // the PTY wrapper (hcom issue #73, observed as repeated
+        // the PTY wrapper (comms issue #73, observed as repeated
         // `stopped by pty: closed` on real Codex sessions). It must now be
         // contained: the tracker rebuilds its parser and stays usable.
         let mut t = make_tracker(3, 10, "");
@@ -1483,7 +1483,7 @@ mod tests {
         let mut t = make_tracker(24, 80, "");
         assert!(!t.is_antigravity_approval_visible());
         t.process(
-            b"Requesting permission for: hcom list --name lida\r\nDo you want to proceed?\r\n",
+            b"Requesting permission for: comms list --name lida\r\nDo you want to proceed?\r\n",
         );
         assert!(t.is_antigravity_approval_visible());
     }
@@ -1491,7 +1491,7 @@ mod tests {
     #[test]
     fn antigravity_no_false_positive_without_marker() {
         let mut t = make_tracker(24, 80, "");
-        t.process(b"> hello world\r\nrunning hcom list\r\n");
+        t.process(b"> hello world\r\nrunning comms list\r\n");
         assert!(!t.is_antigravity_approval_visible());
     }
 
@@ -1852,12 +1852,12 @@ mod tests {
         // Should return the text (it's real input, not placeholder)
         let mut t = make_tracker(24, 80, "? for shortcuts");
         // Non-dim text after prompt, ready pattern on next line
-        t.process("› <hcom>test message</hcom>\r\n? for shortcuts\r\n".as_bytes());
+        t.process("› <comms>test message</comms>\r\n? for shortcuts\r\n".as_bytes());
         // Current bug: returns empty because is_ready()=true
         // After fix: should return the actual text
         assert_eq!(
             t.get_codex_input_text(),
-            Some("<hcom>test message</hcom>".to_string())
+            Some("<comms>test message</comms>".to_string())
         );
     }
 
@@ -1944,8 +1944,8 @@ mod tests {
     #[test]
     fn cursor_extracts_non_dim_text_after_prompt() {
         let mut t = make_tracker(24, 80, "");
-        t.process("→ <hcom>\r\n".as_bytes());
-        assert_eq!(t.get_cursor_input_text(), Some("<hcom>".to_string()));
+        t.process("→ <comms>\r\n".as_bytes());
+        assert_eq!(t.get_cursor_input_text(), Some("<comms>".to_string()));
     }
 
     #[test]
@@ -2180,17 +2180,17 @@ mod tests {
     #[test]
     fn antigravity_injected_text_with_ready_footer() {
         let mut t = make_tracker(24, 80, "? for shortcuts");
-        t.process("> <hcom>test</hcom>\r\n? for shortcuts\r\n".as_bytes());
+        t.process("> <comms>test</comms>\r\n? for shortcuts\r\n".as_bytes());
         assert_eq!(
             t.get_antigravity_input_text(),
-            Some("<hcom>test</hcom>".to_string())
+            Some("<comms>test</comms>".to_string())
         );
     }
 
     #[test]
     fn antigravity_uses_bottommost_prompt_only() {
         let mut t = make_tracker(24, 80, "? for shortcuts");
-        t.process("> <hcom>old message</hcom>\r\n".as_bytes());
+        t.process("> <comms>old message</comms>\r\n".as_bytes());
         t.process("some agent output\r\n".as_bytes());
         t.process("> \r\n? for shortcuts\r\n".as_bytes());
         assert_eq!(t.get_antigravity_input_text(), Some(String::new()));

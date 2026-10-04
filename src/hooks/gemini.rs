@@ -1,4 +1,4 @@
-//! Gemini CLI hook handlers for hcom.
+//! Gemini CLI hook handlers for comms.
 //!
 //! Lifecycle: SessionStart → BeforeAgent → [BeforeTool → AfterTool]* → AfterAgent → SessionEnd
 
@@ -9,14 +9,14 @@ use std::time::Instant;
 use serde_json::Value;
 
 use crate::bootstrap;
-use crate::db::{HcomDb, InstanceRow};
+use crate::db::{CommsDb, InstanceRow};
 use crate::hooks::common;
 use crate::hooks::{HookPayload, HookResult};
 use crate::instance_binding;
 use crate::instance_lifecycle as lifecycle;
 use crate::instances;
 use crate::log;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 use crate::shared::{ST_BLOCKED, ST_LISTENING};
 
 /// Derive Gemini CLI transcript path from session_id.
@@ -121,7 +121,7 @@ fn matches_session_pattern(filename: &str, pattern: &str) -> bool {
 ///
 /// Gemini's ChatRecordingService isn't initialized at SessionStart,
 /// so transcript_path is empty. It becomes available at BeforeAgent/AfterAgent.
-fn try_capture_transcript_path(db: &HcomDb, instance_name: &str, payload: &HookPayload) {
+fn try_capture_transcript_path(db: &CommsDb, instance_name: &str, payload: &HookPayload) {
     let instance = match db.get_instance_full(instance_name) {
         Ok(Some(data)) => data,
         _ => return,
@@ -157,7 +157,7 @@ fn try_capture_transcript_path(db: &HcomDb, instance_name: &str, payload: &HookP
 }
 
 /// Resolve instance using process binding or session binding.
-fn resolve_instance_gemini(db: &HcomDb, payload: &HookPayload) -> Option<InstanceRow> {
+fn resolve_instance_gemini(db: &CommsDb, payload: &HookPayload) -> Option<InstanceRow> {
     instance_binding::resolve_instance_from_binding(db, payload.session_id.as_deref(), None)
 }
 
@@ -168,7 +168,7 @@ fn resolve_instance_gemini(db: &HcomDb, payload: &HookPayload) -> Option<Instanc
 /// Returns None when no reliable directory is available — callers should leave
 /// the existing `instances.directory` field untouched rather than clobber it
 /// with agy's internal cwd (otherwise resume launches in the wrong folder).
-fn resolve_hook_directory(payload: &HookPayload, ctx: &HcomContext) -> Option<String> {
+fn resolve_hook_directory(payload: &HookPayload, ctx: &CommsContext) -> Option<String> {
     if payload.tool == "antigravity" {
         return payload
             .raw
@@ -183,9 +183,9 @@ fn resolve_hook_directory(payload: &HookPayload, ctx: &HcomContext) -> Option<St
 
 /// Handle Gemini SessionStart hook.
 ///
-/// HCOM-launched: bind session_id, inject bootstrap if not announced.
+/// COMMS-launched: bind session_id, inject bootstrap if not announced.
 /// Plain runs: no-op.
-fn handle_sessionstart(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_sessionstart(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     // Persistent hooks also fire in plain runs; stay out of those.
     if ctx.process_id.is_none() {
         return hook_noop();
@@ -318,7 +318,7 @@ fn handle_sessionstart(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) ->
 ///
 /// Fallback bootstrap if SessionStart injection failed.
 /// Also delivers pending messages and binds session_id for fresh instances.
-fn handle_beforeagent(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_beforeagent(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance_gemini(db, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -399,7 +399,7 @@ fn handle_beforeagent(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> 
 }
 
 /// Handle AfterAgent hook - fires when agent turn completes.
-fn handle_afteragent(db: &HcomDb, _ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_afteragent(db: &CommsDb, _ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance_gemini(db, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -418,7 +418,7 @@ fn handle_afteragent(db: &HcomDb, _ctx: &HcomContext, payload: &HookPayload) -> 
 }
 
 /// Handle BeforeTool hook - fires before tool execution.
-fn handle_beforetool(db: &HcomDb, _ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_beforetool(db: &CommsDb, _ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance_gemini(db, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -448,7 +448,7 @@ fn handle_beforetool(db: &HcomDb, _ctx: &HcomContext, payload: &HookPayload) -> 
 /// Handle AfterTool hook - fires after tool execution.
 ///
 /// Bootstrap injection and message delivery via additionalContext.
-fn handle_aftertool(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_aftertool(db: &CommsDb, ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance_gemini(db, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -485,7 +485,7 @@ fn handle_aftertool(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> Ho
 }
 
 /// Handle Notification hook - fires on approval prompts, etc.
-fn handle_notification(db: &HcomDb, _ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_notification(db: &CommsDb, _ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance_gemini(db, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -505,7 +505,7 @@ fn handle_notification(db: &HcomDb, _ctx: &HcomContext, payload: &HookPayload) -
 }
 
 /// Handle SessionEnd hook - fires when a session ends.
-fn handle_sessionend(db: &HcomDb, _ctx: &HcomContext, payload: &HookPayload) -> HookResult {
+fn handle_sessionend(db: &CommsDb, _ctx: &CommsContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_instance_gemini(db, payload) {
         Some(inst) => inst,
         None => return hook_noop(),
@@ -554,7 +554,7 @@ fn hook_noop() -> HookResult {
 }
 
 /// Gemini hook handler name → function dispatch.
-fn get_handler(hook_name: &str) -> Option<fn(&HcomDb, &HcomContext, &HookPayload) -> HookResult> {
+fn get_handler(hook_name: &str) -> Option<fn(&CommsDb, &CommsContext, &HookPayload) -> HookResult> {
     match hook_name {
         "gemini-sessionstart" => Some(handle_sessionstart),
         "gemini-beforeagent" => Some(handle_beforeagent),
@@ -651,7 +651,7 @@ fn serialize_hook_result(tool: &str, hook_name: &str, result: &HookResult) -> Op
 /// Whether stdin/context should route through Antigravity payload parsing.
 ///
 /// Order: `ANTIGRAVITY_AGENT` env → exclude `GEMINI_CLI` gemini → Antigravity schema fallback.
-pub(crate) fn detect_antigravity_payload(ctx: &HcomContext, stdin_json: &Value) -> (bool, bool) {
+pub(crate) fn detect_antigravity_payload(ctx: &CommsContext, stdin_json: &Value) -> (bool, bool) {
     if ctx.tool == crate::tool::Tool::Antigravity {
         return (true, false);
     }
@@ -683,14 +683,14 @@ pub(crate) fn detect_antigravity_payload(ctx: &HcomContext, stdin_json: &Value) 
 
 /// Main entry point for Gemini hooks — called by router.
 ///
-/// Reads stdin JSON, builds HookPayload + HcomContext, dispatches to handler.
+/// Reads stdin JSON, builds HookPayload + CommsContext, dispatches to handler.
 /// Prints JSON to stdout (additionalContext for Gemini to inject).
 ///
 pub fn dispatch_gemini_hook(hook_name: &str) -> i32 {
     let start = Instant::now();
 
     // Build context from environment
-    let ctx = HcomContext::from_os();
+    let ctx = CommsContext::from_os();
 
     // Read stdin JSON
     let stdin_json: Value = match serde_json::from_reader(std::io::stdin().lock()) {
@@ -723,7 +723,7 @@ pub fn dispatch_gemini_hook(hook_name: &str) -> i32 {
             None => return 0,
         };
         // Quick DB check for session binding
-        if let Ok(db) = HcomDb::open() {
+        if let Ok(db) = CommsDb::open() {
             if db.get_session_binding(sid).ok().flatten().is_none() {
                 return 0;
             }
@@ -732,15 +732,15 @@ pub fn dispatch_gemini_hook(hook_name: &str) -> i32 {
         }
     }
 
-    // Ensure hcom directories exist
+    // Ensure comms directories exist
     let init_start = Instant::now();
-    if !crate::paths::ensure_hcom_directories() {
+    if !crate::paths::ensure_comms_directories() {
         return 0;
     }
     let init_ms = init_start.elapsed().as_secs_f64() * 1000.0;
 
     // Open DB (includes schema migration/compat check)
-    let db = match HcomDb::open() {
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(e) => {
             log::log_error("hooks", "gemini.db.error", &format!("{}", e));
@@ -870,7 +870,7 @@ pub fn get_gemini_version() -> Option<(u32, u32, u32)> {
     }
 }
 
-/// Check if installed Gemini version supports hcom hooks (>= 0.26.0).
+/// Check if installed Gemini version supports comms hooks (>= 0.26.0).
 ///
 /// Returns True if version detected and >= 0.26.0, or if version can't be
 /// detected (optimistic fallback). False only if version detected AND too old.
@@ -881,8 +881,8 @@ pub fn is_gemini_version_supported() -> bool {
     }
 }
 
-/// Safe hcom commands for Gemini auto-approval permission patterns.
-use super::common::SAFE_HCOM_COMMANDS;
+/// Safe comms commands for Gemini auto-approval permission patterns.
+use super::common::SAFE_COMMS_COMMANDS;
 
 /// Hook configuration: (hook_type, matcher, command_suffix, timeout, description).
 const GEMINI_HOOK_CONFIGS: &[(&str, &str, &str, u32, &str)] = &[
@@ -891,7 +891,7 @@ const GEMINI_HOOK_CONFIGS: &[(&str, &str, &str, u32, &str)] = &[
         "*",
         "gemini-sessionstart",
         5000,
-        "Connect to hcom network",
+        "Connect to comms network",
     ),
     (
         "BeforeAgent",
@@ -933,15 +933,15 @@ const GEMINI_HOOK_CONFIGS: &[(&str, &str, &str, u32, &str)] = &[
         "*",
         "gemini-sessionend",
         5000,
-        "Disconnect from hcom",
+        "Disconnect from comms",
     ),
 ];
 
-/// Build all legacy permission patterns (both hcom and uvx hcom) for removal from tools.allowed.
+/// Build all legacy permission patterns (both comms and uvx comms) for removal from tools.allowed.
 fn build_all_permission_patterns() -> Vec<String> {
     let mut patterns = Vec::new();
-    for prefix in &["hcom", "uvx hcom"] {
-        for cmd in SAFE_HCOM_COMMANDS {
+    for prefix in &["comms", "uvx comms"] {
+        for cmd in SAFE_COMMS_COMMANDS {
             patterns.push(format!("run_shell_command({} {})", prefix, cmd));
         }
     }
@@ -959,19 +959,19 @@ fn get_gemini_policies_path() -> PathBuf {
     gemini_config_dir().join("policies")
 }
 
-/// Build policy TOML content for hcom.toml.
+/// Build policy TOML content for comms.toml.
 ///
-/// Uses commandPrefix array to allow all safe hcom commands in a single rule.
+/// Uses commandPrefix array to allow all safe comms commands in a single rule.
 /// Matches the Codex pattern of a separate, self-contained permission file.
 fn build_gemini_policy() -> String {
-    let prefix = crate::runtime_env::build_hcom_command();
-    let command_prefixes: Vec<String> = SAFE_HCOM_COMMANDS
+    let prefix = crate::runtime_env::build_comms_command();
+    let command_prefixes: Vec<String> = SAFE_COMMS_COMMANDS
         .iter()
         .map(|cmd| format!("  \"{} {}\"", prefix, cmd))
         .collect();
 
     format!(
-        "# hcom integration - auto-approve safe commands\n\
+        "# comms integration - auto-approve safe commands\n\
          [[rule]]\n\
          toolName = \"run_shell_command\"\n\
          commandPrefix = [\n\
@@ -986,7 +986,7 @@ fn build_gemini_policy() -> String {
 /// Set up Gemini policy file for auto-approval.
 fn setup_gemini_policy() -> bool {
     let policies_dir = get_gemini_policies_path();
-    let policy_file = policies_dir.join("hcom.toml");
+    let policy_file = policies_dir.join("comms.toml");
     let policy_content = build_gemini_policy();
 
     // Check if already configured correctly
@@ -1001,9 +1001,9 @@ fn setup_gemini_policy() -> bool {
     crate::paths::atomic_write(&policy_file, &policy_content)
 }
 
-/// Remove hcom policy file.
+/// Remove comms policy file.
 fn remove_gemini_policy() -> bool {
-    let policy_file = get_gemini_policies_path().join("hcom.toml");
+    let policy_file = get_gemini_policies_path().join("comms.toml");
     if policy_file.exists() {
         std::fs::remove_file(&policy_file).is_ok()
     } else {
@@ -1013,7 +1013,7 @@ fn remove_gemini_policy() -> bool {
 
 /// Remove policy from a specific policies directory path.
 fn remove_policy_from_path(policies_dir: &Path) -> bool {
-    let policy_file = policies_dir.join("hcom.toml");
+    let policy_file = policies_dir.join("comms.toml");
     if policy_file.exists() {
         std::fs::remove_file(&policy_file).is_ok()
     } else {
@@ -1035,15 +1035,15 @@ fn load_gemini_settings(path: &Path) -> Option<serde_json::Map<String, Value>> {
     val.as_object().cloned()
 }
 
-/// Check if a hook dict is an hcom hook.
-fn is_hcom_hook(hook: &Value) -> bool {
+/// Check if a hook dict is an comms hook.
+fn is_comms_hook(hook: &Value) -> bool {
     let command = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
     let name = hook.get("name").and_then(|v| v.as_str()).unwrap_or("");
-    // Check for hcom-related patterns
-    command.contains("hcom")
-        || name.contains("hcom-")
-        || command.contains("${HCOM")
-        || command.contains("$HCOM")
+    // Check for comms-related patterns
+    command.contains("comms")
+        || name.contains("comms-")
+        || command.contains("${COMMS")
+        || command.contains("$COMMS")
 }
 
 /// Set hooksConfig.enabled = true and clean up legacy hooks.enabled.
@@ -1079,10 +1079,10 @@ fn is_hooks_enabled(settings: &serde_json::Map<String, Value>) -> bool {
         == Some(true)
 }
 
-/// Remove hcom hooks from Gemini settings dict (in-place).
+/// Remove comms hooks from Gemini settings dict (in-place).
 ///
-/// Only removes hcom-specific hooks, preserving user hooks.
-fn remove_hcom_hooks_from_settings(settings: &mut serde_json::Map<String, Value>) {
+/// Only removes comms-specific hooks, preserving user hooks.
+fn remove_comms_hooks_from_settings(settings: &mut serde_json::Map<String, Value>) {
     if let Some(hooks_val) = settings.get_mut("hooks")
         && let Some(hooks) = hooks_val.as_object_mut()
     {
@@ -1094,19 +1094,19 @@ fn remove_hcom_hooks_from_settings(settings: &mut serde_json::Map<String, Value>
                     if let Some(matcher_obj) = matcher.as_object() {
                         if let Some(hook_list) = matcher_obj.get("hooks").and_then(|v| v.as_array())
                         {
-                            let non_hcom: Vec<Value> = hook_list
+                            let non_comms: Vec<Value> = hook_list
                                 .iter()
-                                .filter(|h| !is_hcom_hook(h))
+                                .filter(|h| !is_comms_hook(h))
                                 .cloned()
                                 .collect();
-                            if !non_hcom.is_empty() {
+                            if !non_comms.is_empty() {
                                 let mut new_matcher = matcher_obj.clone();
-                                new_matcher.insert("hooks".into(), Value::Array(non_hcom));
+                                new_matcher.insert("hooks".into(), Value::Array(non_comms));
                                 updated.push(Value::Object(new_matcher));
                             } else if !matcher_obj.contains_key("hooks") {
                                 updated.push(matcher.clone());
                             }
-                            // else: had only hcom hooks — drop
+                            // else: had only comms hooks — drop
                         } else {
                             updated.push(matcher.clone());
                         }
@@ -1132,7 +1132,7 @@ fn remove_hcom_hooks_from_settings(settings: &mut serde_json::Map<String, Value>
         }
     }
 
-    // Remove hcom permission patterns from tools.allowed
+    // Remove comms permission patterns from tools.allowed
     if let Some(tools) = settings.get_mut("tools").and_then(|v| v.as_object_mut())
         && let Some(allowed) = tools.get_mut("allowed").and_then(|v| v.as_array_mut())
     {
@@ -1150,7 +1150,7 @@ fn remove_hcom_hooks_from_settings(settings: &mut serde_json::Map<String, Value>
 
 /// Ensure hooksConfig.enabled = true, migrating from legacy hooks.enabled if needed.
 ///
-/// Call this on any hcom gemini command to auto-fix settings.
+/// Call this on any comms gemini command to auto-fix settings.
 /// Skips mutation if Gemini version < 0.26.0.
 pub fn ensure_hooks_enabled() -> bool {
     let version = get_gemini_version();
@@ -1198,12 +1198,12 @@ pub enum VerifyFailReason {
     HooksKeyMissing,
     #[error("hook type '{0}' missing or empty")]
     HookTypeMissing(String),
-    #[error("hcom hook command '{cmd_suffix}' not found under hook type '{hook_type}'")]
+    #[error("comms hook command '{cmd_suffix}' not found under hook type '{hook_type}'")]
     HookCommandMissing {
         hook_type: String,
         cmd_suffix: String,
     },
-    #[error("hook type '{0}': hcom entry has 'type' != \"command\"")]
+    #[error("hook type '{0}': comms entry has 'type' != \"command\"")]
     HookTypeFieldNotCommand(String),
     #[error("hook type '{hook_type}' name mismatch: expected {expected:?}, got {actual:?}")]
     HookNameMismatch {
@@ -1221,7 +1221,7 @@ pub enum VerifyFailReason {
         "hook type '{hook_type}' has no numeric 'timeout' field (canonical): expected a numeric timeout for a canonically-bounded hook"
     )]
     HookTimeoutMissing { hook_type: String },
-    #[error("duplicate hcom hook entry for hook type '{0}'")]
+    #[error("duplicate comms hook entry for hook type '{0}'")]
     HookDuplicated(String),
     #[error("policy file missing: {}", .0.display())]
     PermissionsPolicyMissing(PathBuf),
@@ -1253,34 +1253,34 @@ pub enum SetupError {
     },
 }
 
-/// Shell wrapper for a single hcom hook subcommand (`gemini-beforeagent`, etc.).
+/// Shell wrapper for a single comms hook subcommand (`gemini-beforeagent`, etc.).
 ///
-/// Silently no-ops (exit 0) when hcom isn't on PATH.
+/// Silently no-ops (exit 0) when comms isn't on PATH.
 ///
 /// Gemini CLI's `getShellConfiguration()` (packages/core/src/utils/shell-utils.ts)
 /// runs hook commands via PowerShell on Windows (`-NoProfile -NonInteractive -Command`),
 /// never a POSIX shell, and via a POSIX shell (e.g. `bash -c`) elsewhere. The command
 /// string built here is PowerShell-native on Windows and POSIX `sh -c` elsewhere to
 /// match what actually executes it.
-fn hook_command(hcom_cmd: &str, cmd_suffix: &str) -> String {
-    let bin = hcom_cmd.split_whitespace().next().unwrap_or("hcom");
+fn hook_command(comms_cmd: &str, cmd_suffix: &str) -> String {
+    let bin = comms_cmd.split_whitespace().next().unwrap_or("comms");
     if cfg!(windows) {
-        // hcom_cmd/cmd_suffix are always fixed hcom invocations (never user input),
+        // comms_cmd/cmd_suffix are always fixed comms invocations (never user input),
         // so no quoting is needed here; if that ever changes, note that PowerShell
         // still expands `$variables` and backticks in bare (unquoted) script text.
         format!(
-            "if (Get-Command {bin} -ErrorAction SilentlyContinue) {{ {hcom_cmd} {cmd_suffix} }} else {{ exit 0 }}"
+            "if (Get-Command {bin} -ErrorAction SilentlyContinue) {{ {comms_cmd} {cmd_suffix} }} else {{ exit 0 }}"
         )
     } else {
         format!(
-            "sh -c 'command -v {bin} >/dev/null 2>&1 && exec {hcom_cmd} {cmd_suffix} || exit 0'"
+            "sh -c 'command -v {bin} >/dev/null 2>&1 && exec {comms_cmd} {cmd_suffix} || exit 0'"
         )
     }
 }
 
-/// Set up hcom hooks in Gemini settings.json.
+/// Set up comms hooks in Gemini settings.json.
 ///
-/// - Removes existing hcom hooks first (clean slate)
+/// - Removes existing comms hooks first (clean slate)
 /// - Adds all hooks from GEMINI_HOOK_CONFIGS
 /// - Uses atomic write for safety
 pub fn try_setup_gemini_hooks(include_permissions: bool) -> Result<(), SetupError> {
@@ -1301,8 +1301,8 @@ pub fn try_setup_gemini_hooks(include_permissions: bool) -> Result<(), SetupErro
 
     let mut settings = load_gemini_settings(&settings_path).unwrap_or_default();
 
-    // Remove existing hcom hooks (clean slate)
-    remove_hcom_hooks_from_settings(&mut settings);
+    // Remove existing comms hooks (clean slate)
+    remove_comms_hooks_from_settings(&mut settings);
 
     // Ensure tools.enableHooks = true
     if !settings.contains_key("tools") {
@@ -1325,14 +1325,14 @@ pub fn try_setup_gemini_hooks(include_permissions: bool) -> Result<(), SetupErro
         }
     }
 
-    // Handle permissions via policy engine (~/.gemini/policies/hcom.toml)
+    // Handle permissions via policy engine (~/.gemini/policies/comms.toml)
     if include_permissions {
         setup_gemini_policy();
     } else {
         remove_gemini_policy();
     }
 
-    let hcom_cmd = crate::runtime_env::build_hcom_command();
+    let comms_cmd = crate::runtime_env::build_comms_command();
 
     // Set hooksConfig.enabled
     set_hooks_enabled(&mut settings);
@@ -1345,13 +1345,13 @@ pub fn try_setup_gemini_hooks(include_permissions: bool) -> Result<(), SetupErro
     // Add hook entries
     if let Some(hooks) = settings.get_mut("hooks").and_then(|v| v.as_object_mut()) {
         for &(hook_type, matcher, cmd_suffix, timeout, description) in GEMINI_HOOK_CONFIGS {
-            let hook_name = format!("hcom-{}", hook_type.to_lowercase());
+            let hook_name = format!("comms-{}", hook_type.to_lowercase());
             let hook_entry = serde_json::json!({
                 "matcher": matcher,
                 "hooks": [{
                     "name": hook_name,
                     "type": "command",
-                    "command": hook_command(&hcom_cmd, cmd_suffix),
+                    "command": hook_command(&comms_cmd, cmd_suffix),
                     "timeout": timeout,
                     "description": description,
                 }]
@@ -1393,7 +1393,7 @@ pub fn setup_gemini_hooks(include_permissions: bool) -> bool {
 }
 
 /// Lenient: ignores hook timeout fields entirely. Timeouts are user-tunable.
-/// Verify hcom hooks are installed in Gemini settings. Every hook must have a
+/// Verify comms hooks are installed in Gemini settings. Every hook must have a
 /// numeric `timeout` field — the value itself is not checked, so user edits
 /// still pass.
 pub fn verify_gemini_hooks_installed(check_permissions: bool) -> bool {
@@ -1431,7 +1431,7 @@ fn verify_hooks_at(settings_path: &Path, check_permissions: bool) -> Result<(), 
             _ => return Err(VerifyFailReason::HookTypeMissing(hook_type.to_string())),
         };
 
-        let expected_name = format!("hcom-{}", hook_type.to_lowercase());
+        let expected_name = format!("comms-{}", hook_type.to_lowercase());
         let mut found = false;
 
         for matcher_dict in hook_matchers {
@@ -1450,7 +1450,7 @@ fn verify_hooks_at(settings_path: &Path, check_permissions: bool) -> Result<(), 
             };
 
             for hook in matcher_hooks {
-                if is_hcom_hook(hook) {
+                if is_comms_hook(hook) {
                     if found {
                         return Err(VerifyFailReason::HookDuplicated(hook_type.to_string()));
                     }
@@ -1484,9 +1484,9 @@ fn verify_hooks_at(settings_path: &Path, check_permissions: bool) -> Result<(), 
                         });
                     }
                     let command = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                    let has_hcom = command.contains("${HCOM}")
-                        || command.to_ascii_lowercase().contains("hcom");
-                    if !has_hcom || !command.contains(cmd_suffix) {
+                    let has_comms = command.contains("${COMMS}")
+                        || command.to_ascii_lowercase().contains("comms");
+                    if !has_comms || !command.contains(cmd_suffix) {
                         return Err(VerifyFailReason::HookCommandMissing {
                             hook_type: hook_type.to_string(),
                             cmd_suffix: cmd_suffix.to_string(),
@@ -1507,7 +1507,7 @@ fn verify_hooks_at(settings_path: &Path, check_permissions: bool) -> Result<(), 
 
     // Check permissions via policy engine
     if check_permissions {
-        let policy_file = get_gemini_policies_path().join("hcom.toml");
+        let policy_file = get_gemini_policies_path().join("comms.toml");
         if !policy_file.exists() {
             return Err(VerifyFailReason::PermissionsPolicyMissing(policy_file));
         }
@@ -1516,7 +1516,7 @@ fn verify_hooks_at(settings_path: &Path, check_permissions: bool) -> Result<(), 
     Ok(())
 }
 
-/// Remove hcom hooks from Gemini settings and the policy file from policies/,
+/// Remove comms hooks from Gemini settings and the policy file from policies/,
 /// in every dir an install may live in.
 pub fn remove_gemini_hooks() -> bool {
     crate::runtime_env::gemini_family_cleanup_dirs()
@@ -1537,7 +1537,7 @@ fn remove_hooks_from_path(path: &Path) -> bool {
         None => return true,
     };
 
-    remove_hcom_hooks_from_settings(&mut settings);
+    remove_comms_hooks_from_settings(&mut settings);
 
     let json_str = serde_json::to_string_pretty(&Value::Object(settings)).unwrap_or_default();
     crate::paths::atomic_write(path, &json_str)
@@ -1549,32 +1549,32 @@ mod tests {
 
     #[test]
     fn test_hook_command_platform_specific() {
-        let cmd = hook_command("hcom", "gemini-beforeagent");
+        let cmd = hook_command("comms", "gemini-beforeagent");
         if cfg!(windows) {
             assert_eq!(
                 cmd,
-                "if (Get-Command hcom -ErrorAction SilentlyContinue) { hcom gemini-beforeagent } else { exit 0 }"
+                "if (Get-Command comms -ErrorAction SilentlyContinue) { comms gemini-beforeagent } else { exit 0 }"
             );
         } else {
             assert_eq!(
                 cmd,
-                "sh -c 'command -v hcom >/dev/null 2>&1 && exec hcom gemini-beforeagent || exit 0'"
+                "sh -c 'command -v comms >/dev/null 2>&1 && exec comms gemini-beforeagent || exit 0'"
             );
         }
     }
 
     #[test]
     fn test_hook_command_uses_first_word_as_bin_for_uvx() {
-        let cmd = hook_command("uvx hcom", "gemini-sessionend");
+        let cmd = hook_command("uvx comms", "gemini-sessionend");
         if cfg!(windows) {
             assert_eq!(
                 cmd,
-                "if (Get-Command uvx -ErrorAction SilentlyContinue) { uvx hcom gemini-sessionend } else { exit 0 }"
+                "if (Get-Command uvx -ErrorAction SilentlyContinue) { uvx comms gemini-sessionend } else { exit 0 }"
             );
         } else {
             assert_eq!(
                 cmd,
-                "sh -c 'command -v uvx >/dev/null 2>&1 && exec uvx hcom gemini-sessionend || exit 0'"
+                "sh -c 'command -v uvx >/dev/null 2>&1 && exec uvx comms gemini-sessionend || exit 0'"
             );
         }
     }
@@ -1636,7 +1636,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let stdin = serde_json::json!({"sessionId": "abc"});
         let (is_agy, fallback) = detect_antigravity_payload(&ctx, &stdin);
         assert!(is_agy);
@@ -1652,7 +1652,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let stdin = serde_json::json!({"sessionId": "abc", "conversationId": "legacy"});
         let (is_agy, fallback) = detect_antigravity_payload(&ctx, &stdin);
         assert!(!is_agy);
@@ -1668,7 +1668,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let stdin = serde_json::json!({
             "conversationId": "6f000787",
             "toolCall": {"name": "run_command", "args": {}}
@@ -1687,7 +1687,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let stdin = serde_json::json!({
             "conversationId": "6f000787",
             "workspacePaths": ["/tmp/project"],
@@ -1707,7 +1707,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let stdin = serde_json::json!({"conversationId": "legacy"});
         let (is_agy, fallback) = detect_antigravity_payload(&ctx, &stdin);
         assert!(!is_agy);
@@ -1821,20 +1821,20 @@ mod tests {
     }
 
     #[test]
-    fn test_is_hcom_hook() {
-        let hcom_hook = serde_json::json!({
-            "name": "hcom-sessionstart",
+    fn test_is_comms_hook() {
+        let comms_hook = serde_json::json!({
+            "name": "comms-sessionstart",
             "type": "command",
-            "command": "hcom gemini-sessionstart"
+            "command": "comms gemini-sessionstart"
         });
-        assert!(is_hcom_hook(&hcom_hook));
+        assert!(is_comms_hook(&comms_hook));
 
         let user_hook = serde_json::json!({
             "name": "my-hook",
             "type": "command",
             "command": "/usr/local/bin/my-script"
         });
-        assert!(!is_hcom_hook(&user_hook));
+        assert!(!is_comms_hook(&user_hook));
     }
 
     #[test]
@@ -1862,20 +1862,20 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_hcom_hooks_preserves_user_hooks() {
+    fn test_remove_comms_hooks_preserves_user_hooks() {
         let mut settings: serde_json::Map<String, Value> = serde_json::from_value(serde_json::json!({
             "hooks": {
                 "SessionStart": [{
                     "matcher": "*",
                     "hooks": [
-                        {"name": "hcom-sessionstart", "type": "command", "command": "hcom gemini-sessionstart"},
+                        {"name": "comms-sessionstart", "type": "command", "command": "comms gemini-sessionstart"},
                         {"name": "my-hook", "type": "command", "command": "/usr/bin/my-script"}
                     ]
                 }]
             }
         })).unwrap();
 
-        remove_hcom_hooks_from_settings(&mut settings);
+        remove_comms_hooks_from_settings(&mut settings);
 
         // User hook should be preserved
         let hooks = settings.get("hooks").unwrap();
@@ -1890,19 +1890,19 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_hcom_hooks_drops_empty() {
+    fn test_remove_comms_hooks_drops_empty() {
         let mut settings: serde_json::Map<String, Value> = serde_json::from_value(serde_json::json!({
             "hooks": {
                 "SessionStart": [{
                     "matcher": "*",
                     "hooks": [
-                        {"name": "hcom-sessionstart", "type": "command", "command": "hcom gemini-sessionstart"}
+                        {"name": "comms-sessionstart", "type": "command", "command": "comms gemini-sessionstart"}
                     ]
                 }]
             }
         })).unwrap();
 
-        remove_hcom_hooks_from_settings(&mut settings);
+        remove_comms_hooks_from_settings(&mut settings);
 
         // hooks dict should be removed (all empty)
         assert!(settings.get("hooks").is_none());
@@ -1915,8 +1915,8 @@ mod tests {
         assert!(policy.contains("toolName = \"run_shell_command\""));
         assert!(policy.contains("decision = \"allow\""));
         assert!(policy.contains("priority = 300"));
-        assert!(policy.contains("hcom send"));
-        assert!(policy.contains("hcom list"));
+        assert!(policy.contains("comms send"));
+        assert!(policy.contains("comms list"));
         assert!(policy.contains("commandPrefix"));
     }
 
@@ -1933,11 +1933,14 @@ mod tests {
 
         assert!(settings_path.exists());
         let content = std::fs::read_to_string(&settings_path).unwrap();
-        assert!(content.contains("hcom-sessionstart"));
-        assert!(content.contains("hcom-beforeagent"));
+        assert!(content.contains("comms-sessionstart"));
+        assert!(content.contains("comms-beforeagent"));
         assert!(content.contains("enableHooks"));
 
-        let policy_path = test_home.join(".gemini").join("policies").join("hcom.toml");
+        let policy_path = test_home
+            .join(".gemini")
+            .join("policies")
+            .join("comms.toml");
         assert!(policy_path.exists(), "policy file should be created");
 
         let remove_ok = remove_hooks_from_path(&settings_path);
@@ -1950,13 +1953,13 @@ mod tests {
     use serial_test::serial;
 
     fn gemini_test_env() -> (tempfile::TempDir, PathBuf, PathBuf, EnvGuard) {
-        let (dir, _hcom_dir, test_home, guard) = isolated_test_env();
+        let (dir, _comms_dir, test_home, guard) = isolated_test_env();
         let settings_path = test_home.join(".gemini").join("settings.json");
         (dir, test_home, settings_path, guard)
     }
 
-    /// Independent verification: check no hcom hooks present in settings JSON.
-    fn independently_verify_no_hcom_hooks(settings: &Value) -> Vec<String> {
+    /// Independent verification: check no comms hooks present in settings JSON.
+    fn independently_verify_no_comms_hooks(settings: &Value) -> Vec<String> {
         let mut violations = Vec::new();
         let hooks = match settings.get("hooks").and_then(|v| v.as_object()) {
             Some(h) => h,
@@ -1978,7 +1981,7 @@ mod tests {
                 for (j, hook) in hooks_arr.iter().enumerate() {
                     let name = hook.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     let command = hook.get("command").and_then(|v| v.as_str()).unwrap_or("");
-                    if name.contains("hcom") || command.contains("hcom") {
+                    if name.contains("comms") || command.contains("comms") {
                         violations.push(format!(
                             "{hook_type}[{i}].hooks[{j}]: name={name}, command={command}"
                         ));
@@ -1989,12 +1992,12 @@ mod tests {
         violations
     }
 
-    /// Independent verification: check expected hcom hooks are present.
-    fn independently_verify_hcom_hooks_present(
+    /// Independent verification: check expected comms hooks are present.
+    fn independently_verify_comms_hooks_present(
         settings: &Value,
         expected: &[(&str, &str)], // (hook_type, cmd_suffix)
     ) -> Vec<String> {
-        let hcom_cmd = crate::runtime_env::build_hcom_command();
+        let comms_cmd = crate::runtime_env::build_comms_command();
         let mut missing = Vec::new();
         let hooks = match settings.get("hooks").and_then(|v| v.as_object()) {
             Some(h) => h,
@@ -2006,7 +2009,7 @@ mod tests {
             }
         };
         for &(hook_type, cmd_suffix) in expected {
-            let expected_full = hook_command(&hcom_cmd, cmd_suffix);
+            let expected_full = hook_command(&comms_cmd, cmd_suffix);
             let matchers = match hooks.get(hook_type).and_then(|v| v.as_array()) {
                 Some(a) => a,
                 None => {
@@ -2103,11 +2106,11 @@ mod tests {
             assert_eq!(hook["type"], "command");
             assert_eq!(
                 hook["name"].as_str().unwrap(),
-                format!("hcom-{}", hook_type.to_lowercase())
+                format!("comms-{}", hook_type.to_lowercase())
             );
             assert_eq!(hook["timeout"].as_u64().unwrap(), expected_timeout as u64);
-            let hcom = crate::runtime_env::build_hcom_command();
-            let expected_command = hook_command(&hcom, cmd_suffix);
+            let comms = crate::runtime_env::build_comms_command();
+            let expected_command = hook_command(&comms, cmd_suffix);
             assert_eq!(
                 hook["command"].as_str().unwrap(),
                 expected_command,
@@ -2184,19 +2187,22 @@ mod tests {
             allowed.iter().any(|v| v.as_str() == Some("read_file")),
             "user's read_file entry should be preserved"
         );
-        // hcom permissions should NOT be in tools.allowed (moved to policy engine)
+        // comms permissions should NOT be in tools.allowed (moved to policy engine)
         assert!(
             !allowed
                 .iter()
-                .any(|v| v.as_str().map(|s| s.contains("hcom")).unwrap_or(false)),
-            "hcom permissions should not be in tools.allowed"
+                .any(|v| v.as_str().map(|s| s.contains("comms")).unwrap_or(false)),
+            "comms permissions should not be in tools.allowed"
         );
 
         // Policy file should exist instead
-        let policy_file = test_home.join(".gemini").join("policies").join("hcom.toml");
+        let policy_file = test_home
+            .join(".gemini")
+            .join("policies")
+            .join("comms.toml");
         assert!(policy_file.exists(), "policy file should be created");
         let policy_content = std::fs::read_to_string(&policy_file).unwrap();
-        assert!(policy_content.contains("hcom send"));
+        assert!(policy_content.contains("comms send"));
         assert!(policy_content.contains("decision = \"allow\""));
 
         drop(_guard);
@@ -2232,9 +2238,9 @@ mod tests {
                 "SessionStart": [{
                     "matcher": "startup",
                     "hooks": [{
-                        "name": "hcom-sessionstart",
+                        "name": "comms-sessionstart",
                         "type": "command",
-                        "command": "hcom gemini-sessionstart",
+                        "command": "comms gemini-sessionstart",
                         "timeout": 5000,
                     }],
                 }],
@@ -2242,9 +2248,9 @@ mod tests {
                     "matcher": "*",
                     "hooks": [
                         {
-                            "name": "hcom-beforeagent",
+                            "name": "comms-beforeagent",
                             "type": "command",
-                            "command": "hcom gemini-beforeagent",
+                            "command": "comms gemini-beforeagent",
                             "timeout": 5000,
                         },
                         {
@@ -2270,7 +2276,7 @@ mod tests {
         assert_eq!(updated["hooks"]["disabled"], serde_json::json!(["keep-me"]));
         // model preserved
         assert_eq!(updated["model"]["skipNextSpeakerCheck"], false);
-        // SessionStart removed (only had hcom hooks)
+        // SessionStart removed (only had comms hooks)
         assert!(updated["hooks"].get("SessionStart").is_none());
         // BeforeAgent user hook preserved
         let before_agent = updated["hooks"]["BeforeAgent"].as_array().unwrap();
@@ -2279,9 +2285,9 @@ mod tests {
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0]["name"], "keep-other");
 
-        // Independent check: no hcom hooks remain
-        let violations = independently_verify_no_hcom_hooks(&updated);
-        assert!(violations.is_empty(), "hcom hooks remain: {violations:?}");
+        // Independent check: no comms hooks remain
+        let violations = independently_verify_no_comms_hooks(&updated);
+        assert!(violations.is_empty(), "comms hooks remain: {violations:?}");
 
         drop(_guard);
     }
@@ -2321,7 +2327,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_verify_accepts_alternate_hcom_prefix() {
+    fn test_verify_accepts_alternate_comms_prefix() {
         let (_dir, _test_home, settings_path, _guard) = gemini_test_env();
 
         assert!(setup_gemini_hooks(false));
@@ -2329,7 +2335,7 @@ mod tests {
         let mut settings = read_json(&settings_path);
         let (hook_type, _, cmd_suffix, _, _) = GEMINI_HOOK_CONFIGS[0];
         settings["hooks"][hook_type][0]["hooks"][0]["command"] =
-            Value::String(format!("uvx hcom {cmd_suffix}"));
+            Value::String(format!("uvx comms {cmd_suffix}"));
         std::fs::write(
             &settings_path,
             serde_json::to_string_pretty(&settings).unwrap(),
@@ -2444,9 +2450,9 @@ mod tests {
                 "SessionStart": [{
                     "matcher": "*",
                     "hooks": [{
-                        "name": "hcom-sessionstart",
+                        "name": "comms-sessionstart",
                         "type": "command",
-                        "command": "hcom gemini-sessionstart",
+                        "command": "comms gemini-sessionstart",
                         "timeout": 5000,
                     }],
                 }],
@@ -2466,10 +2472,10 @@ mod tests {
             updated.get("hooks").is_none() || updated["hooks"].get("enabled").is_none(),
             "legacy hooks.enabled should be removed"
         );
-        // hcom hooks should be gone
+        // comms hooks should be gone
         assert!(
             updated.get("hooks").is_none() || updated["hooks"].get("SessionStart").is_none(),
-            "hcom hooks should be removed"
+            "comms hooks should be removed"
         );
     }
 
@@ -2497,7 +2503,7 @@ mod tests {
             .iter()
             .map(|&(ht, _, cmd, _, _)| (ht, cmd))
             .collect();
-        let missing = independently_verify_hcom_hooks_present(&after_setup, &expected);
+        let missing = independently_verify_comms_hooks_present(&after_setup, &expected);
         assert!(
             missing.is_empty(),
             "after setup, missing hooks: {missing:?}"
@@ -2506,10 +2512,10 @@ mod tests {
         // Remove
         assert!(remove_hooks_from_path(&settings_path));
         let after_remove = read_json(&settings_path);
-        let violations = independently_verify_no_hcom_hooks(&after_remove);
+        let violations = independently_verify_no_comms_hooks(&after_remove);
         assert!(
             violations.is_empty(),
-            "after remove, hcom hooks still present: {violations:?}"
+            "after remove, comms hooks still present: {violations:?}"
         );
 
         // User data preserved
@@ -2534,7 +2540,7 @@ mod tests {
             .iter()
             .map(|&(ht, _, cmd, _, _)| (ht, cmd))
             .collect();
-        let missing = independently_verify_hcom_hooks_present(&settings, &expected);
+        let missing = independently_verify_comms_hooks_present(&settings, &expected);
         assert!(missing.is_empty(), "missing hooks: {missing:?}");
 
         drop(_guard);
@@ -2554,7 +2560,7 @@ mod tests {
             .iter()
             .map(|&(ht, _, cmd, _, _)| (ht, cmd))
             .collect();
-        let missing = independently_verify_hcom_hooks_present(&settings, &expected);
+        let missing = independently_verify_comms_hooks_present(&settings, &expected);
         assert!(missing.is_empty(), "missing hooks: {missing:?}");
 
         drop(_guard);
@@ -2562,7 +2568,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_gemini_mixed_hcom_and_user_hooks() {
+    fn test_gemini_mixed_comms_and_user_hooks() {
         let (_dir, _test_home, settings_path, _guard) = gemini_test_env();
 
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
@@ -2572,8 +2578,8 @@ mod tests {
                 "SessionStart": [{
                     "matcher": "*",
                     "hooks": [
-                        {"name": "hcom-sessionstart", "type": "command",
-                         "command": "hcom gemini-sessionstart", "timeout": 5000},
+                        {"name": "comms-sessionstart", "type": "command",
+                         "command": "comms gemini-sessionstart", "timeout": 5000},
                         {"name": "my-logger", "type": "command",
                          "command": "echo session started", "timeout": 1000},
                     ]
@@ -2596,8 +2602,8 @@ mod tests {
         assert_eq!(hooks_list.len(), 1);
         assert_eq!(hooks_list[0]["name"], "my-logger");
 
-        // No hcom hooks
-        let violations = independently_verify_no_hcom_hooks(&updated);
+        // No comms hooks
+        let violations = independently_verify_no_comms_hooks(&updated);
         assert!(violations.is_empty());
 
         drop(_guard);
@@ -2643,13 +2649,13 @@ mod tests {
     fn test_setup_gemini_cleans_legacy_tools_allowed() {
         let (_dir, test_home, settings_path, _guard) = gemini_test_env();
 
-        // Pre-populate with legacy hcom tools.allowed entries
+        // Pre-populate with legacy comms tools.allowed entries
         std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
         let user_settings = serde_json::json!({
             "tools": {
                 "allowed": [
-                    "run_shell_command(hcom send)",
-                    "run_shell_command(hcom list)",
+                    "run_shell_command(comms send)",
+                    "run_shell_command(comms list)",
                     "run_shell_command(git status)",
                 ]
             }
@@ -2664,22 +2670,25 @@ mod tests {
 
         let updated = read_json(&settings_path);
         let allowed = updated["tools"]["allowed"].as_array().unwrap();
-        // User's non-hcom entry preserved
+        // User's non-comms entry preserved
         assert!(
             allowed
                 .iter()
                 .any(|v| v.as_str() == Some("run_shell_command(git status)")),
             "user's git status entry should be preserved"
         );
-        // Legacy hcom entries removed
+        // Legacy comms entries removed
         assert!(
             !allowed
                 .iter()
-                .any(|v| v.as_str().map(|s| s.contains("hcom")).unwrap_or(false)),
-            "legacy hcom tools.allowed entries should be removed"
+                .any(|v| v.as_str().map(|s| s.contains("comms")).unwrap_or(false)),
+            "legacy comms tools.allowed entries should be removed"
         );
         // Policy file should exist instead
-        let policy_file = test_home.join(".gemini").join("policies").join("hcom.toml");
+        let policy_file = test_home
+            .join(".gemini")
+            .join("policies")
+            .join("comms.toml");
         assert!(policy_file.exists(), "policy file should be created");
 
         drop(_guard);
@@ -2691,7 +2700,10 @@ mod tests {
         let (_dir, test_home, _settings_path, _guard) = gemini_test_env();
 
         assert!(setup_gemini_hooks(true));
-        let policy_file = test_home.join(".gemini").join("policies").join("hcom.toml");
+        let policy_file = test_home
+            .join(".gemini")
+            .join("policies")
+            .join("comms.toml");
         assert!(policy_file.exists(), "policy file should be created");
 
         // Verify content
@@ -2718,7 +2730,10 @@ mod tests {
         let (_dir, test_home, _settings_path, _guard) = gemini_test_env();
 
         assert!(setup_gemini_hooks(true));
-        let policy_file = test_home.join(".gemini").join("policies").join("hcom.toml");
+        let policy_file = test_home
+            .join(".gemini")
+            .join("policies")
+            .join("comms.toml");
         let first = std::fs::read_to_string(&policy_file).unwrap();
 
         assert!(setup_gemini_hooks(true));
@@ -2735,7 +2750,10 @@ mod tests {
         let (_dir, test_home, _settings_path, _guard) = gemini_test_env();
 
         assert!(setup_gemini_hooks(true));
-        let policy_file = test_home.join(".gemini").join("policies").join("hcom.toml");
+        let policy_file = test_home
+            .join(".gemini")
+            .join("policies")
+            .join("comms.toml");
         assert!(policy_file.exists());
 
         remove_gemini_hooks();
@@ -2838,15 +2856,15 @@ mod tests {
         );
     }
 
-    fn make_test_db() -> (tempfile::TempDir, HcomDb) {
+    fn make_test_db() -> (tempfile::TempDir, CommsDb) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         (dir, db)
     }
 
-    fn insert_test_instance(db: &HcomDb, name: &str, tool: &str) {
+    fn insert_test_instance(db: &CommsDb, name: &str, tool: &str) {
         let now = chrono::Utc::now().timestamp() as f64;
         db.conn().execute(
             "INSERT INTO instances (name, status, created_at, tool) VALUES (?1, 'active', ?2, ?3)",
@@ -2854,7 +2872,7 @@ mod tests {
         ).unwrap();
     }
 
-    fn insert_test_message(db: &HcomDb, instance: &str, from: &str, text: &str) -> i64 {
+    fn insert_test_message(db: &CommsDb, instance: &str, from: &str, text: &str) -> i64 {
         let data = serde_json::json!({
             "from": from,
             "text": text,
@@ -2884,7 +2902,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        let ctx = HcomContext::from_env(&env, PathBuf::from("/tmp"));
+        let ctx = CommsContext::from_env(&env, PathBuf::from("/tmp"));
         let payload = HookPayload {
             session_id: Some("sess-vago".to_string()),
             transcript_path: None,
@@ -2941,7 +2959,7 @@ mod tests {
             raw: serde_json::Value::Null,
         };
 
-        let result = handle_afteragent(&db, &HcomContext::from_os(), &payload);
+        let result = handle_afteragent(&db, &CommsContext::from_os(), &payload);
         assert_eq!(result.exit_code(), 0);
         let instance = db.get_instance_full("vago").unwrap().unwrap();
         assert_eq!(instance.status, "active");
@@ -2968,7 +2986,7 @@ mod tests {
             }),
         };
 
-        let result = handle_sessionend(&db, &HcomContext::from_os(), &payload);
+        let result = handle_sessionend(&db, &CommsContext::from_os(), &payload);
         assert_eq!(result.exit_code(), 0);
         let instance = db.get_instance_full("vago").unwrap().unwrap();
         assert_eq!(instance.status, ST_LISTENING);
@@ -2992,7 +3010,7 @@ mod tests {
             raw: serde_json::Value::Null,
         };
 
-        let result = handle_beforetool(&db, &HcomContext::from_os(), &payload);
+        let result = handle_beforetool(&db, &CommsContext::from_os(), &payload);
         assert_eq!(result.exit_code(), 0);
 
         let detail: String = db

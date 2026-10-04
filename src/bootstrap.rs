@@ -1,47 +1,47 @@
 //! Build the one-time bootstrap prompt injected into a newly connected agent.
 //!
-//! Teaches the agent its identity and the `hcom` CLI contract (messaging,
+//! Teaches the agent its identity and the `comms` CLI contract (messaging,
 //! listing, spawning). Concise for token efficiency; agents learn details via --help.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::sync::LazyLock;
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::identity::get_full_name;
 use crate::paths;
 use crate::shared::constants::{SENDER, ST_ACTIVE, ST_INACTIVE, ST_LISTENING};
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 use crate::tool::Tool;
 
 // Bundled script names (compile-time known).
-// User scripts are discovered at runtime from ~/.hcom/scripts/.
+// User scripts are discovered at runtime from ~/.comms/scripts/.
 
 // MAIN BOOTSTRAP TEMPLATE
 //
-// `--name` is redundant for live managed agents (HCOM_PROCESS_ID resolves identity at
+// `--name` is redundant for live managed agents (COMMS_PROCESS_ID resolves identity at
 // priority 4 in identity.rs), but mandatory for two reasons:
 //
 // 1. Explicit `--name` takes the error-propagating path in build_ctx_for_command
 //    (`?`), while env-only resolution takes the swallowing path (`.ok()`).  When
 //    an agent is stopped/killed/unbound it doesn't know — it just runs the next
 //    command.  With `--name`, that produces "Instance 'luna' not found. Run
-//    'hcom start --as luna'".  Without it, identity silently becomes None and
+//    'comms start --as luna'".  Without it, identity silently becomes None and
 //    the gate emits a generic error with a `<name>` placeholder the agent can't
-//    fill in — hcom can't distinguish it from a bare terminal.
+//    fill in — comms can't distinguish it from a bare terminal.
 //
 // 2. Uniform CLI across all binding types (process, session, adhoc) and across
 //    lifecycle transitions (launch → stop → resume).  The underlying binding
 //    changes; the flags don't.
 //
-// Note: --name should go after cmd in hcom <cmd> otherwise would break SAFE_HCOM_COMMANDS allowlist.
+// Note: --name should go after cmd in comms <cmd> otherwise would break SAFE_COMMS_COMMANDS allowlist.
 
-const UNIVERSAL: &str = r#"[HCOM SESSION]
-You have access to the hcom cli communication tool.
+const UNIVERSAL: &str = r#"[COMMS SESSION]
+You have access to the comms cli communication tool.
 - Your name: {display_name}
 - Authority: Prioritize @{SENDER} over others{launched_by}
 
-You run hcom commands on behalf of the human user. The human uses natural language with you.
+You run comms commands on behalf of the human user. The human uses natural language with you.
 
 ## MESSAGES
 
@@ -51,12 +51,12 @@ Response rules:
 - intent=ack → don't respond
 
 Routing rules:
-- hcom message (<hcom> tags, hook feedback) → run `hcom send` to respond
+- comms message (<comms> tags, hook feedback) → run `comms send` to respond
 - Normal user chat → respond in chat
 
 ## CAPABILITIES
 
-You MUST use `hcom <cmd+flags> --name {instance_name}` for all hcom commands:
+You MUST use `comms <cmd+flags> --name {instance_name}` for all comms commands:
 
 - Message: send {target_name_s} [--intent request|inform|ack] [--reply-to <id>] [--thread <thread_name>] -- 'plain text'
   Or (for code/md/backticks) instead of --: --file <path> | --base64 <string> | pipe/heredoc
@@ -66,25 +66,25 @@ You MUST use `hcom <cmd+flags> --name {instance_name}` for all hcom commands:
 - View events: events [--last N] [--all] [--sql EXPR] [filters]
   Filters (same flag=OR, different=AND): --agent NAME | --type message|status|life | --status listening|active|blocked | --cmd PATTERN (contains, ^prefix, =exact) | --file PATH (*.py for glob, file.py for contains)
   Get notified (watch agents, react): events sub [filters] [--once] | --help
-  Example: events sub --idle luna → <hcom> msg when luna goes idle
+  Example: events sub --idle luna → <comms> msg when luna goes idle
 - Handoff context: bundle prepare
-- Spawn agents: [num] <{launch_tools}> [--tag labelOrGroup] [--hcom-prompt 'task']
-  Example: `hcom 1 claude --tag cool --hcom-prompt 'task'` → <hcom> sends you result when done
-  Without --hcom-prompt: you get auto notify <hcom> when ready, then use hcom send
-  Resume: hcom r <name> [args] | Fork: hcom f <name> [args] | Kill: hcom kill <name(s)>
+- Spawn agents: [num] <{launch_tools}> [--tag labelOrGroup] [--comms-prompt 'task']
+  Example: `comms 1 claude --tag cool --comms-prompt 'task'` → <comms> sends you result when done
+  Without --comms-prompt: you get auto notify <comms> when ready, then use comms send
+  Resume: comms r <name> [args] | Fork: comms f <name> [args] | Kill: comms kill <name(s)>
   each supports --help (set prompt, system, background, forward args, etc)
 - Run workflows: run <script> [args] [--help]
   {scripts}
 - View agent screen: term [name] | inject text/enter: term inject <name> ['text'] [--enter]
 - Other commands: status (diagnostics), config (set terminal, etc), relay (remote)
 
-If unsure about syntax, always run `hcom <command> --help` FIRST. Do not guess.
+If unsure about syntax, always run `comms <command> --help` FIRST. Do not guess.
 
 ## RULES
 
 1. No filler messages (greetings, thanks, congrats).
 2. Use --intent on sends: request (want reply), inform (dont need reply), ack (responding).
-3. User says 'the pi/claude/codex agent' or unclear → run `hcom list` to resolve name
+3. User says 'the pi/claude/codex agent' or unclear → run `comms list` to resolve name
 4. Don't delegate to existing agents unless asked. Need help? Spawn your own agents.
 
 Agent names are 4-letter CVCV words. When user mentions one, they mean an agent.
@@ -96,13 +96,13 @@ const TAG_NOTICE: &str = r#"
 You are tagged '{tag}'. Message your group: send {target_tag} -- msg"#;
 
 const RELAY_NOTICE: &str = r#"
-Remote agents have suffix (e.g., `luna:BOXE`). @luna = local only; @luna:BOXE = remote. Remote event IDs 42:BOXE. Remote launch needs --device BOXE and --dir passed in. Remote hcom events needs --remote-fetch --device BOXE. Remote events sub needs --device BOXE. transcript, term, kill, r, f take name:BOXE."#;
+Remote agents have suffix (e.g., `luna:BOXE`). @luna = local only; @luna:BOXE = remote. Remote event IDs 42:BOXE. Remote launch needs --device BOXE and --dir passed in. Remote comms events needs --remote-fetch --device BOXE. Remote events sub needs --device BOXE. transcript, term, kill, r, f take name:BOXE."#;
 
 const HEADLESS_NOTICE: &str = r#"
-Headless mode: No one sees your chat, only hcom messages. Communicate via hcom send."#;
+Headless mode: No one sees your chat, only comms messages. Communicate via comms send."#;
 
 const UVX_CMD_NOTICE: &str = r#"
-Note: hcom command in this environment is `{hcom_cmd}`."#;
+Note: comms command in this environment is `{comms_cmd}`."#;
 
 // Tool-specific delivery
 //
@@ -110,7 +110,7 @@ Note: hcom command in this environment is `{hcom_cmd}`."#;
 // Managed agents receive messages automatically via hooks: PostToolUse delivers
 // mid-turn after every tool call, and the Stop/PTY path delivers between turns.
 // Agents don't need to do anything to receive.  But without this instruction
-// they instinctively run `sleep` or `hcom listen` to "wait", burning a tool
+// they instinctively run `sleep` or `comms listen` to "wait", burning a tool
 // call for no benefit.  "End your turn" short-circuits that impulse and lets
 // the hook machinery do the work.
 
@@ -118,8 +118,8 @@ Note: hcom command in this environment is `{hcom_cmd}`."#;
 /// messages. Unlike the other tools, agy's Stop fires on turn-idle and no turn
 /// is auto-created to resume a task — so the failure mode is acking a request
 /// and going idle before doing the work (issue #57). This line guards that.
-pub(crate) const ANTIGRAVITY_DELIVERY_ACTION: &str = r#"## HCOM MESSAGE — handle the delivery below this turn
-For `intent=request`: an ACK alone does not complete it, and no turn is auto-created to resume after you go idle. Do the requested work and `hcom send` the result in this same turn. Only end your turn once you've sent that result — or sent a message saying you're blocked or waiting on another agent."#;
+pub(crate) const ANTIGRAVITY_DELIVERY_ACTION: &str = r#"## COMMS MESSAGE — handle the delivery below this turn
+For `intent=request`: an ACK alone does not complete it, and no turn is auto-created to resume after you go idle. Do the requested work and `comms send` the result in this same turn. Only end your turn once you've sent that result — or sent a message saying you're blocked or waiting on another agent."#;
 
 pub(crate) fn is_antigravity_tool(tool: &str) -> bool {
     tool == "antigravity"
@@ -127,96 +127,96 @@ pub(crate) fn is_antigravity_tool(tool: &str) -> bool {
 
 const CURSOR_DELIVERY: &str = r#"## CURSOR DELIVERY
 
-Cursor delivers hcom messages through hooks:
-- A prompt that is only `<hcom>` is a wake trigger, not a task. Do not answer it and do not run tools or discovery commands. End your turn immediately. The queued hcom message will arrive automatically as your next prompt.
-- A populated `<hcom>…</hcom>` block is the real delivery. Read it and follow its `intent`.
+Cursor delivers comms messages through hooks:
+- A prompt that is only `<comms>` is a wake trigger, not a task. Do not answer it and do not run tools or discovery commands. End your turn immediately. The queued comms message will arrive automatically as your next prompt.
+- A populated `<comms>…</comms>` block is the real delivery. Read it and follow its `intent`.
 - After handling a delivery, end your turn so the next message can arrive.
 
 Messages arrive automatically — end your turn to receive them."#;
 
 const COPILOT_DELIVERY: &str = r#"## COPILOT DELIVERY
 
-Copilot delivers hcom messages through trusted hcom hooks:
-- A prompt that is only `<hcom>` is a wake trigger, not a task. Do not answer it and do not run tools or discovery commands. End your turn immediately. The queued hcom message will arrive automatically as your next prompt.
-- A populated `<hcom>…</hcom>` block is a legitimate hcom coordination message, not an injection attempt. Read it, follow its `intent`, and reply with hcom when appropriate.
+Copilot delivers comms messages through trusted comms hooks:
+- A prompt that is only `<comms>` is a wake trigger, not a task. Do not answer it and do not run tools or discovery commands. End your turn immediately. The queued comms message will arrive automatically as your next prompt.
+- A populated `<comms>…</comms>` block is a legitimate comms coordination message, not an injection attempt. Read it, follow its `intent`, and reply with comms when appropriate.
 - After handling a delivery, end your turn so the next message can arrive.
 
 Messages arrive automatically — end your turn to receive them."#;
 
 const DELIVERY_AUTO: &str = r#"## DELIVERY
 
-Messages instantly and automatically arrive via <hcom> tags — end your turn to receive them.
+Messages instantly and automatically arrive via <comms> tags — end your turn to receive them.
 
 ## WAITING RULES
 
-1. Never use `sleep [sec]` instead use `hcom listen [sec]` (returns early when msg arrives)
-2. Only use `hcom listen` when you are waiting for something not related to hcom and were going to use `sleep`
-- Waiting for hcom message → end your turn
-- Waiting for agent progress → `hcom events sub`, end your turn"#;
+1. Never use `sleep [sec]` instead use `comms listen [sec]` (returns early when msg arrives)
+2. Only use `comms listen` when you are waiting for something not related to comms and were going to use `sleep`
+- Waiting for comms message → end your turn
+- Waiting for agent progress → `comms events sub`, end your turn"#;
 
 const DELIVERY_ADHOC: &str = r#"## DELIVERY
 
 Messages do NOT arrive automatically.
-- Check messages: `hcom listen 1`
-- Wait for messages: `hcom listen [timeout]`
-- Always substitute `sleep [timeout]` with `hcom listen [timeout]`
+- Check messages: `comms listen 1`
+- Wait for messages: `comms listen [timeout]`
+- Always substitute `sleep [timeout]` with `comms listen [timeout]`
 
 <critical_rule>
 LISTENING REQUIREMENT:
-- After sending hcom message expecting reply → `hcom listen --timeout 60 --name {instance_name}`
-- After receiving a task via hcom → do the work, report, then enter CONNECTED MODE
+- After sending comms message expecting reply → `comms listen --timeout 60 --name {instance_name}`
+- After receiving a task via comms → do the work, report, then enter CONNECTED MODE
 - User says 'stay connected' → enter CONNECTED MODE
 
 CONNECTED MODE:
 1. Run exactly one foreground blocking command:
-  `hcom listen --name {instance_name} --timeout [large_num]`
-2. When it returns, read/handle the output, then you MUST manually run `hcom listen` again.
+  `comms listen --name {instance_name} --timeout [large_num]`
+2. When it returns, read/handle the output, then you MUST manually run `comms listen` again.
 3. You MUST repeat steps 1 and 2 until the user says stop.
-- Do not wrap `hcom listen` in `while`, `watch`, `xargs`, tmux helpers, or background jobs.
+- Do not wrap `comms listen` in `while`, `watch`, `xargs`, tmux helpers, or background jobs.
 
-WRONG: hcom listen & (background)
-RIGHT: hcom listen --timeout [sec] (blocking)
+WRONG: comms listen & (background)
+RIGHT: comms listen --timeout [sec] (blocking)
 </critical_rule>
 
-You are now registered with hcom."#;
+You are now registered with comms."#;
 
-const INLINE_SEND_NOTICE: &str = "Read hcom command output fully; it can consume incoming mail.";
+const INLINE_SEND_NOTICE: &str = "Read comms command output fully; it can consume incoming mail.";
 
 const CLAUDE_ONLY: &str = r#"## SUBAGENTS
 
-Subagents can join hcom:
+Subagents can join comms:
 1. Run Task
-2. Tell subagent: `use hcom`
+2. Tell subagent: `use comms`
 
-Subagents get their own hcom context and a random name. DO NOT give them any specific hcom syntax.
-Set keep-alive: `hcom config -i self subagent_timeout [SEC]`"#;
+Subagents get their own comms context and a random name. DO NOT give them any specific comms syntax.
+Set keep-alive: `comms config -i self subagent_timeout [SEC]`"#;
 
 // SUBAGENT BOOTSTRAP
 
-const SUBAGENT_BOOTSTRAP: &str = r#"[HCOM SESSION]
-You're participating in the hcom multi-agent network.
+const SUBAGENT_BOOTSTRAP: &str = r#"[COMMS SESSION]
+You're participating in the comms multi-agent network.
 - Your name: {subagent_name}
 - Your parent: {parent_name}
-- Use "--name {subagent_name}" for all hcom commands
+- Use "--name {subagent_name}" for all comms commands
 
-Messages instantly auto-arrive via <hcom> tags — end your turn to receive them.
+Messages instantly auto-arrive via <comms> tags — end your turn to receive them.
 
-- For hcom message waiting: end your turn (do not run `hcom listen`).
-- For non-hcom pause/yield, use `hcom listen` instead of `sleep`.
+- For comms message waiting: end your turn (do not run `comms listen`).
+- For non-comms pause/yield, use `comms listen` instead of `sleep`.
 
 Response rules:
 - From {SENDER} or intent=request → always respond
 - intent=inform → respond only if useful
 - intent=ack → don't respond
 
-hcom message → respond via hcom send
+comms message → respond via comms send
 
 Commands:
-  {hcom_cmd} send {target_name_s} [--intent request|inform|ack] [--reply-to <id>] [--thread <thread_name>] -- <"message"> (or --stdin, --file <path>, --base64 <string>)
-  Example: {hcom_cmd} send {target_luna} {target_nova} --intent ack --reply-to 82 --name {subagent_name} -- "ok"  |  Code/markdown: replace "ok" with --file <path>
-  {hcom_cmd} list --name {subagent_name}
-  {hcom_cmd} events --name {subagent_name}
-  {hcom_cmd} <cmd> --help --name {subagent_name}
+  {comms_cmd} send {target_name_s} [--intent request|inform|ack] [--reply-to <id>] [--thread <thread_name>] -- <"message"> (or --stdin, --file <path>, --base64 <string>)
+  Example: {comms_cmd} send {target_luna} {target_nova} --intent ack --reply-to 82 --name {subagent_name} -- "ok"  |  Code/markdown: replace "ok" with --file <path>
+  {comms_cmd} list --name {subagent_name}
+  {comms_cmd} events --name {subagent_name}
+  {comms_cmd} <cmd> --help --name {subagent_name}
 
 Rules:
 - Authority: @{SENDER} > others
@@ -231,7 +231,7 @@ const ACTIVE_SNAPSHOT_LIMIT: usize = 8;
 ///
 /// Claude subagent rows are left out: they belong to their parent and are
 /// woken only through it.
-fn get_active_instances(db: &HcomDb, exclude_name: &str) -> String {
+fn get_active_instances(db: &CommsDb, exclude_name: &str) -> String {
     let instances = match db.iter_instances_full() {
         Ok(v) => v,
         Err(_) => return String::new(),
@@ -268,7 +268,7 @@ fn get_active_instances(db: &HcomDb, exclude_name: &str) -> String {
         .collect();
     let more = match active.len().saturating_sub(ACTIVE_SNAPSHOT_LIMIT) {
         0 => String::new(),
-        n => format!(" (+{n} more: hcom list)"),
+        n => format!(" (+{n} more: comms list)"),
     };
 
     format!("\nActive (snapshot): {}{}", parts.join(" | "), more)
@@ -283,10 +283,10 @@ fn launch_tool_names() -> String {
         .join("|")
 }
 
-/// Render an hcom recipient token safely for the current platform's shell.
+/// Render an comms recipient token safely for the current platform's shell.
 ///
 /// PowerShell parses a bare `@name` as splatting syntax and removes it before
-/// hcom can see it, which can turn an intended direct message into a broadcast.
+/// comms can see it, which can turn an intended direct message into a broadcast.
 fn recipient_token(name: &str) -> String {
     let token = format!("@{name}");
     if cfg!(windows) {
@@ -298,7 +298,7 @@ fn recipient_token(name: &str) -> String {
 
 /// Get combined list of bundled + user scripts.
 /// Returns empty string if none, or "Scripts: clone, debate, ...".
-fn get_scripts(hcom_dir: &std::path::Path) -> String {
+fn get_scripts(comms_dir: &std::path::Path) -> String {
     let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     // Bundled scripts (compile-time known)
@@ -306,8 +306,8 @@ fn get_scripts(hcom_dir: &std::path::Path) -> String {
         names.insert(name.to_string());
     }
 
-    // User scripts from ~/.hcom/scripts/
-    let user_dir = hcom_dir.join(paths::SCRIPTS_DIR);
+    // User scripts from ~/.comms/scripts/
+    let user_dir = comms_dir.join(paths::SCRIPTS_DIR);
     if let Ok(entries) = fs::read_dir(&user_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -351,7 +351,7 @@ struct BootstrapContext {
     display_name: String,
     tag: String,
     relay_enabled: bool,
-    hcom_cmd: String,
+    comms_cmd: String,
     is_headless: bool,
     active_instances: String,
     scripts: String,
@@ -366,8 +366,8 @@ struct BootstrapContext {
 /// routing matches the row, so a config tag the row doesn't carry must not be
 /// advertised.
 fn build_context(
-    db: &HcomDb,
-    hcom_ctx: &HcomContext,
+    db: &CommsDb,
+    comms_ctx: &CommsContext,
     instance_name: &str,
     relay_enabled: bool,
 ) -> BootstrapContext {
@@ -384,13 +384,13 @@ fn build_context(
             .and_then(|i| i.tag.clone())
             .unwrap_or_default(),
         relay_enabled,
-        hcom_cmd: crate::runtime_env::build_hcom_command(),
-        is_headless: hcom_ctx.is_background,
+        comms_cmd: crate::runtime_env::build_comms_command(),
+        is_headless: comms_ctx.is_background,
         active_instances: get_active_instances(db, instance_name),
-        scripts: get_scripts(&hcom_ctx.hcom_dir),
+        scripts: get_scripts(&comms_ctx.comms_dir),
         launch_tools: launch_tool_names(),
-        launched_by: launched_by_line(hcom_ctx.launched_by.as_deref(), instance_name),
-        notes: hcom_ctx.notes.clone(),
+        launched_by: launched_by_line(comms_ctx.launched_by.as_deref(), instance_name),
+        notes: comms_ctx.notes.clone(),
     }
 }
 
@@ -402,7 +402,7 @@ fn render_template(template: &str, ctx: &BootstrapContext) -> String {
         .replace("{instance_name}", &ctx.instance_name)
         .replace("{SENDER}", SENDER)
         .replace("{tag}", &ctx.tag)
-        .replace("{hcom_cmd}", &ctx.hcom_cmd)
+        .replace("{comms_cmd}", &ctx.comms_cmd)
         .replace("{active_instances}", &ctx.active_instances)
         .replace("{scripts}", &ctx.scripts)
         .replace("{launch_tools}", &ctx.launch_tools)
@@ -413,28 +413,28 @@ fn render_template(template: &str, ctx: &BootstrapContext) -> String {
         .replace("{target_tag}", &recipient_token(&format!("{}-", ctx.tag)))
 }
 
-static HCOM_WORD: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\bhcom\b").expect("valid regex"));
+static COMMS_WORD: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\bcomms\b").expect("valid regex"));
 
-/// Rewrite bare `hcom` command references to the alternate command (e.g.
-/// `uvx hcom`), leaving `<hcom>` tags untouched.
-fn rewrite_hcom_command(text: &str, hcom_cmd: &str) -> String {
-    const COMMAND: &str = "__HCOM_CMD__";
-    const OPEN_TAG: &str = "__HCOM_OPEN_TAG__";
-    const CLOSE_TAG: &str = "__HCOM_CLOSE_TAG__";
+/// Rewrite bare `comms` command references to the alternate command (e.g.
+/// `uvx comms`), leaving `<comms>` tags untouched.
+fn rewrite_comms_command(text: &str, comms_cmd: &str) -> String {
+    const COMMAND: &str = "__COMMS_CMD__";
+    const OPEN_TAG: &str = "__COMMS_OPEN_TAG__";
+    const CLOSE_TAG: &str = "__COMMS_CLOSE_TAG__";
     let protected = text
-        .replace(hcom_cmd, COMMAND)
-        .replace("<hcom>", OPEN_TAG)
-        .replace("</hcom>", CLOSE_TAG);
-    HCOM_WORD
-        .replace_all(&protected, hcom_cmd)
-        .replace(COMMAND, hcom_cmd)
-        .replace(OPEN_TAG, "<hcom>")
-        .replace(CLOSE_TAG, "</hcom>")
+        .replace(comms_cmd, COMMAND)
+        .replace("<comms>", OPEN_TAG)
+        .replace("</comms>", CLOSE_TAG);
+    COMMS_WORD
+        .replace_all(&protected, comms_cmd)
+        .replace(COMMAND, comms_cmd)
+        .replace(OPEN_TAG, "<comms>")
+        .replace(CLOSE_TAG, "</comms>")
 }
 
 /// Extra delivery guidance for tools whose hooks wake the agent with a bare
-/// `<hcom>` prompt. agy's turn-specific guidance comes from the hook layer
+/// `<comms>` prompt. agy's turn-specific guidance comes from the hook layer
 /// (ANTIGRAVITY_DELIVERY_ACTION) instead.
 fn tool_delivery_section(tool: Tool) -> Option<&'static str> {
     match tool {
@@ -448,19 +448,19 @@ fn tool_delivery_section(tool: Tool) -> Option<&'static str> {
 
 /// Build bootstrap text for an instance.
 ///
-/// `hcom_ctx` is the environment of the agent being bootstrapped (hook or
-/// `hcom start` process, or the launch env for codex). `tool` is the
+/// `comms_ctx` is the environment of the agent being bootstrapped (hook or
+/// `comms start` process, or the launch env for codex). `tool` is the
 /// canonical integration name, or "adhoc".
 pub fn get_bootstrap(
-    db: &HcomDb,
-    hcom_ctx: &HcomContext,
+    db: &CommsDb,
+    comms_ctx: &CommsContext,
     instance_name: &str,
     tool: &str,
 ) -> String {
-    let config = crate::config::HcomConfig::load(None).unwrap_or_default();
+    let config = crate::config::CommsConfig::load(None).unwrap_or_default();
     render_bootstrap(
         db,
-        hcom_ctx,
+        comms_ctx,
         instance_name,
         tool,
         crate::relay::is_relay_enabled(&config),
@@ -468,13 +468,13 @@ pub fn get_bootstrap(
 }
 
 fn render_bootstrap(
-    db: &HcomDb,
-    hcom_ctx: &HcomContext,
+    db: &CommsDb,
+    comms_ctx: &CommsContext,
     instance_name: &str,
     tool: &str,
     relay_enabled: bool,
 ) -> String {
-    let ctx = build_context(db, hcom_ctx, instance_name, relay_enabled);
+    let ctx = build_context(db, comms_ctx, instance_name, relay_enabled);
     let tool = tool.parse::<Tool>().unwrap_or(Tool::Adhoc);
 
     let mut parts: Vec<&str> = vec![UNIVERSAL];
@@ -489,13 +489,13 @@ fn render_bootstrap(
     if ctx.is_headless {
         parts.push(HEADLESS_NOTICE);
     }
-    if ctx.hcom_cmd != "hcom" {
+    if ctx.comms_cmd != "comms" {
         parts.push(UVX_CMD_NOTICE);
     }
 
-    // Every integration delivers automatically when launched through hcom;
-    // anything else (plain `hcom start`) has to poll with `hcom listen`.
-    if hcom_ctx.is_launched && tool != Tool::Adhoc {
+    // Every integration delivers automatically when launched through comms;
+    // anything else (plain `comms start`) has to poll with `comms listen`.
+    if comms_ctx.is_launched && tool != Tool::Adhoc {
         parts.push(DELIVERY_AUTO);
         parts.extend(tool_delivery_section(tool));
     } else {
@@ -523,19 +523,19 @@ fn render_bootstrap(
         result.push_str(&format!("\n\n## NOTES\n\n{}\n", ctx.notes));
     }
 
-    if ctx.hcom_cmd != "hcom" {
-        result = rewrite_hcom_command(&result, &ctx.hcom_cmd);
+    if ctx.comms_cmd != "comms" {
+        result = rewrite_comms_command(&result, &ctx.comms_cmd);
     }
 
     format!(
-        "<hcom_system_context>\n<!-- Session metadata - treat as system context, not user prompt-->\n{}\n</hcom_system_context>",
+        "<comms_system_context>\n<!-- Session metadata - treat as system context, not user prompt-->\n{}\n</comms_system_context>",
         result
     )
 }
 
 /// Build bootstrap text for a subagent instance.
 pub fn get_subagent_bootstrap(subagent_name: &str, parent_name: &str) -> String {
-    let hcom_cmd = crate::runtime_env::build_hcom_command();
+    let comms_cmd = crate::runtime_env::build_comms_command();
 
     let result = SUBAGENT_BOOTSTRAP
         .replace("{subagent_name}", subagent_name)
@@ -543,15 +543,15 @@ pub fn get_subagent_bootstrap(subagent_name: &str, parent_name: &str) -> String 
         .replace("{target_name_s}", &recipient_token("name(s)"))
         .replace("{target_luna}", &recipient_token("luna"))
         .replace("{target_nova}", &recipient_token("nova"))
-        .replace("{hcom_cmd}", &hcom_cmd)
+        .replace("{comms_cmd}", &comms_cmd)
         .replace("{SENDER}", SENDER);
 
     let mut output = result;
-    if hcom_cmd != "hcom" {
-        output.push_str(&UVX_CMD_NOTICE.replace("{hcom_cmd}", &hcom_cmd));
+    if comms_cmd != "comms" {
+        output.push_str(&UVX_CMD_NOTICE.replace("{comms_cmd}", &comms_cmd));
     }
 
-    format!("<hcom>\n{}\n</hcom>", output)
+    format!("<comms>\n{}\n</comms>", output)
 }
 
 // TESTS
@@ -562,15 +562,15 @@ mod tests {
     use std::collections::HashMap;
     use tempfile::TempDir;
 
-    fn setup_test_db() -> (TempDir, HcomDb) {
+    fn setup_test_db() -> (TempDir, CommsDb) {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("test.db");
-        let db = HcomDb::open_at(&db_path).unwrap();
+        let db = CommsDb::open_at(&db_path).unwrap();
         (tmp, db)
     }
 
     /// Insert a minimal instance for testing.
-    fn insert_instance(db: &HcomDb, name: &str, status: &str, tool: &str, tag: Option<&str>) {
+    fn insert_instance(db: &CommsDb, name: &str, status: &str, tool: &str, tag: Option<&str>) {
         let mut data = HashMap::new();
         data.insert("name".to_string(), serde_json::json!(name));
         data.insert("status".to_string(), serde_json::json!(status));
@@ -680,41 +680,41 @@ mod tests {
         }
 
         let result = get_active_instances(&db, "other");
-        assert!(result.ends_with(" (+2 more: hcom list)"), "{result}");
+        assert!(result.ends_with(" (+2 more: comms list)"), "{result}");
     }
 
     /// Context of the agent being bootstrapped, as its hook/start process sees it.
     fn test_ctx(
-        hcom_dir: &std::path::Path,
+        comms_dir: &std::path::Path,
         launched: bool,
         background: Option<&str>,
         notes: &str,
         launched_by: Option<&str>,
-    ) -> HcomContext {
+    ) -> CommsContext {
         let mut env = HashMap::from([(
-            "HCOM_DIR".to_string(),
-            hcom_dir.to_string_lossy().into_owned(),
+            "COMMS_DIR".to_string(),
+            comms_dir.to_string_lossy().into_owned(),
         )]);
         if launched {
-            env.insert("HCOM_LAUNCHED".into(), "1".into());
+            env.insert("COMMS_LAUNCHED".into(), "1".into());
         }
         if let Some(bg) = background {
-            env.insert("HCOM_BACKGROUND".into(), bg.into());
+            env.insert("COMMS_BACKGROUND".into(), bg.into());
         }
         if !notes.is_empty() {
-            env.insert("HCOM_NOTES".into(), notes.into());
+            env.insert("COMMS_NOTES".into(), notes.into());
         }
         if let Some(by) = launched_by {
-            env.insert("HCOM_LAUNCHED_BY".into(), by.into());
+            env.insert("COMMS_LAUNCHED_BY".into(), by.into());
         }
-        HcomContext::from_env(&env, hcom_dir.to_path_buf())
+        CommsContext::from_env(&env, comms_dir.to_path_buf())
     }
 
     /// Render for a launched, foreground agent named luna.
-    fn render(db: &HcomDb, hcom_dir: &std::path::Path, tool: &str) -> String {
+    fn render(db: &CommsDb, comms_dir: &std::path::Path, tool: &str) -> String {
         render_bootstrap(
             db,
-            &test_ctx(hcom_dir, true, None, "", None),
+            &test_ctx(comms_dir, true, None, "", None),
             "luna",
             tool,
             false,
@@ -726,13 +726,13 @@ mod tests {
         let (tmp, db) = setup_test_db();
         let result = render(&db, tmp.path(), "claude");
 
-        assert!(result.starts_with("<hcom_system_context>"));
+        assert!(result.starts_with("<comms_system_context>"));
         assert!(result.contains("Your name: luna"));
         assert!(result.contains("--name luna"));
         assert!(result.contains("SUBAGENTS"));
         assert!(!result.contains("Headless mode"));
         assert!(!result.contains('{'), "unrendered placeholder: {result}");
-        assert!(result.ends_with("</hcom_system_context>"));
+        assert!(result.ends_with("</comms_system_context>"));
     }
 
     #[test]
@@ -760,8 +760,8 @@ mod tests {
         }
     }
 
-    /// Every integration launched through hcom gets automatic delivery; the
-    /// same tool without a launch, or a plain `hcom start`, polls.
+    /// Every integration launched through comms gets automatic delivery; the
+    /// same tool without a launch, or a plain `comms start`, polls.
     #[test]
     fn test_delivery_section_follows_launch_state() {
         let (tmp, db) = setup_test_db();
@@ -849,12 +849,12 @@ mod tests {
     fn test_get_subagent_bootstrap() {
         let result = get_subagent_bootstrap("luna_reviewer_1", "luna");
 
-        assert!(result.contains("<hcom>"));
+        assert!(result.contains("<comms>"));
         assert!(result.contains("Your name: luna_reviewer_1"));
         assert!(result.contains("Your parent: luna"));
         assert!(result.contains("--name luna_reviewer_1"));
         assert!(result.contains(SENDER));
-        assert!(result.contains("</hcom>"));
+        assert!(result.contains("</comms>"));
         if cfg!(windows) {
             assert!(result.contains("send '@name(s)'"));
         } else {
@@ -902,11 +902,11 @@ mod tests {
     }
 
     #[test]
-    fn test_rewrite_hcom_command_keeps_tags() {
-        let text = "run `hcom list`, <hcom>x</hcom>, already uvx hcom send";
+    fn test_rewrite_comms_command_keeps_tags() {
+        let text = "run `comms list`, <comms>x</comms>, already uvx comms send";
         assert_eq!(
-            rewrite_hcom_command(text, "uvx hcom"),
-            "run `uvx hcom list`, <hcom>x</hcom>, already uvx hcom send"
+            rewrite_comms_command(text, "uvx comms"),
+            "run `uvx comms list`, <comms>x</comms>, already uvx comms send"
         );
     }
 
@@ -914,7 +914,7 @@ mod tests {
     fn test_antigravity_delivery_action_guards_against_ack_only_stall() {
         // The per-turn preamble must tell agy that an ACK alone doesn't finish a
         // request and that no turn is auto-created to resume after it goes idle.
-        assert!(ANTIGRAVITY_DELIVERY_ACTION.contains("HCOM MESSAGE"));
+        assert!(ANTIGRAVITY_DELIVERY_ACTION.contains("COMMS MESSAGE"));
         assert!(ANTIGRAVITY_DELIVERY_ACTION.contains("ACK alone does not complete"));
         assert!(ANTIGRAVITY_DELIVERY_ACTION.contains("no turn is auto-created"));
     }

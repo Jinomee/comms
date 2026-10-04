@@ -6,11 +6,11 @@
 //! A real, pinned Claude Code interactive TUI is routed to a localhost Anthropic
 //! Messages provider ([`support::claude_mock`]). The provider scripts
 //! deterministic SSE turns; Claude performs its real built-in tools (`Write`,
-//! `Bash`) and emits its real hcom hooks. The full lifecycle runs through the
+//! `Bash`) and emits its real comms hooks. The full lifecycle runs through the
 //! shared [`support::real_tool`] runner, so Claude and Codex assert one
 //! tool-independent contract — including fork, where the shared
 //! `child.session_id != parent.session_id` assertion is exactly what proves
-//! hcom's `CLAUDE_ENV_FILE` fork-UUID recovery, with no Claude special case.
+//! comms's `CLAUDE_ENV_FILE` fork-UUID recovery, with no Claude special case.
 
 mod support;
 
@@ -18,7 +18,7 @@ use serde_json::Value;
 use serial_test::serial;
 use std::fs;
 use std::time::Duration;
-use support::Hcom;
+use support::Comms;
 use support::claude_mock::{
     ClaudeCase, MODEL, claude_text, claude_tool_use, latest_user_turn, seed_claude_state,
 };
@@ -33,28 +33,28 @@ fn real_claude_full_lifecycle_send_fork_kill_resume_and_cleanup() {
     support::real_tool::run_full_lifecycle(ClaudeCase);
 }
 
-/// Claude's approval gate is hcom's hook-driven block path (a real
+/// Claude's approval gate is comms's hook-driven block path (a real
 /// `PermissionRequest` hook, NOT the terminal scrape Codex needs). This drives
 /// the same contract as the Codex approval test through Claude's mechanism:
 /// launch in the DEFAULT permission mode so a non-allowlisted `Bash` call fires
-/// `PermissionRequest` → hcom marks the instance `blocked`/`approval`; an inbound
-/// hcom message is held while the prompt is up; a real approval keystroke runs
+/// `PermissionRequest` → comms marks the instance `blocked`/`approval`; an inbound
+/// comms message is held while the prompt is up; a real approval keystroke runs
 /// the command exactly once and releases the held message. The gate comes from
 /// Claude's own permission UI + hook (not an `approval_policy` we hand-wrote), so
-/// a regression in hcom's PermissionRequest handling fails this test.
+/// a regression in comms's PermissionRequest handling fails this test.
 #[test]
 #[ignore = "requires the pinned real @anthropic-ai/claude-code binary"]
 #[serial]
 fn real_claude_approval_gate_blocks_pending_message_then_clears_on_approval() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let case = ClaudeCase;
     require_pinned(&h, &case);
 
     let suffix = unique_suffix();
-    let approval_token = format!("HCOM_CLAUDE_APPROVAL_{suffix}");
-    let gated_token = format!("HCOM_CLAUDE_GATED_{suffix}");
-    let held_token = format!("HCOM_CLAUDE_HELD_{suffix}");
-    let sender_process_id = format!("hcom-claude-approver-{suffix}");
+    let approval_token = format!("COMMS_CLAUDE_APPROVAL_{suffix}");
+    let gated_token = format!("COMMS_CLAUDE_GATED_{suffix}");
+    let held_token = format!("COMMS_CLAUDE_HELD_{suffix}");
+    let sender_process_id = format!("comms-claude-approver-{suffix}");
     let sender = h.start_listening_with_process_id(&sender_process_id);
 
     let approval_result = h.workspace.join("approval-result.txt");
@@ -71,7 +71,7 @@ fn real_claude_approval_gate_blocks_pending_message_then_clears_on_approval() {
 
     // Two scripted turns, classified by the NEWEST turn (Claude resends full
     // history): the gated Bash call, then the final proof after its tool_result.
-    // The held hcom message is released through PostToolUse and is included in
+    // The held comms message is released through PostToolUse and is included in
     // that tool_result; it does not create a separate user turn.
     let scenario_approval = approval_token.clone();
     let scenario_gated = gated_cmd.clone();
@@ -149,8 +149,8 @@ fn real_claude_approval_gate_blocks_pending_message_then_clears_on_approval() {
     // launcher writes that binding before it spawns anything, so waiting on it
     // always passes instantly and a stalled launch chain would instead surface
     // 90s later inside `drive_startup`, looking like Claude had hung. The
-    // registered inject endpoint (`hcom term` exiting 0) is the first state that
-    // only exists once `hcom pty` is running, and polling `term` — rather than
+    // registered inject endpoint (`comms term` exiting 0) is the first state that
+    // only exists once `comms pty` is running, and polling `term` — rather than
     // `list` — avoids finalizing the still-unbound placeholder as
     // `launch_failed`. See `real_tool::wait_pty_proxy_up` for both hazards.
     let launched = h
@@ -215,7 +215,7 @@ fn real_claude_approval_gate_blocks_pending_message_then_clears_on_approval() {
     );
 
     // An idle Claude at an approval prompt stays active; the block only latches
-    // once a message is queued behind the prompt. Send one and prove hcom's
+    // once a message is queued behind the prompt. Send one and prove comms's
     // PermissionRequest hook flips the instance to blocked(approval).
     let (send_code, send_stdout, send_stderr) = h.run_as_process(
         &sender_process_id,
@@ -363,9 +363,9 @@ fn real_claude_approval_gate_blocks_pending_message_then_clears_on_approval() {
     let gated_result = &gated_tool_results[0].body;
     assert!(
         gated_result.contains(&held_token)
-            && gated_result.contains("<hcom>")
+            && gated_result.contains("<comms>")
             && gated_result.contains(&sender),
-        "approved tool_result must carry the released hcom message envelope"
+        "approved tool_result must carry the released comms message envelope"
     );
 
     let unexpected = mock.unexpected();
@@ -389,21 +389,21 @@ fn real_claude_approval_gate_blocks_pending_message_then_clears_on_approval() {
 }
 
 /// Fast regression for the fixture fix the Claude test depends on: a provider
-/// var set via `set_launch_env` must land in the `$HCOM_DIR/env` passthrough,
-/// which hcom overlays last so it survives the `CI=1` clean-shell launch
+/// var set via `set_launch_env` must land in the `$COMMS_DIR/env` passthrough,
+/// which comms overlays last so it survives the `CI=1` clean-shell launch
 /// rebuild. Without this, `ANTHROPIC_BASE_URL` would be dropped and Claude would
 /// call the real API. Runs without the pinned binary.
 #[test]
 fn fixture_launch_env_persists_to_passthrough_file() {
-    let h = Hcom::new();
+    let h = Comms::new();
     h.set_launch_env("ANTHROPIC_BASE_URL", "http://127.0.0.1:65535");
-    let env = fs::read_to_string(h.path().join("env")).expect("read $HCOM_DIR/env");
+    let env = fs::read_to_string(h.path().join("env")).expect("read $COMMS_DIR/env");
     assert!(
         env.contains("ANTHROPIC_BASE_URL=http://127.0.0.1:65535"),
         "provider var missing from passthrough file:\n{env}"
     );
     assert!(
-        !env.contains("HCOM_"),
-        "passthrough file must not carry hcom-owned vars:\n{env}"
+        !env.contains("COMMS_"),
+        "passthrough file must not carry comms-owned vars:\n{env}"
     );
 }

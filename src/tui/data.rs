@@ -14,7 +14,7 @@ pub trait DataSource {
     fn last_error(&self) -> Option<String> {
         None
     }
-    /// Set the default timeline event limit (overridden by HCOM_TUI_TIMELINE_LIMIT env).
+    /// Set the default timeline event limit (overridden by COMMS_TUI_TIMELINE_LIMIT env).
     fn set_timeline_limit(&mut self, _limit: usize) {}
     /// FTS search across all events.
     fn search_timeline(&mut self, _query: &str, _limit: usize) -> (Vec<Message>, Vec<Event>) {

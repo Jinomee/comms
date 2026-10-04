@@ -1,11 +1,11 @@
-//! Kill command: `hcom kill <name(s)|all|tag:X>`
+//! Kill command: `comms kill <name(s)|all|tag:X>`
 //!
 //!
 //! Sends SIGTERM to process groups and optionally closes terminal panes.
 
 use std::collections::HashSet;
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::hooks::common::stop_instance;
 use crate::identity;
 use crate::log::log_info;
@@ -15,7 +15,7 @@ use crate::router::GlobalFlags;
 use crate::terminal;
 use anyhow::{Result, bail};
 
-/// Parsed arguments for `hcom kill`.
+/// Parsed arguments for `comms kill`.
 #[derive(clap::Parser, Debug)]
 #[command(name = "kill", about = "Kill agent processes")]
 pub struct KillArgs {
@@ -73,7 +73,7 @@ fn report_incomplete_pane_cleanup(
 }
 
 /// Resolve who initiated the kill
-fn resolve_initiator(db: &HcomDb, explicit_name: Option<&str>) -> String {
+fn resolve_initiator(db: &CommsDb, explicit_name: Option<&str>) -> String {
     if let Some(name) = explicit_name {
         return name.to_string();
     }
@@ -128,7 +128,7 @@ fn normalize_kill_result(
 }
 
 pub fn kill_tracked_instance(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     initiator: &str,
 ) -> Result<KillTrackedResult, String> {
@@ -215,11 +215,11 @@ fn render_remote_kill_feedback(
     match kill_result {
         "sent" => Ok(vec![
             format!("Sent SIGTERM to \'{}\'{}", name, pane_info),
-            format!("  To resume: hcom r {}", name),
+            format!("  To resume: comms r {}", name),
         ]),
         "already_dead" => Ok(vec![
             format!("\'{}\' had already exited{}", name, pane_info),
-            format!("  To resume: hcom r {}", name),
+            format!("  To resume: comms r {}", name),
         ]),
         other => bail!("Remote kill failed for {name}: unexpected kill_result {other}"),
     }
@@ -263,25 +263,25 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
     }
     let explicit_name = flags.name.clone();
 
-    let db = HcomDb::open()?;
-    let hcom_dir = paths::hcom_dir();
+    let db = CommsDb::open()?;
+    let comms_dir = paths::comms_dir();
     let initiator = resolve_initiator(&db, explicit_name.as_deref());
 
     // A PTY that rejoined without recovery has a live row but no pid; give it
     // back so killing that row reaches the process.
-    pidtrack::claim_orphans(&db, &hcom_dir);
+    pidtrack::claim_orphans(&db, &comms_dir);
 
     // If any target is "all", just kill all
     if targets.iter().any(|t| t == "all") {
-        return kill_all(&db, &hcom_dir, &initiator);
+        return kill_all(&db, &comms_dir, &initiator);
     }
 
     let mut worst_exit = 0;
     for target in &targets {
         let exit = if let Some(tag) = target.strip_prefix("tag:") {
-            kill_by_tag(&db, &hcom_dir, tag, &initiator)?
+            kill_by_tag(&db, &comms_dir, tag, &initiator)?
         } else {
-            kill_single(&db, &hcom_dir, target, &initiator)?
+            kill_single(&db, &comms_dir, target, &initiator)?
         };
         if exit > worst_exit {
             worst_exit = exit;
@@ -320,7 +320,7 @@ pub(crate) fn find_orphan_for_session(session_id: &str) -> Option<pidtrack::Orph
     if session_id.is_empty() {
         return None;
     }
-    pidtrack::get_orphan_processes(&paths::hcom_dir(), None)
+    pidtrack::get_orphan_processes(&paths::comms_dir(), None)
         .into_iter()
         .find(|o| o.session_id == session_id)
 }
@@ -349,7 +349,7 @@ fn pane_info_str(pane_closed: bool, preset_name: &str, pane_id: &str) -> String 
 }
 
 /// Kill all instances.
-fn kill_all(db: &HcomDb, hcom_dir: &std::path::Path, initiator: &str) -> Result<i32> {
+fn kill_all(db: &CommsDb, comms_dir: &std::path::Path, initiator: &str) -> Result<i32> {
     let instances = db.iter_instances_full()?;
     let mut killed = 0;
     let mut failed = 0;
@@ -391,7 +391,7 @@ fn kill_all(db: &HcomDb, hcom_dir: &std::path::Path, initiator: &str) -> Result<
                 report_incomplete_pane_cleanup(result.into(), pane_retry_command.as_deref()) as i32;
             // Clean up instance
             stop_instance(db, &inst.name, initiator, "killed");
-            println!("  To resume: hcom r {}", inst.name);
+            println!("  To resume: comms r {}", inst.name);
         } else {
             // No PID tracked — just clean up
             stop_instance(db, &inst.name, initiator, "killed");
@@ -399,7 +399,7 @@ fn kill_all(db: &HcomDb, hcom_dir: &std::path::Path, initiator: &str) -> Result<
     }
 
     // Kill orphans too
-    let orphans = pidtrack::get_orphan_processes(hcom_dir, Some(&active_pids));
+    let orphans = pidtrack::get_orphan_processes(comms_dir, Some(&active_pids));
     for orphan in &orphans {
         let (result, pane_closed, pane_retry_command) = terminal::kill_process(
             orphan.pid,
@@ -433,7 +433,7 @@ fn kill_all(db: &HcomDb, hcom_dir: &std::path::Path, initiator: &str) -> Result<
         }
         incomplete +=
             report_incomplete_pane_cleanup(result.into(), pane_retry_command.as_deref()) as i32;
-        pidtrack::remove_pid(hcom_dir, orphan.pid);
+        pidtrack::remove_pid(comms_dir, orphan.pid);
     }
 
     if killed == 0 && failed == 0 {
@@ -451,7 +451,12 @@ fn kill_all(db: &HcomDb, hcom_dir: &std::path::Path, initiator: &str) -> Result<
 }
 
 /// Kill instances by tag.
-fn kill_by_tag(db: &HcomDb, hcom_dir: &std::path::Path, tag: &str, initiator: &str) -> Result<i32> {
+fn kill_by_tag(
+    db: &CommsDb,
+    comms_dir: &std::path::Path,
+    tag: &str,
+    initiator: &str,
+) -> Result<i32> {
     let instances = db.iter_instances_full()?;
     let tagged: Vec<_> = instances
         .iter()
@@ -501,7 +506,7 @@ fn kill_by_tag(db: &HcomDb, hcom_dir: &std::path::Path, tag: &str, initiator: &s
         .iter()
         .filter_map(|i| i.pid.map(|p| p as u32))
         .collect();
-    let orphans = pidtrack::get_orphan_processes(hcom_dir, Some(&active_pids));
+    let orphans = pidtrack::get_orphan_processes(comms_dir, Some(&active_pids));
     let tagged_orphans: Vec<_> = orphans.iter().filter(|o| o.tag == tag).collect();
     for orphan in &tagged_orphans {
         let names = orphan.names.join(", ");
@@ -534,7 +539,7 @@ fn kill_by_tag(db: &HcomDb, hcom_dir: &std::path::Path, tag: &str, initiator: &s
         }
         incomplete +=
             report_incomplete_pane_cleanup(result.into(), pane_retry_command.as_deref()) as i32;
-        pidtrack::remove_pid(hcom_dir, orphan.pid);
+        pidtrack::remove_pid(comms_dir, orphan.pid);
     }
 
     if tagged.is_empty() && tagged_orphans.is_empty() {
@@ -548,8 +553,8 @@ fn kill_by_tag(db: &HcomDb, hcom_dir: &std::path::Path, tag: &str, initiator: &s
 
 /// Kill a single instance by name.
 fn kill_single(
-    db: &HcomDb,
-    hcom_dir: &std::path::Path,
+    db: &CommsDb,
+    comms_dir: &std::path::Path,
     target: &str,
     initiator: &str,
 ) -> Result<i32> {
@@ -571,7 +576,7 @@ fn kill_single(
         Some(inst) => inst,
         None => {
             // Check orphans
-            let orphans = pidtrack::get_orphan_processes(hcom_dir, None);
+            let orphans = pidtrack::get_orphan_processes(comms_dir, None);
             // Also match by PID number (TUI sends kill by PID for orphans)
             let matches: Vec<&pidtrack::OrphanProcess> = orphans
                 .iter()
@@ -585,7 +590,7 @@ fn kill_single(
                     .map(|o| format!("{} (pid {})", orphan_label(o), o.pid))
                     .collect();
                 bail!(
-                    "'{target}' matches {} leftover processes: {}\n  Kill one by PID: hcom kill <pid>",
+                    "'{target}' matches {} leftover processes: {}\n  Kill one by PID: comms kill <pid>",
                     matches.len(),
                     options.join(", ")
                 );
@@ -618,7 +623,7 @@ fn kill_single(
                         return Ok(1);
                     }
                 }
-                pidtrack::remove_pid(hcom_dir, orphan.pid);
+                pidtrack::remove_pid(comms_dir, orphan.pid);
                 return Ok(
                     if report_incomplete_pane_cleanup(result.into(), pane_retry_command.as_deref())
                     {
@@ -632,7 +637,7 @@ fn kill_single(
             // by whom instead of failing, so retries don't look like errors.
             if let Some(stopped) = identity::last_stopped(db, target) {
                 println!("'{target}' {}", stopped.summary());
-                println!("  To resume: hcom r {}", stopped.display_name());
+                println!("  To resume: comms r {}", stopped.display_name());
                 return Ok(0);
             }
             bail!("{}", identity::describe_missing_agent(db, target));
@@ -659,7 +664,7 @@ fn kill_single(
 
     if inst.pid.is_none() {
         bail!(
-            "No tracked PID for '{}' — use 'hcom stop {}' instead",
+            "No tracked PID for '{}' — use 'comms stop {}' instead",
             name,
             name
         );
@@ -676,12 +681,12 @@ fn kill_single(
     let exit = match result {
         terminal::KillResult::Sent => {
             println!("Sent SIGTERM to \'{}\'{}", name, pane_info);
-            println!("  To resume: hcom r {}", name);
+            println!("  To resume: comms r {}", name);
             0
         }
         terminal::KillResult::AlreadyDead => {
             println!("\'{}\' had already exited{}", name, pane_info);
-            println!("  To resume: hcom r {}", name);
+            println!("  To resume: comms r {}", name);
             0
         }
         terminal::KillResult::PermissionDenied => {
@@ -704,7 +709,7 @@ fn kill_single(
 /// Kill a process and close its terminal pane.
 /// Returns (KillResult, pane_closed, pane_retry_command, preset_name, pane_id).
 fn kill_instance(
-    db: &HcomDb,
+    db: &CommsDb,
     name: &str,
     pid: u32,
     instance: &crate::db::InstanceRow,
@@ -818,7 +823,7 @@ mod tests {
     }
 
     #[test]
-    fn orphan_match_uses_hcom_name_semantics() {
+    fn orphan_match_uses_comms_name_semantics() {
         let untagged = orphan("tuna", "");
         let tagged = orphan("tuna", "api");
         // Base name is the identity; tag-name is an alias that must match.
@@ -932,7 +937,7 @@ mod tests {
             lines,
             vec![
                 "Sent SIGTERM to \'luna:ABCD\' (closed kitty pane @1)".to_string(),
-                "  To resume: hcom r luna:ABCD".to_string(),
+                "  To resume: comms r luna:ABCD".to_string(),
             ]
         );
     }
@@ -944,7 +949,7 @@ mod tests {
             lines,
             vec![
                 "\'luna:ABCD\' had already exited".to_string(),
-                "  To resume: hcom r luna:ABCD".to_string(),
+                "  To resume: comms r luna:ABCD".to_string(),
             ]
         );
     }

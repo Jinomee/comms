@@ -6,13 +6,13 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use crate::bootstrap;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::instance_binding;
 use crate::instance_lifecycle as lifecycle;
 use crate::instances;
 use crate::log::{log_error, log_info};
 use crate::shared::ST_LISTENING;
-use crate::shared::context::HcomContext;
+use crate::shared::context::CommsContext;
 
 use super::common;
 use super::common::finalize_session;
@@ -29,7 +29,7 @@ fn has_flag(argv: &[String], flag: &str) -> bool {
     argv.iter().any(|a| a == flag)
 }
 
-fn upsert_plugin_notify_endpoint(db: &HcomDb, instance_name: &str, port: u16) {
+fn upsert_plugin_notify_endpoint(db: &CommsDb, instance_name: &str, port: u16) {
     if let Err(e) = db.upsert_notify_endpoint(instance_name, "plugin", port) {
         log_error(
             "native",
@@ -42,11 +42,11 @@ fn upsert_plugin_notify_endpoint(db: &HcomDb, instance_name: &str, port: u16) {
     }
 }
 
-fn initialize_last_event_id(db: &HcomDb, instance_name: &str) {
+fn initialize_last_event_id(db: &CommsDb, instance_name: &str) {
     if let Ok(Some(existing)) = db.get_instance_full(instance_name)
         && existing.last_event_id == 0
     {
-        let launch_event_id: Option<i64> = std::env::var("HCOM_LAUNCH_EVENT_ID")
+        let launch_event_id: Option<i64> = std::env::var("COMMS_LAUNCH_EVENT_ID")
             .ok()
             .and_then(|s| s.parse().ok());
         let current_max = db.get_last_event_id();
@@ -60,11 +60,11 @@ fn initialize_last_event_id(db: &HcomDb, instance_name: &str) {
     }
 }
 
-fn bootstrap_for(ctx: &HcomContext, db: &HcomDb, instance_name: &str) -> String {
+fn bootstrap_for(ctx: &CommsContext, db: &CommsDb, instance_name: &str) -> String {
     bootstrap::get_bootstrap(db, ctx, instance_name, "pi")
 }
 
-fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (i32, String) {
+fn handle_start(ctx: &CommsContext, db: &CommsDb, argv: &[String]) -> (i32, String) {
     // Plugin RPC returns JSON errors on exit 0 so the extension can handle
     // setup failures without Pi treating the hook itself as failed.
     let session_id = match parse_flag(argv, "--session-id") {
@@ -77,7 +77,7 @@ fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (i32, String
 
     let process_id = match &ctx.process_id {
         Some(pid) => pid.clone(),
-        None => return (0, r#"{"error":"HCOM_PROCESS_ID not set"}"#.to_string()),
+        None => return (0, r#"{"error":"COMMS_PROCESS_ID not set"}"#.to_string()),
     };
 
     let instance_name =
@@ -133,7 +133,7 @@ fn handle_start(ctx: &HcomContext, db: &HcomDb, argv: &[String]) -> (i32, String
     (0, response.to_string())
 }
 
-fn handle_status(db: &HcomDb, argv: &[String]) -> (i32, String) {
+fn handle_status(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"error":"Missing --name or --status"}"#.to_string()),
@@ -166,7 +166,7 @@ fn handle_status(db: &HcomDb, argv: &[String]) -> (i32, String) {
     (0, r#"{"ok":true}"#.to_string())
 }
 
-fn handle_read(db: &HcomDb, argv: &[String]) -> (i32, String) {
+fn handle_read(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"error":"Missing --name"}"#.to_string()),
@@ -229,7 +229,7 @@ fn handle_read(db: &HcomDb, argv: &[String]) -> (i32, String) {
     )
 }
 
-fn handle_beforetool(db: &HcomDb, argv: &[String]) -> (i32, String) {
+fn handle_beforetool(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"decision":"allow"}"#.to_string()),
@@ -244,7 +244,7 @@ fn handle_beforetool(db: &HcomDb, argv: &[String]) -> (i32, String) {
     (0, r#"{"decision":"allow"}"#.to_string())
 }
 
-fn handle_stop(db: &HcomDb, argv: &[String]) -> (i32, String) {
+fn handle_stop(db: &CommsDb, argv: &[String]) -> (i32, String) {
     let name = match parse_flag(argv, "--name") {
         Some(n) => n,
         None => return (0, r#"{"error":"Missing --name"}"#.to_string()),
@@ -256,9 +256,9 @@ fn handle_stop(db: &HcomDb, argv: &[String]) -> (i32, String) {
 
 pub fn dispatch_pi_hook(hook_name: &str, argv: &[String]) -> (i32, String) {
     let start = Instant::now();
-    let ctx = HcomContext::from_os();
-    crate::paths::ensure_hcom_directories_at(&ctx.hcom_dir);
-    let db = match HcomDb::open() {
+    let ctx = CommsContext::from_os();
+    crate::paths::ensure_comms_directories_at(&ctx.comms_dir);
+    let db = match CommsDb::open() {
         Ok(db) => db,
         Err(e) => {
             log_error(
@@ -316,8 +316,8 @@ pub fn dispatch_pi_hook(hook_name: &str, argv: &[String]) -> (i32, String) {
     (exit_code, output)
 }
 
-pub const PLUGIN_SOURCE: &str = include_str!("../pi_plugin/hcom.ts");
-const PLUGIN_FILENAME: &str = "hcom.ts";
+pub const PLUGIN_SOURCE: &str = include_str!("../pi_plugin/comms.ts");
+const PLUGIN_FILENAME: &str = "comms.ts";
 
 pub static PER_RUN: PerRunAdapter = PerRunAdapter {
     prepare: prepare_per_run,
@@ -328,13 +328,13 @@ pub static PER_RUN: PerRunAdapter = PerRunAdapter {
 };
 
 /// Ambient plugin path: `$PI_CODING_AGENT_DIR` or `~/.pi/agent`, plus
-/// `extensions/hcom.ts`.
+/// `extensions/comms.ts`.
 pub fn get_pi_plugin_path() -> std::path::PathBuf {
     effective_plugin_path(&LaunchCtx::ambient(crate::tool::Tool::Pi, false))
 }
 
-/// Older hcom installed to `<HCOM_DIR parent>/.pi/extensions/` under a
-/// project-local HCOM_DIR.
+/// Older comms installed to `<COMMS_DIR parent>/.pi/extensions/` under a
+/// project-local COMMS_DIR.
 fn project_local_legacy_path() -> Option<std::path::PathBuf> {
     crate::runtime_env::legacy_tool_config_root()
         .map(|root| root.join(".pi").join("extensions").join(PLUGIN_FILENAME))
@@ -361,25 +361,25 @@ fn prepare_per_run(ctx: &LaunchCtx) -> Result<RuntimeInjection> {
     })
 }
 
-/// Legacy installs went to the launch's agent dir, or to `<HCOM_DIR parent>/.pi/`
-/// under a project-local HCOM_DIR; check both.
+/// Legacy installs went to the launch's agent dir, or to `<COMMS_DIR parent>/.pi/`
+/// under a project-local COMMS_DIR; check both.
 fn cleanup_legacy_per_run(ctx: &LaunchCtx) -> Result<()> {
     let paths = std::iter::once(effective_plugin_path(ctx)).chain(project_local_legacy_path());
-    crate::hooks::runtime::remove_owned_files(paths, is_hcom_owned)
+    crate::hooks::runtime::remove_owned_files(paths, is_comms_owned)
 }
 
-/// True when `path` holds an hcom Pi plugin: the current source or any earlier
-/// version (all carry the `hcom-bootstrap` message type).
-pub fn is_hcom_owned(path: &std::path::Path) -> std::io::Result<bool> {
-    crate::hooks::runtime::file_is_hcom_owned(path, |content| {
-        content == PLUGIN_SOURCE || content.contains("customType: \"hcom-bootstrap\"")
+/// True when `path` holds an comms Pi plugin: the current source or any earlier
+/// version (all carry the `comms-bootstrap` message type).
+pub fn is_comms_owned(path: &std::path::Path) -> std::io::Result<bool> {
+    crate::hooks::runtime::file_is_comms_owned(path, |content| {
+        content == PLUGIN_SOURCE || content.contains("customType: \"comms-bootstrap\"")
     })
 }
 
-/// Remove hcom's plugin file. A user file with the same name is left alone.
+/// Remove comms's plugin file. A user file with the same name is left alone.
 pub fn remove_pi_plugin() -> std::io::Result<()> {
     for path in std::iter::once(get_pi_plugin_path()).chain(project_local_legacy_path()) {
-        if is_hcom_owned(&path)? {
+        if is_comms_owned(&path)? {
             std::fs::remove_file(path)?;
         }
     }
@@ -394,7 +394,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    fn setup_test_db() -> (HcomDb, PathBuf) {
+    fn setup_test_db() -> (CommsDb, PathBuf) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -406,7 +406,7 @@ mod tests {
             test_id
         ));
 
-        let db = HcomDb::open_at(&db_path).unwrap();
+        let db = CommsDb::open_at(&db_path).unwrap();
         (db, db_path)
     }
 
@@ -416,7 +416,7 @@ mod tests {
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
-    fn save_test_instance(db: &HcomDb, name: &str, status: &str) {
+    fn save_test_instance(db: &CommsDb, name: &str, status: &str) {
         let mut row = serde_json::Map::new();
         row.insert("name".into(), serde_json::json!(name));
         row.insert("tool".into(), serde_json::json!("pi"));
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn plugin_bootstraps_via_hidden_message() {
         assert!(PLUGIN_SOURCE.contains("before_agent_start"));
-        assert!(PLUGIN_SOURCE.contains("customType: \"hcom-bootstrap\""));
+        assert!(PLUGIN_SOURCE.contains("customType: \"comms-bootstrap\""));
         assert!(PLUGIN_SOURCE.contains("display: false"));
         assert!(!PLUGIN_SOURCE.contains("text: `${bootstrapText}\\n\\n${event.text}`"));
     }
@@ -508,11 +508,11 @@ mod tests {
         db.set_process_binding("pid-1", "", "soba").unwrap();
 
         let env = std::collections::HashMap::from([
-            ("HCOM_PROCESS_ID".to_string(), "pid-1".to_string()),
-            ("HCOM_LAUNCHED".to_string(), "1".to_string()),
-            ("HCOM_TOOL".to_string(), "pi".to_string()),
+            ("COMMS_PROCESS_ID".to_string(), "pid-1".to_string()),
+            ("COMMS_LAUNCHED".to_string(), "1".to_string()),
+            ("COMMS_TOOL".to_string(), "pi".to_string()),
         ]);
-        let ctx = HcomContext::from_env(&env, temp.path().to_path_buf());
+        let ctx = CommsContext::from_env(&env, temp.path().to_path_buf());
         let start = |sid: &str| {
             let (code, output) = handle_start(&ctx, &db, &["--session-id".into(), sid.into()]);
             assert_eq!(code, 0);
@@ -563,11 +563,11 @@ mod tests {
         db.set_process_binding("pid-123", "", "temp").unwrap();
 
         let env = std::collections::HashMap::from([
-            ("HCOM_PROCESS_ID".to_string(), "pid-123".to_string()),
-            ("HCOM_LAUNCHED".to_string(), "1".to_string()),
-            ("HCOM_TOOL".to_string(), "pi".to_string()),
+            ("COMMS_PROCESS_ID".to_string(), "pid-123".to_string()),
+            ("COMMS_LAUNCHED".to_string(), "1".to_string()),
+            ("COMMS_TOOL".to_string(), "pi".to_string()),
         ]);
-        let ctx = HcomContext::from_env(&env, temp.path().to_path_buf());
+        let ctx = CommsContext::from_env(&env, temp.path().to_path_buf());
 
         let (code, output) = handle_start(
             &ctx,
@@ -596,26 +596,26 @@ mod tests {
     }
 
     #[test]
-    fn test_is_hcom_owned_matches_hcom_plugins_only() {
+    fn test_is_comms_owned_matches_comms_plugins_only() {
         let dir = tempfile::tempdir().unwrap();
         let current = dir.path().join("current.ts");
         let older = dir.path().join("older.ts");
         let user = dir.path().join("user.ts");
         std::fs::write(&current, PLUGIN_SOURCE).unwrap();
-        std::fs::write(&older, "sendMessage({ customType: \"hcom-bootstrap\" })").unwrap();
+        std::fs::write(&older, "sendMessage({ customType: \"comms-bootstrap\" })").unwrap();
         std::fs::write(&user, "export default function mine() {}").unwrap();
-        assert!(is_hcom_owned(&current).unwrap());
-        assert!(is_hcom_owned(&older).unwrap());
-        assert!(!is_hcom_owned(&user).unwrap());
-        assert!(!is_hcom_owned(&dir.path().join("missing.ts")).unwrap());
+        assert!(is_comms_owned(&current).unwrap());
+        assert!(is_comms_owned(&older).unwrap());
+        assert!(!is_comms_owned(&user).unwrap());
+        assert!(!is_comms_owned(&dir.path().join("missing.ts")).unwrap());
         // Something unreadable in the way is an error, not "not ours".
-        assert!(is_hcom_owned(dir.path()).is_err());
+        assert!(is_comms_owned(dir.path()).is_err());
     }
 
     #[test]
     #[serial_test::serial]
     fn per_run_injection_uses_runtime_extension_before_separator() {
-        let (_dir, hcom, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
+        let (_dir, comms, home, _guard) = crate::hooks::test_helpers::isolated_test_env();
         let ctx = LaunchCtx {
             tool: crate::tool::Tool::Pi,
             env: [("HOME".to_string(), home.to_string_lossy().into_owned())]
@@ -629,8 +629,8 @@ mod tests {
         assert_eq!(&injection.args[..2], &["--model", "x"]);
         assert_eq!(injection.args[2], "-e");
         let path = std::path::Path::new(&injection.args[3]);
-        assert!(path.starts_with(hcom.join("integrations").join("pi")));
-        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("hcom.ts"));
+        assert!(path.starts_with(comms.join("integrations").join("pi")));
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("comms.ts"));
         assert_eq!(&injection.args[4..], &["--", "prompt"]);
     }
 
@@ -642,7 +642,7 @@ mod tests {
         let plugin = cwd
             .join("relative-agent")
             .join("extensions")
-            .join("hcom.ts");
+            .join("comms.ts");
         std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
         std::fs::write(&plugin, PLUGIN_SOURCE).unwrap();
 

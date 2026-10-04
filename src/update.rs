@@ -1,18 +1,18 @@
 //! Auto-update checker — checks latest release via git ls-remote once daily.
 //! Uses git ls-remote instead of the GitHub REST API to avoid rate limits.
 
-use crate::paths::{FLAGS_DIR, atomic_write, hcom_path};
+use crate::paths::{FLAGS_DIR, atomic_write, comms_path};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(86400); // 24 hours
 const UNIX_INSTALL_CMD: &str =
-    "curl -fsSL https://github.com/aannoo/hcom/releases/latest/download/hcom-installer.sh | sh";
-const WINDOWS_INSTALL_CMD: &str = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"irm https://github.com/aannoo/hcom/releases/latest/download/hcom-installer.ps1 | iex\"";
+    "curl -fsSL https://github.com/jinomee/comms/releases/latest/download/comms-installer.sh | sh";
+const WINDOWS_INSTALL_CMD: &str = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"irm https://github.com/jinomee/comms/releases/latest/download/comms-installer.ps1 | iex\"";
 
 pub(crate) fn flag_path() -> PathBuf {
-    hcom_path(&[FLAGS_DIR, "update_check"])
+    comms_path(&[FLAGS_DIR, "update_check"])
 }
 
 /// Parse version string "x.y.z" into comparable tuple.
@@ -47,10 +47,10 @@ fn spawn_background_check(flag: &Path, current: &str) {
     // Runs completely detached — parent doesn't wait.
     let script = format!(
         r#"
-TAG=$(GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=5 git ls-remote --tags --sort=version:refname https://github.com/aannoo/hcom.git 2>/dev/null | grep -v '\^{{}}' | tail -1 | sed 's|.*refs/tags/||')
+TAG=$(GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=5 git ls-remote --tags --sort=version:refname https://github.com/jinomee/comms.git 2>/dev/null | grep -v '\^{{}}' | tail -1 | sed 's|.*refs/tags/||')
 # Fallback to GitHub API if git unavailable
 if [ -z "$TAG" ]; then
-    TAG=$(curl -fsSL --max-time 5 https://api.github.com/repos/aannoo/hcom/releases/latest 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+    TAG=$(curl -fsSL --max-time 5 https://api.github.com/repos/jinomee/comms/releases/latest 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)
 fi
 VER="${{TAG#v}}"
 if [ -n "$VER" ]; then
@@ -89,7 +89,7 @@ fn fetch_via_git() -> Option<String> {
             "ls-remote",
             "--tags",
             "--sort=version:refname",
-            "https://github.com/aannoo/hcom.git",
+            "https://github.com/jinomee/comms.git",
         ])
         .env("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
         .env("GIT_HTTP_LOW_SPEED_TIME", "5")
@@ -119,7 +119,7 @@ fn fetch_via_curl() -> Option<String> {
             "-fsSL",
             "--max-time",
             "5",
-            "https://api.github.com/repos/aannoo/hcom/releases/latest",
+            "https://api.github.com/repos/jinomee/comms/releases/latest",
         ])
         .output()
         .ok()?;
@@ -151,7 +151,7 @@ pub struct UpdateInfo {
 
 /// Synchronously fetch current + latest version info from GitHub.
 /// Single source of truth for all update-related logic (fetching, parsing, command selection).
-/// Used by `hcom update` command for fresh checks.
+/// Used by `comms update` command for fresh checks.
 pub fn fetch_update_info() -> anyhow::Result<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION").to_string();
     let latest =
@@ -172,8 +172,8 @@ pub fn fetch_update_info() -> anyhow::Result<UpdateInfo> {
 
 /// Whether `cmd` needs POSIX shell semantics to run (currently: only the
 /// curl-installer fallback, which is a pipe to `sh`). All other commands
-/// `get_update_cmd()` returns (`pip install -U hcom`, `uv tool upgrade hcom`,
-/// `brew upgrade hcom`) are a plain program + args and need no shell at all.
+/// `get_update_cmd()` returns (`pip install -U comms`, `uv tool upgrade comms`,
+/// `brew upgrade comms`) are a plain program + args and need no shell at all.
 ///
 /// Platform-independent so it's testable on any host; `cmd_update` uses this
 /// on Windows (which has no `sh`) to decide whether to refuse instead of
@@ -230,12 +230,12 @@ fn get_update_cmd_for_exe(exe: &Path) -> &'static str {
 
     // Homebrew install (Cellar path on both Apple Silicon and Intel)
     if path_str.contains("/Cellar/") {
-        return "brew upgrade hcom";
+        return "brew upgrade comms";
     }
 
     // uv tool install
     if path_lower.contains("/uv/") || path_lower.contains("/.local/share/uv/") {
-        return "uv tool upgrade hcom";
+        return "uv tool upgrade comms";
     }
 
     // pip install inside a venv. Maturin's `bindings = "bin"` wheels put the
@@ -247,14 +247,14 @@ fn get_update_cmd_for_exe(exe: &Path) -> &'static str {
         || path_lower.contains("/venv/")
         || path_lower.contains("/.venv/")
     {
-        return "pip install -U hcom";
+        return "pip install -U comms";
     }
 
     // A prefix-wide pip install puts the binary in <prefix>/bin and metadata
     // below <prefix>/lib. This is the normal layout on Termux, where prefix is
     // /data/data/com.termux/files/usr, and is also common for system Python.
     if is_prefix_pip_install(&resolved) {
-        return "pip install -U hcom";
+        return "pip install -U comms";
     }
 
     platform_installer_cmd()
@@ -285,21 +285,21 @@ fn record_owns_exe(site_dir: &Path, dist_info: &Path, exe: &Path) -> bool {
     })
 }
 
-fn site_dir_has_hcom_exe(site_dir: &Path, exe: &Path) -> bool {
+fn site_dir_has_comms_exe(site_dir: &Path, exe: &Path) -> bool {
     let Ok(entries) = fs::read_dir(site_dir) else {
         return false;
     };
 
     entries.flatten().any(|pkg| {
-        let is_hcom_dist_info = pkg
+        let is_comms_dist_info = pkg
             .file_name()
             .to_str()
-            .is_some_and(|name| name.starts_with("hcom-") && name.ends_with(".dist-info"));
-        is_hcom_dist_info && pkg.path().is_dir() && record_owns_exe(site_dir, &pkg.path(), exe)
+            .is_some_and(|name| name.starts_with("comms-") && name.ends_with(".dist-info"));
+        is_comms_dist_info && pkg.path().is_dir() && record_owns_exe(site_dir, &pkg.path(), exe)
     })
 }
 
-fn python_lib_has_hcom_exe(lib_dir: &Path, exe: &Path) -> bool {
+fn python_lib_has_comms_exe(lib_dir: &Path, exe: &Path) -> bool {
     let Ok(entries) = fs::read_dir(lib_dir) else {
         return false;
     };
@@ -309,7 +309,7 @@ fn python_lib_has_hcom_exe(lib_dir: &Path, exe: &Path) -> bool {
         python_dir.is_dir()
             && ["site-packages", "dist-packages"]
                 .iter()
-                .any(|name| site_dir_has_hcom_exe(&python_dir.join(name), exe))
+                .any(|name| site_dir_has_comms_exe(&python_dir.join(name), exe))
     })
 }
 
@@ -331,8 +331,8 @@ fn is_prefix_pip_install(exe: &Path) -> bool {
 
     [prefix.join("lib"), prefix.join("lib64")]
         .iter()
-        .any(|lib_dir| python_lib_has_hcom_exe(lib_dir, exe))
-        || site_dir_has_hcom_exe(&prefix.join("Lib/site-packages"), exe)
+        .any(|lib_dir| python_lib_has_comms_exe(lib_dir, exe))
+        || site_dir_has_comms_exe(&prefix.join("Lib/site-packages"), exe)
 }
 
 /// Check for updates (once daily cached). Returns (latest_version, update_cmd) or None.
@@ -381,7 +381,7 @@ pub fn get_update_info() -> Option<(String, &'static str)> {
 /// Return update notice string for stderr, or None if up to date.
 pub fn get_update_notice() -> Option<String> {
     let (latest, _cmd) = get_update_info()?;
-    Some(format!("→ hcom v{latest} available — run `hcom update`"))
+    Some(format!("→ comms v{latest} available — run `comms update`"))
 }
 
 #[cfg(test)]
@@ -401,23 +401,23 @@ mod tests {
         assert!(is_shell_pipe_command(
             "curl -fsSL https://example.com/install.sh | sh"
         ));
-        assert!(!is_shell_pipe_command("pip install -U hcom"));
-        assert!(!is_shell_pipe_command("uv tool upgrade hcom"));
-        assert!(!is_shell_pipe_command("brew upgrade hcom"));
+        assert!(!is_shell_pipe_command("pip install -U comms"));
+        assert!(!is_shell_pipe_command("uv tool upgrade comms"));
+        assert!(!is_shell_pipe_command("brew upgrade comms"));
         assert!(!is_shell_pipe_command(WINDOWS_INSTALL_CMD));
         assert!(is_powershell_installer_command(WINDOWS_INSTALL_CMD));
-        assert!(!is_powershell_installer_command("pip install -U hcom"));
+        assert!(!is_powershell_installer_command("pip install -U comms"));
     }
 
     #[test]
     fn test_split_program_args() {
         assert_eq!(
-            split_program_args("pip install -U hcom"),
-            Some(("pip", vec!["install", "-U", "hcom"]))
+            split_program_args("pip install -U comms"),
+            Some(("pip", vec!["install", "-U", "comms"]))
         );
         assert_eq!(
-            split_program_args("uv tool upgrade hcom"),
-            Some(("uv", vec!["tool", "upgrade", "hcom"]))
+            split_program_args("uv tool upgrade comms"),
+            Some(("uv", vec!["tool", "upgrade", "comms"]))
         );
         assert_eq!(split_program_args(""), None);
         assert_eq!(split_program_args("   "), None);
@@ -436,7 +436,7 @@ mod tests {
         let cmd = get_update_cmd();
         if cfg!(windows) {
             assert!(
-                cmd.contains("hcom-installer.ps1"),
+                cmd.contains("comms-installer.ps1"),
                 "expected PowerShell fallback, got: {cmd}"
             );
         } else {
@@ -448,13 +448,13 @@ mod tests {
     fn test_windows_style_install_paths_are_detected() {
         assert_eq!(
             get_update_cmd_for_exe(Path::new(
-                r"C:\Users\me\AppData\Local\uv\tools\hcom\Scripts\hcom.exe"
+                r"C:\Users\me\AppData\Local\uv\tools\comms\Scripts\comms.exe"
             )),
-            "uv tool upgrade hcom"
+            "uv tool upgrade comms"
         );
         assert_eq!(
-            get_update_cmd_for_exe(Path::new(r"C:\Users\me\project\.venv\Scripts\hcom.exe")),
-            "pip install -U hcom"
+            get_update_cmd_for_exe(Path::new(r"C:\Users\me\project\.venv\Scripts\comms.exe")),
+            "pip install -U comms"
         );
     }
 
@@ -462,28 +462,28 @@ mod tests {
     fn test_prefix_pip_detection_matches_termux_layout() {
         let tmp = tempfile::tempdir().unwrap();
         let prefix = tmp.path().join("data/data/com.termux/files/usr");
-        let exe = prefix.join("bin/hcom");
-        let dist_info = prefix.join("lib/python3.14/site-packages/hcom-0.7.23.dist-info");
+        let exe = prefix.join("bin/comms");
+        let dist_info = prefix.join("lib/python3.14/site-packages/comms-0.7.23.dist-info");
 
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         std::fs::create_dir_all(&dist_info).unwrap();
         std::fs::write(&exe, b"binary").unwrap();
         std::fs::write(
             dist_info.join("RECORD"),
-            "../../../bin/hcom,sha256=test,6\n",
+            "../../../bin/comms,sha256=test,6\n",
         )
         .unwrap();
 
-        assert_eq!(get_update_cmd_for_exe(&exe), "pip install -U hcom");
+        assert_eq!(get_update_cmd_for_exe(&exe), "pip install -U comms");
     }
 
     #[test]
     fn test_prefix_pip_detection_ignores_stale_dist_info() {
         let tmp = tempfile::tempdir().unwrap();
         let prefix = tmp.path().join("usr");
-        let exe = prefix.join("bin/hcom");
-        let other_exe = prefix.join("bin/other-hcom");
-        let dist_info = prefix.join("lib/python3.14/site-packages/hcom-0.7.23.dist-info");
+        let exe = prefix.join("bin/comms");
+        let other_exe = prefix.join("bin/other-comms");
+        let dist_info = prefix.join("lib/python3.14/site-packages/comms-0.7.23.dist-info");
 
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         std::fs::create_dir_all(&dist_info).unwrap();
@@ -491,7 +491,7 @@ mod tests {
         std::fs::write(&other_exe, b"other binary").unwrap();
         std::fs::write(
             dist_info.join("RECORD"),
-            "../../../bin/other-hcom,sha256=test,12\n",
+            "../../../bin/other-comms,sha256=test,12\n",
         )
         .unwrap();
 

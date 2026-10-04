@@ -1,4 +1,4 @@
-//! `hcom status` command — system health overview.
+//! `comms status` command — system health overview.
 //!
 //!
 //! Shows: version, directory, config, tools, terminal, agents, relay, logs.
@@ -7,11 +7,11 @@ use std::path::Path;
 
 use serde_json::json;
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::hooks::runtime::HookMode;
 use crate::shared::CommandContext;
 
-/// Parsed arguments for `hcom status`.
+/// Parsed arguments for `comms status`.
 #[derive(clap::Parser, Debug)]
 #[command(name = "status", about = "System health overview")]
 pub struct StatusArgs {
@@ -56,7 +56,7 @@ fn is_antigravity_installed() -> bool {
 }
 
 // Hook-installation checks delegate to the canonical tool adapter so status
-// stays aligned with `hcom hooks status` as integrations are added.
+// stays aligned with `comms hooks status` as integrations are added.
 
 fn is_tool_installed(tool: crate::tool::Tool) -> bool {
     match tool {
@@ -73,7 +73,7 @@ struct ToolStatus {
     key: &'static str,
     name: &'static str,
     installed: bool,
-    /// hcom launches get hooks with no further setup: always for per-run
+    /// comms launches get hooks with no further setup: always for per-run
     /// tools, when the global install is present for persistent ones.
     hooks: bool,
     hook_mode: HookMode,
@@ -140,7 +140,7 @@ struct AgentCounts {
     total: i64,
 }
 
-fn recent_launch_failures(db: &HcomDb, limit: usize) -> Vec<(String, String)> {
+fn recent_launch_failures(db: &CommsDb, limit: usize) -> Vec<(String, String)> {
     let Ok(mut stmt) = db.conn().prepare(
         "SELECT name, status_detail
          FROM instances
@@ -158,7 +158,7 @@ fn recent_launch_failures(db: &HcomDb, limit: usize) -> Vec<(String, String)> {
     rows.filter_map(Result::ok).collect()
 }
 
-fn finalize_timed_out_launches(db: &HcomDb) {
+fn finalize_timed_out_launches(db: &CommsDb) {
     if let Ok(instances) = db.iter_instances_full() {
         for instance in instances {
             if crate::instances::is_launching_placeholder(&instance) {
@@ -169,7 +169,7 @@ fn finalize_timed_out_launches(db: &HcomDb) {
     }
 }
 
-fn get_agent_counts(db: &HcomDb) -> AgentCounts {
+fn get_agent_counts(db: &CommsDb) -> AgentCounts {
     let mut c = AgentCounts {
         active: 0,
         listening: 0,
@@ -206,15 +206,15 @@ fn get_agent_counts(db: &HcomDb) -> AgentCounts {
 
 // ── Main Entry Point ─────────────────────────────────────────────────────
 
-/// Main entry point for `hcom status` command.
-pub fn cmd_status(db: &HcomDb, args: &StatusArgs, _ctx: Option<&CommandContext>) -> i32 {
+/// Main entry point for `comms status` command.
+pub fn cmd_status(db: &CommsDb, args: &StatusArgs, _ctx: Option<&CommandContext>) -> i32 {
     let json_mode = args.json;
     let show_logs = args.logs;
 
-    let hcom_dir = crate::paths::hcom_dir();
-    let dir_exists = hcom_dir.exists();
+    let comms_dir = crate::paths::comms_dir();
+    let dir_exists = comms_dir.exists();
     let dir_writable = if dir_exists {
-        let test_file = hcom_dir.join(".write_test");
+        let test_file = comms_dir.join(".write_test");
         let writable = std::fs::write(&test_file, "").is_ok();
         let _ = std::fs::remove_file(&test_file);
         writable
@@ -230,7 +230,7 @@ pub fn cmd_status(db: &HcomDb, args: &StatusArgs, _ctx: Option<&CommandContext>)
 
     // Check config validity
     let mut config_errors: Vec<String> = Vec::new();
-    let config_valid = match std::fs::read_to_string(hcom_dir.join("config.toml")) {
+    let config_valid = match std::fs::read_to_string(comms_dir.join("config.toml")) {
         Ok(c) => match c.parse::<toml::Table>() {
             Ok(_) => true,
             Err(e) => {
@@ -261,7 +261,7 @@ pub fn cmd_status(db: &HcomDb, args: &StatusArgs, _ctx: Option<&CommandContext>)
     let relay = crate::relay::get_relay_status(&config, db);
 
     // Paths
-    let hcom_dir_override = std::env::var("HCOM_DIR").is_ok();
+    let comms_dir_override = std::env::var("COMMS_DIR").is_ok();
 
     if json_mode {
         let log_summary = crate::log::get_log_summary(1.0);
@@ -274,10 +274,10 @@ pub fn cmd_status(db: &HcomDb, args: &StatusArgs, _ctx: Option<&CommandContext>)
                 "update_available": update_info.is_some(),
                 "update_cmd": update_info.as_ref().map(|(_, c)| *c),
             },
-            "hcom_dir": hcom_dir.to_string_lossy(),
-            "hcom_dir_override": hcom_dir_override,
-            "hcom_exists": dir_exists,
-            "hcom_writable": dir_writable,
+            "comms_dir": comms_dir.to_string_lossy(),
+            "comms_dir_override": comms_dir_override,
+            "comms_exists": dir_exists,
+            "comms_writable": dir_writable,
             "config_valid": config_valid,
             "config_errors": config_errors,
             "tools": tool_statuses_json(&tools),
@@ -336,7 +336,7 @@ pub fn cmd_status(db: &HcomDb, args: &StatusArgs, _ctx: Option<&CommandContext>)
     }
 
     // Pretty output
-    println!("hcom {}", env!("CARGO_PKG_VERSION"));
+    println!("comms {}", env!("CARGO_PKG_VERSION"));
     println!();
 
     // Directory
@@ -347,11 +347,11 @@ pub fn cmd_status(db: &HcomDb, args: &StatusArgs, _ctx: Option<&CommandContext>)
     } else {
         "missing"
     };
-    println!("dir:       {} ({dir_status})", hcom_dir.display());
-    if std::env::var("HCOM_DIR").is_ok() {
+    println!("dir:       {} ({dir_status})", comms_dir.display());
+    if std::env::var("COMMS_DIR").is_ok() {
         println!(
-            "           HCOM_DIR={}",
-            std::env::var("HCOM_DIR").unwrap_or_default()
+            "           COMMS_DIR={}",
+            std::env::var("COMMS_DIR").unwrap_or_default()
         );
     }
 
@@ -503,7 +503,7 @@ pub fn cmd_status(db: &HcomDb, args: &StatusArgs, _ctx: Option<&CommandContext>)
         .get("warn_count")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    let log_path = hcom_dir.join(".tmp/logs/hcom.log");
+    let log_path = comms_dir.join(".tmp/logs/comms.log");
     if error_count == 0 && warn_count == 0 {
         println!("logs:      \u{2713} ok");
     } else {
@@ -523,7 +523,10 @@ pub fn cmd_status(db: &HcomDb, args: &StatusArgs, _ctx: Option<&CommandContext>)
         if show_logs {
             println!("logs:      {} (1h)", parts.join(", "));
         } else {
-            println!("logs:      {} (1h)  (hcom status --logs)", parts.join(", "));
+            println!(
+                "logs:      {} (1h)  (comms status --logs)",
+                parts.join(", ")
+            );
         }
     }
     println!("           {}", log_path.display());
@@ -708,7 +711,7 @@ mod tests {
                 || crate::config::is_user_defined_preset(name)
         };
 
-        let (_dir, hcom_dir, _home, _guard) = isolated_test_env();
+        let (_dir, comms_dir, _home, _guard) = isolated_test_env();
         let platform = crate::shared::platform::platform_name();
         let builtin = match platform {
             "Darwin" | "Linux" => "windows-terminal",
@@ -723,7 +726,7 @@ mod tests {
 
         // A user-defined preset of the same name: available.
         std::fs::write(
-            hcom_dir.join("config.toml"),
+            comms_dir.join("config.toml"),
             format!("[terminal.presets.{builtin}]\nopen = \"{builtin} {{script}}\"\n"),
         )
         .unwrap();
@@ -736,13 +739,13 @@ mod tests {
     #[test]
     fn test_status_json_includes_dev_root_only_when_set() {
         let dir = tempfile::tempdir().unwrap();
-        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+        let db = crate::db::CommsDb::open_at(&dir.path().join("comms.db")).unwrap();
 
         assert_eq!(db.kv_get(DEV_ROOT_KV_KEY).unwrap(), None);
 
         db.kv_set(DEV_ROOT_KV_KEY, Some("/tmp/dev-root")).unwrap();
         assert_eq!(
-            crate::router::resolve_effective_dev_root(&dir.path().join("hcom.db")),
+            crate::router::resolve_effective_dev_root(&dir.path().join("comms.db")),
             Some((std::path::PathBuf::from("/tmp/dev-root"), "kv"))
         );
     }

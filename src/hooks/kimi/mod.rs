@@ -18,8 +18,8 @@ pub use handlers::{derive_kimi_transcript_path, dispatch_kimi_hook};
 
 #[cfg(test)]
 pub(crate) use config::{
-    HOOK_TIMEOUT_SECS, KIMI_HOOK_COMMANDS, build_kimi_hook_command, is_hcom_kimi_command,
-    kimi_permission_patterns, merge_hcom_hooks, merge_hcom_permissions, remove_hcom_permissions,
+    HOOK_TIMEOUT_SECS, KIMI_HOOK_COMMANDS, build_kimi_hook_command, is_comms_kimi_command,
+    kimi_permission_patterns, merge_comms_hooks, merge_comms_permissions, remove_comms_permissions,
 };
 #[cfg(test)]
 pub(crate) use handlers::{get_handler, handle_sessionend, handle_sessionstart, handle_stop};

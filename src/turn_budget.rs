@@ -3,21 +3,21 @@
 //! Every agent→agent message increments a counter for that pair of agents.
 //! Once a pair has exchanged `limit` messages with no human input, further
 //! messages between them are refused with an explanation. Messages to the
-//! human are never counted. Any human message (`hcom send` from a terminal,
+//! human are never counted. Any human message (`comms send` from a terminal,
 //! the TUI) resets every pair; a human typing into an agent's own prompt
 //! resets that agent's pairs.
 //!
-//! Limit: `hcom budget <n>` (stored), else `HCOM_TURN_BUDGET`, else 20.
+//! Limit: `comms budget <n>` (stored), else `COMMS_TURN_BUDGET`, else 20.
 //! 0 disables. Stored in the `kv` table under `comms_budget:`.
 
 use anyhow::Result;
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 
 const PAIR_PREFIX: &str = "comms_budget:pair:";
 const LIMIT_KEY: &str = "comms_budget:limit";
 pub const DEFAULT_LIMIT: u32 = 20;
-pub const LIMIT_ENV: &str = "HCOM_TURN_BUDGET";
+pub const LIMIT_ENV: &str = "COMMS_TURN_BUDGET";
 
 fn pair_key(a: &str, b: &str) -> String {
     let (x, y) = if a <= b { (a, b) } else { (b, a) };
@@ -29,7 +29,7 @@ fn parse_pair(key: &str) -> Option<(String, String)> {
     Some((a.to_string(), b.to_string()))
 }
 
-pub fn limit(db: &HcomDb) -> u32 {
+pub fn limit(db: &CommsDb) -> u32 {
     if let Ok(Some(v)) = db.kv_get(LIMIT_KEY)
         && let Ok(n) = v.parse()
     {
@@ -41,11 +41,11 @@ pub fn limit(db: &HcomDb) -> u32 {
         .unwrap_or(DEFAULT_LIMIT)
 }
 
-pub fn set_limit(db: &HcomDb, n: u32) -> Result<()> {
+pub fn set_limit(db: &CommsDb, n: u32) -> Result<()> {
     db.kv_set(LIMIT_KEY, Some(&n.to_string()))
 }
 
-fn count(db: &HcomDb, key: &str) -> u32 {
+fn count(db: &CommsDb, key: &str) -> u32 {
     db.kv_get(key)
         .ok()
         .flatten()
@@ -54,7 +54,7 @@ fn count(db: &HcomDb, key: &str) -> u32 {
 }
 
 /// Refusal message if `sender` may not message `recipients` right now.
-pub fn check(db: &HcomDb, sender: &str, recipients: &[String]) -> Option<String> {
+pub fn check(db: &CommsDb, sender: &str, recipients: &[String]) -> Option<String> {
     let limit = limit(db);
     if limit == 0 {
         return None;
@@ -67,19 +67,19 @@ pub fn check(db: &HcomDb, sender: &str, recipients: &[String]) -> Option<String>
     if exhausted.is_empty() {
         return None;
     }
-    let hcom = crate::runtime_env::build_hcom_command();
+    let comms = crate::runtime_env::build_comms_command();
     let human = crate::shared::constants::SENDER;
     Some(format!(
         "Turn budget reached: you and {} have exchanged {limit} messages with no human input. \
          Stop here and wait for the human. Tell them where things stand with \
-         `{hcom} send @{human} -- <summary>`; they can continue the conversation with \
-         `{hcom} budget reset`.",
+         `{comms} send @{human} -- <summary>`; they can continue the conversation with \
+         `{comms} budget reset`.",
         exhausted.join(", "),
     ))
 }
 
 /// Count a delivered agent→agent message.
-pub fn record(db: &HcomDb, sender: &str, recipients: &[String]) {
+pub fn record(db: &CommsDb, sender: &str, recipients: &[String]) {
     for r in recipients.iter().filter(|r| r.as_str() != sender) {
         let key = pair_key(sender, r);
         let next = count(db, &key) + 1;
@@ -90,14 +90,14 @@ pub fn record(db: &HcomDb, sender: &str, recipients: &[String]) {
 }
 
 /// Human input reached everyone: clear all pairs.
-pub fn reset_all(db: &HcomDb) {
+pub fn reset_all(db: &CommsDb) {
     if let Err(e) = db.kv_delete_prefix(PAIR_PREFIX) {
         crate::log::log_warn("turn_budget", "reset_all", &format!("{e}"));
     }
 }
 
 /// Human typed into `name`'s prompt: clear pairs involving it.
-pub fn reset_for(db: &HcomDb, name: &str) {
+pub fn reset_for(db: &CommsDb, name: &str) {
     let Ok(rows) = db.kv_prefix(PAIR_PREFIX) else {
         return;
     };
@@ -109,7 +109,7 @@ pub fn reset_for(db: &HcomDb, name: &str) {
 }
 
 /// (agent, agent, count) for every pair with a nonzero count.
-pub fn pairs(db: &HcomDb) -> Vec<(String, String, u32)> {
+pub fn pairs(db: &CommsDb) -> Vec<(String, String, u32)> {
     let mut out: Vec<_> = db
         .kv_prefix(PAIR_PREFIX)
         .unwrap_or_default()
@@ -127,9 +127,9 @@ pub fn pairs(db: &HcomDb) -> Vec<(String, String, u32)> {
 mod tests {
     use super::*;
 
-    fn test_db() -> HcomDb {
+    fn test_db() -> CommsDb {
         let dir = tempfile::tempdir().unwrap();
-        let db = HcomDb::open_raw(&dir.path().join("test.db")).unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("test.db")).unwrap();
         db.init_db().unwrap();
         std::mem::forget(dir);
         db

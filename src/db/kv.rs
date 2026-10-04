@@ -3,7 +3,7 @@
 use anyhow::Result;
 use rusqlite::params;
 
-use super::HcomDb;
+use super::CommsDb;
 
 fn prefix_like_pattern(prefix: &str) -> String {
     let escaped = prefix
@@ -13,7 +13,7 @@ fn prefix_like_pattern(prefix: &str) -> String {
     format!("{escaped}%")
 }
 
-impl HcomDb {
+impl CommsDb {
     /// Get value from kv table.
     pub fn kv_get(&self, key: &str) -> Result<Option<String>> {
         match self

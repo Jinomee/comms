@@ -1,16 +1,16 @@
 //! Per-run hook integration: shared plumbing.
 //!
-//! A per-run tool loads hcom's hooks/plugin for one invocation (a flag or an
+//! A per-run tool loads comms's hooks/plugin for one invocation (a flag or an
 //! env var the launcher adds) instead of from a global install in the tool's
 //! config dir. There is no persistent mode for these tools: a plain run of the
-//! tool never carries hcom, and nested same-tool children started from an
+//! tool never carries comms, and nested same-tool children started from an
 //! agent's shell don't inherit the parent's hooks.
 //!
 //! Each tool supplies a [`PerRunAdapter`] (schema and merge logic stay in
 //! `src/hooks/<tool>.rs`); tools without one keep the persistent install path in
 //! `launcher::ensure_hooks_installed`.
 //!
-//! Launch order ([`plan`]): prepare/validate the injection → remove hcom's
+//! Launch order ([`plan`]): prepare/validate the injection → remove comms's
 //! legacy installs from the effective config dirs (a failure is a warning naming
 //! the file) → sync permission-only files → inject.
 
@@ -26,7 +26,7 @@ use crate::tool::Tool;
 /// Set by the OpenCode/Kilo plugin in its host process. A nested host that
 /// inherited the plugin via `*_CONFIG_CONTENT` sees a foreign PID and stays
 /// inert. The launcher strips it so a legitimate new host starts clean.
-pub const PLUGIN_HOST_PID_ENV: &str = "HCOM_PLUGIN_HOST_PID";
+pub const PLUGIN_HOST_PID_ENV: &str = "COMMS_PLUGIN_HOST_PID";
 
 /// Everything an adapter may read to build its injection.
 ///
@@ -39,14 +39,14 @@ pub struct LaunchCtx {
     pub tool: Tool,
     pub env: HashMap<String, String>,
     pub cwd: PathBuf,
-    /// Caller args with hcom-owned replay values already stripped.
+    /// Caller args with comms-owned replay values already stripped.
     pub args: Vec<String>,
     pub auto_approve: bool,
 }
 
 impl LaunchCtx {
-    /// Context for commands that run outside a launch (`hcom hooks`,
-    /// `hcom config auto_approve`): the current process env and cwd, no args.
+    /// Context for commands that run outside a launch (`comms hooks`,
+    /// `comms config auto_approve`): the current process env and cwd, no args.
     pub fn ambient(tool: Tool, auto_approve: bool) -> Self {
         Self {
             tool,
@@ -90,7 +90,7 @@ impl LaunchCtx {
 /// What a per-run launch adds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeInjection {
-    /// The complete argv to launch with (caller args with hcom's flags merged
+    /// The complete argv to launch with (caller args with comms's flags merged
     /// in). Adapters that merge a single-valued caller flag remove the caller's
     /// occurrences here; see [`take_flag_values`] and [`insert_before_separator`].
     pub args: Vec<String>,
@@ -102,24 +102,24 @@ pub struct RuntimeInjection {
 pub struct PerRunAdapter {
     /// Build and validate the injection: publish artifacts, merge caller
     /// values, fetch trust entries. Must not write outside
-    /// `<HCOM_DIR>/integrations/`. An error fails the launch.
+    /// `<COMMS_DIR>/integrations/`. An error fails the launch.
     pub prepare: fn(&LaunchCtx) -> Result<RuntimeInjection>,
-    /// Remove hcom-owned legacy installs (from older hcom versions) in the dirs
+    /// Remove comms-owned legacy installs (from older comms versions) in the dirs
     /// that are effective for this launch only. Delete by ownership (content
-    /// match / hcom marker), never by filename; leave malformed files alone and
+    /// match / comms marker), never by filename; leave malformed files alone and
     /// return an error naming them. An error is a launch warning, not a
     /// failure. Idempotent and cheap when nothing is there.
     pub cleanup_legacy: fn(&LaunchCtx) -> Result<()>,
     /// Keep permission-only files in sync with `ctx.auto_approve` (write when
-    /// on, remove hcom's entries when off). Called on every launch and when
+    /// on, remove comms's entries when off). Called on every launch and when
     /// `auto_approve` changes.
     pub ensure_permissions: Option<fn(&LaunchCtx) -> Result<()>>,
-    /// Flags whose values hcom may have injected (`--plugin-dir`, `-e`,
-    /// `--settings`, …). Replayed args drop values that are hcom runtime
-    /// artifacts ([`is_hcom_runtime_path`]) before the injection is rebuilt.
+    /// Flags whose values comms may have injected (`--plugin-dir`, `-e`,
+    /// `--settings`, …). Replayed args drop values that are comms runtime
+    /// artifacts ([`is_comms_runtime_path`]) before the injection is rebuilt.
     pub managed_value_flags: &'static [&'static str],
-    /// Extra replay cleanup for values older hcom versions injected outside
-    /// `<HCOM_DIR>/integrations/` (e.g. OMP's `-e ~/.omp/agent/extensions/hcom.ts`).
+    /// Extra replay cleanup for values older comms versions injected outside
+    /// `<COMMS_DIR>/integrations/` (e.g. OMP's `-e ~/.omp/agent/extensions/comms.ts`).
     /// Legacy cleanup deletes those files, so replaying them would fail startup.
     pub strip_legacy_args: Option<fn(&mut Vec<String>)>,
 }
@@ -146,7 +146,7 @@ pub fn is_per_run(tool: Tool) -> bool {
     adapter(tool).is_some()
 }
 
-/// How a tool gets hcom's hooks. Static per tool.
+/// How a tool gets comms's hooks. Static per tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookMode {
     PerRun,
@@ -188,8 +188,8 @@ impl HookMode {
 pub fn plan(adapter: &PerRunAdapter, ctx: &LaunchCtx) -> Result<RuntimeInjection> {
     let tool = ctx.tool.as_str();
     let injection = (adapter.prepare)(ctx)
-        .with_context(|| format!("Failed to prepare hcom's per-run {tool} integration"))?;
-    // A leftover hcom hook the tool can still load would run next to the
+        .with_context(|| format!("Failed to prepare comms's per-run {tool} integration"))?;
+    // A leftover comms hook the tool can still load would run next to the
     // per-run one, but most failures are files the tool can't load either
     // (unreadable, malformed), so warn and launch rather than block.
     if let Err(error) = (adapter.cleanup_legacy)(ctx) {
@@ -208,7 +208,7 @@ pub fn plan(adapter: &PerRunAdapter, ctx: &LaunchCtx) -> Result<RuntimeInjection
     }
     if let Some(ensure_permissions) = adapter.ensure_permissions {
         ensure_permissions(ctx)
-            .with_context(|| format!("Failed to sync hcom's {tool} permission rules"))?;
+            .with_context(|| format!("Failed to sync comms's {tool} permission rules"))?;
     }
     crate::log::log_info(
         "launcher",
@@ -227,7 +227,7 @@ pub fn plan(adapter: &PerRunAdapter, ctx: &LaunchCtx) -> Result<RuntimeInjection
     Ok(injection)
 }
 
-/// A file from an older hcom install that legacy cleanup could not fix, and
+/// A file from an older comms install that legacy cleanup could not fix, and
 /// what the user should do to it. Attach with `.context(LegacyFile::..)` so
 /// the launch warning can name both.
 #[derive(Debug)]
@@ -235,7 +235,7 @@ pub struct LegacyFile {
     pub path: PathBuf,
     /// Imperative fix, e.g. "delete it".
     pub fix: String,
-    /// hcom's legacy hooks may still load: a write or delete failed on a file
+    /// comms's legacy hooks may still load: a write or delete failed on a file
     /// the tool can read. False when the tool can't read or parse it either.
     pub still_loads: bool,
 }
@@ -250,7 +250,7 @@ impl LegacyFile {
         }
     }
 
-    /// A write or delete failed, so hcom's hooks in it may still load.
+    /// A write or delete failed, so comms's hooks in it may still load.
     pub fn write(path: &Path, fix: impl Into<String>) -> Self {
         Self {
             still_loads: true,
@@ -285,9 +285,9 @@ impl std::fmt::Display for LegacyFile {
     }
 }
 
-/// Fix text for a settings or hooks file that may still hold hcom's entries.
-pub const FIX_REMOVE_HCOM_HOOKS: &str = "remove the hook entries whose command runs hcom";
-/// Fix text for a plugin or metadata file that is entirely hcom's.
+/// Fix text for a settings or hooks file that may still hold comms's entries.
+pub const FIX_REMOVE_COMMS_HOOKS: &str = "remove the hook entries whose command runs comms";
+/// Fix text for a plugin or metadata file that is entirely comms's.
 pub const FIX_DELETE: &str = "delete it";
 
 fn legacy_cleanup_warning(tool: &str, error: &anyhow::Error) -> String {
@@ -295,22 +295,22 @@ fn legacy_cleanup_warning(tool: &str, error: &anyhow::Error) -> String {
     match error.downcast_ref::<LegacyFile>() {
         Some(file) => {
             let mut warning = format!(
-                "Warning: could not clean up a file an older hcom left for {tool}: {}\n  \
+                "Warning: could not clean up a file an older comms left for {tool}: {}\n  \
                  Reason: {cause}\n  \
                  Fix: {}.",
                 file.path.display(),
                 file.fix,
             );
             if file.still_loads {
-                warning.push_str(&format!(" Until then {tool} may run hcom's hooks twice."));
+                warning.push_str(&format!(" Until then {tool} may run comms's hooks twice."));
             }
             warning
         }
-        None => format!("Warning: could not clean up an older hcom {tool} install: {error:#}"),
+        None => format!("Warning: could not clean up an older comms {tool} install: {error:#}"),
     }
 }
 
-/// Delete each of `paths` that `owned` says is hcom's plugin. Every path is
+/// Delete each of `paths` that `owned` says is comms's plugin. Every path is
 /// tried; failures are collected.
 pub fn remove_owned_files(
     paths: impl IntoIterator<Item = PathBuf>,
@@ -332,13 +332,13 @@ fn remove_owned_file(path: &Path, owned: impl Fn(&Path) -> std::io::Result<bool>
 
 // ── Ownership ────────────────────────────────────────────────────────────
 
-/// Whether the file at `path` is hcom's, judged by `owned(content)`.
+/// Whether the file at `path` is comms's, judged by `owned(content)`.
 ///
 /// A missing file (or dangling symlink) is `Ok(false)`, and so is non-UTF-8
-/// content (hcom never writes that). Any other read failure (permissions, a
+/// content (comms never writes that). Any other read failure (permissions, a
 /// directory in the way, I/O) is an error, so a remover never reports
-/// success while leaving an hcom plugin it couldn't inspect.
-pub fn file_is_hcom_owned(path: &Path, owned: impl Fn(&str) -> bool) -> std::io::Result<bool> {
+/// success while leaving an comms plugin it couldn't inspect.
+pub fn file_is_comms_owned(path: &Path, owned: impl Fn(&str) -> bool) -> std::io::Result<bool> {
     match std::fs::read_to_string(path) {
         Ok(content) => Ok(owned(&content)),
         Err(e)
@@ -358,9 +358,9 @@ pub fn file_is_hcom_owned(path: &Path, owned: impl Fn(&str) -> bool) -> std::io:
 
 // ── Artifacts ────────────────────────────────────────────────────────────
 
-/// `<HCOM_DIR>/integrations`: root of every published per-run artifact.
+/// `<COMMS_DIR>/integrations`: root of every published per-run artifact.
 pub fn integrations_dir() -> PathBuf {
-    crate::paths::hcom_path(&["integrations"])
+    crate::paths::comms_path(&["integrations"])
 }
 
 /// Hex digest over named files. Names and lengths are framed so different
@@ -378,7 +378,7 @@ pub fn content_digest(files: &[(&str, &[u8])]) -> String {
 }
 
 /// Publish `files` (relative paths, `/`-separated) as
-/// `<HCOM_DIR>/integrations/<tool>/<digest>/` and return that dir.
+/// `<COMMS_DIR>/integrations/<tool>/<digest>/` and return that dir.
 ///
 /// The digest must cover every generated byte, so put all generated content
 /// (hook commands, command prefix, permission variant) in the files. Never
@@ -507,9 +507,9 @@ pub fn publish_file(tool: &str, name: &str, content: &[u8]) -> std::io::Result<P
     Ok(publish_dir(tool, &[(name, content)])?.join(name))
 }
 
-/// True when `value` (a path or `file://` URL) points into hcom's
-/// integrations dir. Used to strip replayed hcom-injected flag values.
-pub fn is_hcom_runtime_path(value: &str) -> bool {
+/// True when `value` (a path or `file://` URL) points into comms's
+/// integrations dir. Used to strip replayed comms-injected flag values.
+pub fn is_comms_runtime_path(value: &str) -> bool {
     is_runtime_path_under(&integrations_dir(), value)
 }
 
@@ -519,11 +519,11 @@ fn is_runtime_path_under(root: &Path, value: &str) -> bool {
         None => PathBuf::from(value),
     };
     // `<root>/../user.ts` starts with `<root>` component-wise; resolve `..`
-    // lexically first so a user path is never taken for hcom's.
+    // lexically first so a user path is never taken for comms's.
     if lexically_normalized(&path).starts_with(lexically_normalized(root)) {
         return true;
     }
-    // Symlinked HCOM_DIR (e.g. /tmp vs /private/tmp): compare canonical forms.
+    // Symlinked COMMS_DIR (e.g. /tmp vs /private/tmp): compare canonical forms.
     match (std::fs::canonicalize(root), std::fs::canonicalize(&path)) {
         (Ok(root), Ok(path)) => path.starts_with(root),
         _ => false,
@@ -675,10 +675,10 @@ pub fn take_flag_values(args: &mut Vec<String>, flags: &[&str]) -> Vec<String> {
     remove_flag_values(args, flags, |_| true)
 }
 
-/// Drop hcom-injected values (runtime artifacts, and legacy managed paths the
+/// Drop comms-injected values (runtime artifacts, and legacy managed paths the
 /// adapter recognises) from replayed args so the injection is rebuilt, not doubled.
 pub fn strip_replayed_args(adapter: &PerRunAdapter, args: &mut Vec<String>) {
-    strip_flag_values_where(args, adapter.managed_value_flags, is_hcom_runtime_path);
+    strip_flag_values_where(args, adapter.managed_value_flags, is_comms_runtime_path);
     if let Some(strip_legacy) = adapter.strip_legacy_args {
         strip_legacy(args);
     }
@@ -763,8 +763,8 @@ mod tests {
     #[test]
     fn publishing_a_new_digest_sweeps_idle_ones() {
         let root = tempfile::tempdir().unwrap();
-        let idle = publish_dir_at(root.path(), "pi", &[("hcom.ts", b"v1")]).unwrap();
-        let recent = publish_dir_at(root.path(), "pi", &[("hcom.ts", b"v2")]).unwrap();
+        let idle = publish_dir_at(root.path(), "pi", &[("comms.ts", b"v1")]).unwrap();
+        let recent = publish_dir_at(root.path(), "pi", &[("comms.ts", b"v2")]).unwrap();
         let crashed = root.path().join("pi/.staging-x");
         let user = root.path().join("pi/notes");
         std::fs::create_dir(&crashed).unwrap();
@@ -777,12 +777,12 @@ mod tests {
         // Reuse refreshes the mtime instead of sweeping.
         set_dir_mtime(&recent, old).unwrap();
         assert_eq!(
-            publish_dir_at(root.path(), "pi", &[("hcom.ts", b"v2")]).unwrap(),
+            publish_dir_at(root.path(), "pi", &[("comms.ts", b"v2")]).unwrap(),
             recent
         );
         assert!(idle.exists());
 
-        publish_dir_at(root.path(), "pi", &[("hcom.ts", b"v3")]).unwrap();
+        publish_dir_at(root.path(), "pi", &[("comms.ts", b"v3")]).unwrap();
         assert!(!idle.exists());
         assert!(!crashed.exists());
         assert!(recent.exists());
@@ -797,14 +797,14 @@ mod tests {
             .map(|_| {
                 let root = root_path.clone();
                 std::thread::spawn(move || {
-                    publish_dir_at(&root, "pi", &[("hcom.ts", b"export default 1")]).unwrap()
+                    publish_dir_at(&root, "pi", &[("comms.ts", b"export default 1")]).unwrap()
                 })
             })
             .collect();
         let dirs: Vec<PathBuf> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         assert!(dirs.windows(2).all(|w| w[0] == w[1]));
         assert_eq!(
-            std::fs::read(dirs[0].join("hcom.ts")).unwrap(),
+            std::fs::read(dirs[0].join("comms.ts")).unwrap(),
             b"export default 1"
         );
     }
@@ -813,9 +813,9 @@ mod tests {
     fn runtime_path_recognises_paths_and_file_urls() {
         let root = tempfile::tempdir().unwrap();
         let integrations = root.path().join("integrations");
-        let artifact = publish_dir_at(&integrations, "opencode", &[("hcom.ts", b"x")])
+        let artifact = publish_dir_at(&integrations, "opencode", &[("comms.ts", b"x")])
             .unwrap()
-            .join("hcom.ts");
+            .join("comms.ts");
         assert!(is_runtime_path_under(
             &integrations,
             &artifact.to_string_lossy()
@@ -823,7 +823,7 @@ mod tests {
         assert!(is_runtime_path_under(&integrations, &file_url(&artifact)));
         assert!(!is_runtime_path_under(
             &integrations,
-            "/home/u/.pi/agent/extensions/hcom.ts"
+            "/home/u/.pi/agent/extensions/comms.ts"
         ));
         assert!(!is_runtime_path_under(&integrations, "./my-plugin"));
         let escaped = integrations
@@ -841,8 +841,8 @@ mod tests {
     #[test]
     fn file_url_encodes_spaces_and_windows_drives() {
         assert_eq!(
-            file_url(Path::new("/Users/a b/.hcom/x.ts")),
-            "file:///Users/a%20b/.hcom/x.ts"
+            file_url(Path::new("/Users/a b/.comms/x.ts")),
+            "file:///Users/a%20b/.comms/x.ts"
         );
         assert_eq!(
             file_url(Path::new(r"C:\Users\a b\x.ts")),
@@ -900,15 +900,15 @@ mod tests {
 
     #[test]
     fn strip_keeps_user_values_and_drops_managed_ones() {
-        let managed = |v: &str| v.starts_with("/hcom/integrations/");
+        let managed = |v: &str| v.starts_with("/comms/integrations/");
         let mut args = sv(&[
             "--plugin-dir",
-            "/hcom/integrations/cursor/abc",
+            "/comms/integrations/cursor/abc",
             "--plugin-dir",
             "/mine",
-            "--plugin-dir=/hcom/integrations/cursor/old",
+            "--plugin-dir=/comms/integrations/cursor/old",
             "-e",
-            "/hcom/integrations/pi/x/hcom.ts",
+            "/comms/integrations/pi/x/comms.ts",
             "-e",
             "user.ts",
         ]);
@@ -1004,15 +1004,15 @@ mod tests {
     fn legacy_cleanup_warning_names_the_file_and_fix() {
         let path = Path::new("/x/hooks.json");
         let error = anyhow::anyhow!("permission denied")
-            .context(LegacyFile::write(path, FIX_REMOVE_HCOM_HOOKS));
+            .context(LegacyFile::write(path, FIX_REMOVE_COMMS_HOOKS));
         let warning = legacy_cleanup_warning("codex", &error.context("outer"));
         assert!(warning.contains("/x/hooks.json"), "{warning}");
         assert!(warning.contains("permission denied"), "{warning}");
-        assert!(warning.contains(FIX_REMOVE_HCOM_HOOKS), "{warning}");
+        assert!(warning.contains(FIX_REMOVE_COMMS_HOOKS), "{warning}");
         assert!(warning.contains("twice"), "{warning}");
 
         let error =
-            anyhow::anyhow!("bad JSON").context(LegacyFile::read(path, FIX_REMOVE_HCOM_HOOKS));
+            anyhow::anyhow!("bad JSON").context(LegacyFile::read(path, FIX_REMOVE_COMMS_HOOKS));
         let warning = legacy_cleanup_warning("codex", &error);
         assert!(!warning.contains("twice"), "{warning}");
     }
@@ -1022,7 +1022,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let [a, b, c] = ["a.ts", "b.ts", "c.ts"].map(|n| dir.path().join(n));
         for path in [&a, &b, &c] {
-            std::fs::write(path, "hcom").unwrap();
+            std::fs::write(path, "comms").unwrap();
         }
         let owned = |path: &Path| -> std::io::Result<bool> {
             if path.ends_with("c.ts") {

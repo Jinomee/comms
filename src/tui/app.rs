@@ -342,12 +342,12 @@ impl App {
             }
 
             // The TUI's own connection is read-only, and an open TUI may be the
-            // only hcom process running; retire agents whose process died on a
+            // only comms process running; retire agents whose process died on a
             // separate write connection so they don't linger as live here.
             if last_dead_sweep.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
                 last_dead_sweep = Some(std::time::Instant::now());
                 std::thread::spawn(|| {
-                    if let Ok(db) = crate::db::HcomDb::open() {
+                    if let Ok(db) = crate::db::CommsDb::open() {
                         crate::instance_lifecycle::reap_dead_processes_throttled(&db);
                     }
                 });

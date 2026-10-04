@@ -1,4 +1,4 @@
-//! Native help text for all hcom commands.
+//! Native help text for all comms commands.
 //!
 //! Each command has a list of (usage, description) entries formatted by `get_command_help()`.
 
@@ -45,7 +45,7 @@ const FILTER_HELP: &[HelpEntry] = &[
 // ── Per-command help registries ─────────────────────────────────────────
 //
 // A command page is a list of sections; a subcommand page (`SUBCOMMAND_HELP`)
-// reuses the same sections, so `hcom X --help` and `hcom X sub --help` can't
+// reuses the same sections, so `comms X --help` and `comms X sub --help` can't
 // drift apart.
 
 const FILTERS_HEADER: &[HelpEntry] = &[(
@@ -95,7 +95,7 @@ const EVENTS_LAUNCH: &[HelpEntry] = &[
 
 const EVENTS_SUB: &[HelpEntry] = &[
     (
-        "Subscribe (next matching event arrives as a message from [hcom-events]):",
+        "Subscribe (next matching event arrives as a message from [comms-events]):",
         "",
     ),
     ("events sub list", "List active subscriptions"),
@@ -124,15 +124,15 @@ const EVENTS_UNSUB: &[HelpEntry] = &[
 
 const EXAMPLES_HEADER: &[HelpEntry] = &[("Examples:", "")];
 
-const EVENTS_EXAMPLES: &[HelpEntry] = &[("  hcom events --cmd git --agent peso", "")];
+const EVENTS_EXAMPLES: &[HelpEntry] = &[("  comms events --cmd git --agent peso", "")];
 
 const EVENTS_SUB_EXAMPLES: &[HelpEntry] = &[
     (
-        "  hcom events sub --idle peso",
+        "  comms events sub --idle peso",
         "Notified when peso goes idle",
     ),
     (
-        "  hcom events sub --file '*.py' --once",
+        "  comms events sub --file '*.py' --once",
         "One-shot: next .py file write",
     ),
 ];
@@ -166,7 +166,7 @@ const EVENTS_SQL_REFERENCE: &[HelpEntry] = &[
     ("", "Use <> instead of != for SQL negation"),
 ];
 
-const EVENTS_SQL_POINTER: &[HelpEntry] = &[("", ""), ("", "SQL columns: hcom events --help")];
+const EVENTS_SQL_POINTER: &[HelpEntry] = &[("", ""), ("", "SQL columns: comms events --help")];
 
 const EVENTS_PAGE: &[&[HelpEntry]] = &[
     EVENTS_QUERY,
@@ -225,7 +225,7 @@ const LIST_HELP: &[HelpEntry] = &[
         "Print specific field (status, directory, session_id, ...)",
     ),
     ("  --json", "Output as JSON"),
-    ("  --sh", "Shell exports: eval \"$(hcom list self --sh)\""),
+    ("  --sh", "Shell exports: eval \"$(comms list self --sh)\""),
     ("", ""),
     ("list --stopped [name]", "Stopped agents (from events)"),
     ("  --all", "All stopped (default: last 20)"),
@@ -243,7 +243,7 @@ const LIST_HELP: &[HelpEntry] = &[
     ("Tool labels:", ""),
     (
         "",
-        "[CLAUDE] [GEMINI] [CODEX] [OPENCODE] [KILO] [PI] [OMP] [ANTIGRAVITY] [CURSOR] [KIMI] [COPILOT] [GROK]  hcom-launched, automatic delivery",
+        "[CLAUDE] [GEMINI] [CODEX] [OPENCODE] [KILO] [PI] [OMP] [ANTIGRAVITY] [CURSOR] [KIMI] [COPILOT] [GROK]  comms-launched, automatic delivery",
     ),
     (
         "",
@@ -313,17 +313,17 @@ const SEND_HELP: &[HelpEntry] = &[
         "Format: 3-14:normal,6:full,22-30:detailed",
     ),
     ("  --extends <id>", "Parent bundle (optional)"),
-    ("", "See 'hcom bundle --help' for bundle details"),
+    ("", "See 'comms bundle --help' for bundle details"),
     ("", ""),
     ("Examples:", ""),
-    ("  hcom send @luna -- Hello there!", ""),
+    ("  comms send @luna -- Hello there!", ""),
     (
-        "  hcom send @luna @nova --intent request -- Can you help?",
+        "  comms send @luna @nova --intent request -- Can you help?",
         "",
     ),
-    ("  hcom send -- Broadcast message to everyone", ""),
-    ("  echo 'Complex message' | hcom send @luna", ""),
-    ("  hcom send @luna <<'EOF'", ""),
+    ("  comms send -- Broadcast message to everyone", ""),
+    ("  echo 'Complex message' | comms send @luna", ""),
+    ("  comms send @luna <<'EOF'", ""),
     ("  Multi-line message with special chars", ""),
     ("  EOF", ""),
 ];
@@ -369,7 +369,7 @@ const BUNDLE_PREPARE: &[HelpEntry] = &[
     ("", "Outputs ready-to-use bundle create command"),
     (
         "",
-        "TIP: Skip 'bundle create' \u{2014} use bundle flags directly in 'hcom send'",
+        "TIP: Skip 'bundle create' \u{2014} use bundle flags directly in 'comms send'",
     ),
 ];
 
@@ -462,7 +462,7 @@ const BUNDLE_PAGE: &[&[HelpEntry]] = &[
 ];
 
 const STOP_HELP: &[HelpEntry] = &[
-    ("stop", "Disconnect self from hcom"),
+    ("stop", "Disconnect self from comms"),
     ("stop <name>", "Disconnect specific agent"),
     ("stop <n1> <n2> ...", "Disconnect multiple"),
     ("stop tag:<name>", "Disconnect all with tag"),
@@ -470,7 +470,7 @@ const STOP_HELP: &[HelpEntry] = &[
 ];
 
 const START_HELP: &[HelpEntry] = &[
-    ("start", "Connect to hcom (from inside any AI session)"),
+    ("start", "Connect to comms (from inside any AI session)"),
     (
         "start --name <agent-id>",
         "Register a subagent using its agent ID (from SubagentStart)",
@@ -487,7 +487,7 @@ const START_HELP: &[HelpEntry] = &[
     ("", ""),
     (
         "",
-        "Inside a sandbox? Prefix all hcom commands with: HCOM_DIR=$PWD/.hcom",
+        "Inside a sandbox? Prefix all comms commands with: COMMS_DIR=$PWD/.comms",
     ),
 ];
 
@@ -564,7 +564,19 @@ const BUDGET_HELP: &[HelpEntry] = &[
     ),
     (
         "",
-        "Default 20 (or HCOM_TURN_BUDGET). Only the human can change it.",
+        "Default 20 (or COMMS_TURN_BUDGET). Only the human can change it.",
+    ),
+];
+
+const INIT_HELP: &[HelpEntry] = &[
+    (
+        "init",
+        "Keep this project's agents and messages in .comms/ (gitignored)",
+    ),
+    ("", ""),
+    (
+        "",
+        "Run at the project root; applies to every directory below it.",
     ),
 ];
 
@@ -589,7 +601,7 @@ const LISTEN_HELP: &[HelpEntry] = &[
         "",
         "(--agent, --type, --status, --file, --cmd, --from, --intent, etc.)",
     ),
-    ("", "Run 'hcom events --help' for full list"),
+    ("", "Run 'comms events --help' for full list"),
     ("", "Filters combine with --sql using AND logic"),
     ("", ""),
     ("SQL filter mode:", ""),
@@ -601,7 +613,7 @@ const LISTEN_HELP: &[HelpEntry] = &[
     ("  0", "Message received / event matched"),
     ("  1", "Timeout or error"),
     ("", ""),
-    ("", "Quick unread check: hcom listen 1"),
+    ("", "Quick unread check: comms listen 1"),
 ];
 
 const RESET_HELP: &[HelpEntry] = &[
@@ -612,22 +624,22 @@ const RESET_HELP: &[HelpEntry] = &[
     ),
     ("", ""),
     ("Sandbox / local mode:", ""),
-    ("", "If you can't write to ~/.hcom, set:"),
-    ("", "  export HCOM_DIR=\"$PWD/.hcom\""),
+    ("", "If you can't write to ~/.comms, set:"),
+    ("", "  export COMMS_DIR=\"$PWD/.comms\""),
     (
         "",
-        "Hooks install under the parent of HCOM_DIR; state stays in HCOM_DIR.",
+        "Hooks install under the parent of COMMS_DIR; state stays in COMMS_DIR.",
     ),
     (
         "",
-        "  HCOM_DIR=$PWD/.hcom -> $PWD/.claude, .gemini, .codex, .opencode, .kilo, .pi, .omp, .antigravity, .cursor, .kimi, .copilot, .grok",
+        "  COMMS_DIR=$PWD/.comms -> $PWD/.claude, .gemini, .codex, .opencode, .kilo, .pi, .omp, .antigravity, .cursor, .kimi, .copilot, .grok",
     ),
     ("", ""),
     ("", "To remove local setup:"),
-    ("", "  hcom hooks remove && rm -rf \"$HCOM_DIR\""),
+    ("", "  comms hooks remove && rm -rf \"$COMMS_DIR\""),
     ("", ""),
     ("", "Explicit location:"),
-    ("", "  export HCOM_DIR=/your/path/.hcom"),
+    ("", "  export COMMS_DIR=/your/path/.comms"),
     ("", ""),
 ];
 
@@ -669,7 +681,7 @@ const CONFIG_KEYS_HELP: &[HelpEntry] = &[
         "  gemini_system_prompt / codex_system_prompt",
         "Default system prompt",
     ),
-    ("  auto_approve", "Auto-approve safe hcom commands"),
+    ("  auto_approve", "Auto-approve safe comms commands"),
     ("  auto_subscribe", "Event auto-subscribe presets"),
     (
         "  auto_trust_workspace",
@@ -682,7 +694,7 @@ const CONFIG_KEYS_HELP: &[HelpEntry] = &[
     ),
 ];
 
-/// Registry keys left out of help: relay keys are managed by `hcom relay`;
+/// Registry keys left out of help: relay keys are managed by `comms relay`;
 /// `timeout` only affects headless/vanilla Claude (see `config timeout --info`).
 #[cfg(test)]
 const CONFIG_KEYS_NOT_IN_HELP: &[&str] = &[
@@ -696,7 +708,7 @@ const CONFIG_KEYS_NOT_IN_HELP: &[&str] = &[
 // config help continued with dynamic config files hint
 const CONFIG_HELP_2: &[HelpEntry] = &[(
     "",
-    "HCOM_DIR: isolate per project (see 'hcom reset --help')",
+    "COMMS_DIR: isolate per project (see 'comms reset --help')",
 )];
 
 const RELAY_MAIN: &[HelpEntry] = &[
@@ -743,10 +755,10 @@ const TRANSCRIPT_HELP: &[HelpEntry] = &[
     ("", ""),
     (
         "transcript search \"pattern\"",
-        "Search hcom-tracked transcripts (rg/grep)",
+        "Search comms-tracked transcripts (rg/grep)",
     ),
     ("  --live", "Only currently alive agents"),
-    ("  --all", "All transcripts (includes non-hcom sessions)"),
+    ("  --all", "All transcripts (includes non-comms sessions)"),
     ("  --limit N", "Max results (default: 20)"),
     ("  --agent TYPE", "Filter: {transcript_agents}"),
     (
@@ -783,11 +795,11 @@ const RUN_HELP: &[HelpEntry] = &[
     ("run docs", "CLI reference + config + script creation guide"),
     ("", ""),
     ("", "Docs sections:"),
-    ("  hcom run docs --cli", "CLI reference only"),
-    ("  hcom run docs --config", "Config settings only"),
-    ("  hcom run docs --scripts", "Script creation guide"),
+    ("  comms run docs --cli", "CLI reference only"),
+    ("  comms run docs --config", "Config settings only"),
+    ("  comms run docs --scripts", "Script creation guide"),
     ("", ""),
-    ("", "User scripts: ~/.hcom/scripts/"),
+    ("", "User scripts: ~/.comms/scripts/"),
 ];
 
 const STATUS_HELP: &[HelpEntry] = &[
@@ -807,14 +819,14 @@ const UPDATE_HELP: &[HelpEntry] = &[
         "",
         "Detects install method and runs the right update command:",
     ),
-    ("", "  brew install    → brew upgrade hcom"),
-    ("", "  uv tool install → uv tool upgrade hcom"),
-    ("", "  pip install     → pip install -U hcom"),
-    ("", "  curl installer  → re-run hcom-installer.sh"),
+    ("", "  brew install    → brew upgrade comms"),
+    ("", "  uv tool install → uv tool upgrade comms"),
+    ("", "  pip install     → pip install -U comms"),
+    ("", "  curl installer  → re-run comms-installer.sh"),
 ];
 
 const HOOKS_STATUS: &[HelpEntry] = &[
-    ("hooks", "Show how each tool loads hcom's hooks"),
+    ("hooks", "Show how each tool loads comms's hooks"),
     ("hooks status", "Same as above"),
 ];
 
@@ -838,7 +850,7 @@ const HOOKS_REMOVE: &[HelpEntry] = &[
     ("", "  No tool: remove from all tools."),
     (
         "",
-        "  Cleans both global (~/) and HCOM_DIR-local hooks if set.",
+        "  Cleans both global (~/) and COMMS_DIR-local hooks if set.",
     ),
 ];
 
@@ -846,11 +858,11 @@ const HOOKS_ABOUT: &[HelpEntry] = &[
     ("", "Per-run: {per_run_tools}"),
     (
         "",
-        "  Hooks load only in sessions launched with `hcom <tool>`. Nothing to",
+        "  Hooks load only in sessions launched with `comms <tool>`. Nothing to",
     ),
     (
         "",
-        "  install; remove clears installs left by older hcom versions.",
+        "  install; remove clears installs left by older comms versions.",
     ),
     ("", "Persistent: {persistent_list}"),
     (
@@ -860,12 +872,12 @@ const HOOKS_ABOUT: &[HelpEntry] = &[
     ("", "No hooks: {hookless_list}"),
     (
         "",
-        "  `hcom <tool>` gets status and messages over the tool's own connection.",
+        "  `comms <tool>` gets status and messages over the tool's own connection.",
     ),
     ("", ""),
     (
         "",
-        "Without hooks, run `hcom start` inside any AI tool (manual delivery).",
+        "Without hooks, run `comms start` inside any AI tool (manual delivery).",
     ),
 ];
 
@@ -898,7 +910,7 @@ const TERM_DEBUG: &[HelpEntry] = &[
     ("term debug off", "Disable PTY debug logging"),
     ("term debug logs", "List debug log files"),
     ("", "Instances pick up the toggle within ~10s."),
-    ("", "Logs: ~/.hcom/.tmp/logs/pty_debug/"),
+    ("", "Logs: ~/.comms/.tmp/logs/pty_debug/"),
 ];
 
 const TERM_PAGE: &[&[HelpEntry]] = &[TERM_SCREEN, BLANK, TERM_INJECT, BLANK, TERM_DEBUG];
@@ -921,7 +933,7 @@ const SUBCOMMAND_HELP: &[(&str, &[&[HelpEntry]])] = &[
     ("term debug", &[TERM_DEBUG]),
 ];
 
-/// Help topic for `hcom <cmd> <args...> --help`: `"<cmd> <sub>"` when the first
+/// Help topic for `comms <cmd> <args...> --help`: `"<cmd> <sub>"` when the first
 /// arg is a subcommand with its own page, otherwise just `cmd`.
 pub fn help_topic(cmd: &str, args: &[String]) -> String {
     if let Some(sub) = args.first() {
@@ -997,23 +1009,26 @@ fn generate_tool_help(spec: &crate::integration_spec::IntegrationSpec) -> String
     // Usage + examples
     lines.push("Usage:".to_string());
     lines.push(aligned(
-        &format!("  hcom [N] {t} [args...]"),
+        &format!("  comms [N] {t} [args...]"),
         &format!("Launch N {} agents (default N=1)", spec.label),
         38,
     ));
     lines.push(String::new());
     // Example block — all at same indent level using format helper
     let ex = |usage: &str, desc: &str| -> String { aligned(&format!("    {usage}"), desc, 38) };
-    lines.push(ex(&format!("hcom {}", t), term_desc));
-    lines.push(ex(&format!("hcom 3 {}", t), "Opens 3 new terminal windows"));
+    lines.push(ex(&format!("comms {}", t), term_desc));
+    lines.push(ex(
+        &format!("comms 3 {}", t),
+        "Opens 3 new terminal windows",
+    ));
     for (u, d) in spec.help.unique_examples {
         lines.push(ex(u, d));
     }
 
-    // hcom flags — shared with resume/fork, plus --device which only applies
+    // comms flags — shared with resume/fork, plus --device which only applies
     // at launch (resume uses the `<target>:<device>` suffix instead).
     lines.push(String::new());
-    lines.push("hcom Flags:".to_string());
+    lines.push("comms Flags:".to_string());
     for (flag, desc) in SHARED_LAUNCH_FLAGS {
         let extra = if *flag == "--headless" && spec.tool == crate::tool::Tool::Claude {
             " (use -p instead for print mode)"
@@ -1048,17 +1063,20 @@ fn generate_tool_help(spec: &crate::integration_spec::IntegrationSpec) -> String
     }
     lines.push(format!(
         "    {:<28} Group tag (agents become tag-*)",
-        "HCOM_TAG"
+        "COMMS_TAG"
     ));
     lines.push(format!(
         "    {:<28} default | <preset> | \"cmd {{script}}\"",
-        "HCOM_TERMINAL"
+        "COMMS_TERMINAL"
     ));
     lines.push(format!(
         "    {:<28} Appended to messages received",
-        "HCOM_HINTS"
+        "COMMS_HINTS"
     ));
-    lines.push(format!("    {:<28} One-time bootstrap notes", "HCOM_NOTES"));
+    lines.push(format!(
+        "    {:<28} One-time bootstrap notes",
+        "COMMS_NOTES"
+    ));
     for (u, d) in spec.help.extra_env {
         lines.push(format!("    {:<28} {}", u.trim(), d));
     }
@@ -1074,29 +1092,29 @@ fn generate_tool_help(spec: &crate::integration_spec::IntegrationSpec) -> String
     if has_fork {
         lines.push("Resume / Fork:".to_string());
         lines.push(
-            "    hcom r <target>                Resume by name / session UUID / thread name"
+            "    comms r <target>                Resume by name / session UUID / thread name"
                 .to_string(),
         );
         lines.push(
-            "    hcom f <target>                Fork an active or stopped session".to_string(),
+            "    comms f <target>                Fork an active or stopped session".to_string(),
         );
         lines.push(
-            "    (append :<device> to run on a remote device; see `hcom r --help`)".to_string(),
+            "    (append :<device> to run on a remote device; see `comms r --help`)".to_string(),
         );
     } else if has_resume {
         lines.push("Resume:".to_string());
         lines.push(
-            "    hcom r <target>                Resume by name / session UUID / thread name"
+            "    comms r <target>                Resume by name / session UUID / thread name"
                 .to_string(),
         );
         lines.push(format!(
-            "  {} does not support session forking (hcom f).",
+            "  {} does not support session forking (comms f).",
             spec.label
         ));
     } else {
         lines.push("Resume / Fork:".to_string());
         lines.push(format!(
-            "  {} resume/fork is not currently wired through hcom.",
+            "  {} resume/fork is not currently wired through comms.",
             spec.label
         ));
     }
@@ -1111,7 +1129,7 @@ fn generate_tool_help(spec: &crate::integration_spec::IntegrationSpec) -> String
     );
     lines.push(String::new());
     lines.push(format!("  Run \"{} --help\" for {} options.", t, t));
-    lines.push("  Run \"hcom config terminal --info\" for terminal presets.".to_string());
+    lines.push("  Run \"comms config terminal --info\" for terminal presets.".to_string());
 
     lines.join("\n")
 }
@@ -1151,7 +1169,7 @@ fn format_entry(usage: &str, desc: &str) -> String {
         }
     } else {
         // Command line
-        aligned(&format!("  hcom {usage}"), desc, 33)
+        aligned(&format!("  comms {usage}"), desc, 33)
     }
 }
 
@@ -1167,6 +1185,7 @@ fn format_entries(entries: &[HelpEntry]) -> Vec<String> {
 /// The `command_names_covers_released_tools` test guards against drift.
 pub const COMMAND_NAMES: &[&str] = &[
     "ask",
+    "init",
     "claim",
     "release",
     "claims",
@@ -1229,19 +1248,20 @@ pub fn get_help_text() -> String {
     let forkable = forkable_tool_names();
     let launchable = crate::integration_spec::released_tool_names().join("|");
     format!(
-        "hcom (hook-comms) v{} - multi-agent communication\n\
+        "comms v{} - multi-agent communication\n\
 \n\
 Usage:\n\
-\x20 hcom                                  TUI dashboard\n\
-\x20 hcom <command>                        Run command\n\
+\x20 comms                                  TUI dashboard\n\
+\x20 comms <command>                        Run command\n\
 \n\
 Launch:\n\
-\x20 hcom [N] {launchable} [flags] [tool-args]\n\
-\x20 hcom r <target>                       Resume stopped agent\n\
-\x20 hcom f <target>                       Fork agent session ({forkable})\n\
-\x20 hcom kill <name(s)|tag:T|all>         Kill + close terminal pane\n\
+\x20 comms [N] {launchable} [flags] [tool-args]\n\
+\x20 comms r <target>                       Resume stopped agent\n\
+\x20 comms f <target>                       Fork agent session ({forkable})\n\
+\x20 comms kill <name(s)|tag:T|all>         Kill + close terminal pane\n\
 \n\
 Commands:\n\
+\x20 init         Set up per-project storage in .comms/\n\
 \x20 ask          One-shot read-only question to claude or codex\n\
 \x20 claim        Claim files so other agents don't edit them\n\
 \x20 claims       List claims (release to give them up)\n\
@@ -1252,12 +1272,12 @@ Commands:\n\
 \x20 events       Query event stream, manage subscriptions\n\
 \x20 bundle       Structured context packages for handoffs\n\
 \x20 transcript   Read another agent's conversation\n\
-\x20 start        Connect to hcom (run inside any AI tool)\n\
-\x20 stop         Disconnect from hcom\n\
+\x20 start        Connect to comms (run inside any AI tool)\n\
+\x20 stop         Disconnect from comms\n\
 \x20 config       Get/set global and per-agent settings\n\
 \x20 run          Execute workflow scripts\n\
 \x20 relay        Cross-device sync + relay daemon\n\
-\x20 archive      Query past hcom sessions\n\
+\x20 archive      Query past comms sessions\n\
 \x20 reset        Archive and clear database\n\
 \x20 hooks        Add or remove hooks\n\
 \x20 status       Installation and diagnostics\n\
@@ -1267,7 +1287,7 @@ Commands:\n\
     )
 }
 
-/// Flags accepted by both `hcom <tool>` (fresh launch) and `hcom r` / `hcom f`
+/// Flags accepted by both `comms <tool>` (fresh launch) and `comms r` / `comms f`
 /// (resume/fork). Indented to 4 spaces for tool help, re-indented for resume.
 ///
 /// NOTE: `--run-here` / `--no-run-here` are intentionally omitted from help.
@@ -1279,11 +1299,11 @@ const SHARED_LAUNCH_FLAGS: &[(&str, &str)] = &[
     ("--terminal <preset>", "Where new windows open"),
     ("--dir <path>", "Working directory"),
     ("--headless", "Run in background"),
-    ("--hcom-prompt <text>", "Initial prompt"),
-    ("--hcom-system-prompt <text>", "System prompt"),
+    ("--comms-prompt <text>", "Initial prompt"),
+    ("--comms-system-prompt <text>", "System prompt"),
 ];
 
-/// Shared help body for `hcom r` / `hcom f` (both accept the same target
+/// Shared help body for `comms r` / `comms f` (both accept the same target
 /// forms and launch flags; only the header, blurb, and see-also differ).
 fn resume_fork_help(usage_line: &str, blurb: &str, see_also_line: &str) -> String {
     let mut flags = String::new();
@@ -1299,7 +1319,7 @@ fn resume_fork_help(usage_line: &str, blurb: &str, see_also_line: &str) -> Strin
          \x20 {usage_line}\n\
          \n\
          <target> can be:\n\
-         \x20 <name>                            hcom name (4-letter)\n\
+         \x20 <name>                            comms name (4-letter)\n\
          \x20 <uuid>                            claude/codex/gemini session UUID\n\
          \x20 ses_<id>                          opencode/kilo session ID\n\
          \x20 <thread-name>                     claude /rename title or codex thread_name\n\
@@ -1353,12 +1373,12 @@ fn command_help_raw(name: &str) -> String {
     // Resume / Fork shortcuts — share the target/flag body, differ only on header + see-also.
     if name == "r" || name == "resume" {
         let see_also = format!(
-            "hcom f <target>                   Fork an agent session ({})",
+            "comms f <target>                   Fork an agent session ({})",
             forkable_tool_names()
         );
         return resume_fork_help(
-            "hcom r <target> [tool-args...]    Resume a stopped agent",
-            "Adopting by UUID or thread-name reclaims the original hcom\n\
+            "comms r <target> [tool-args...]    Resume a stopped agent",
+            "Adopting by UUID or thread-name reclaims the original comms\n\
              identity if one existed; otherwise a new identity is assigned.\n\
              CWD is recovered from the session's transcript/DB.",
             &see_also,
@@ -1371,9 +1391,9 @@ fn command_help_raw(name: &str) -> String {
              Remote fork (`:<device>`) requires --dir to pin the target cwd.",
             forkable_tool_names().replace('/', ", ")
         );
-        let see_also = "hcom r <target>                   Resume a stopped agent";
+        let see_also = "comms r <target>                   Resume a stopped agent";
         return resume_fork_help(
-            "hcom f <target> [tool-args...]    Fork an agent session (active or stopped)",
+            "comms f <target> [tool-args...]    Fork an agent session (active or stopped)",
             &blurb,
             see_also,
         );
@@ -1388,6 +1408,7 @@ fn command_help_raw(name: &str) -> String {
         "start" => Some(&[START_HELP]),
         "kill" => Some(&[KILL_HELP]),
         "ask" => Some(&[ASK_HELP]),
+        "init" => Some(&[INIT_HELP]),
         "claim" | "release" | "claims" => Some(&[CLAIM_HELP]),
         "budget" => Some(&[BUDGET_HELP]),
         "listen" => Some(&[LISTEN_HELP]),
@@ -1426,17 +1447,17 @@ fn command_help_raw(name: &str) -> String {
         lines.extend(format_entries(CONFIG_HELP));
         lines.extend(format_entries(CONFIG_KEYS_HELP));
         lines.push(String::new());
-        lines.push(format_entry("", "hcom config <key> --info for details"));
+        lines.push(format_entry("", "comms config <key> --info for details"));
         lines.push(format_entry(
             "",
             "Precedence: defaults < config.toml < env vars",
         ));
         // Dynamic: resolved config file paths
-        let hcom_dir = env::var("HCOM_DIR")
+        let comms_dir = env::var("COMMS_DIR")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".hcom"));
-        let config_toml = hcom_dir.join("config.toml");
-        let env_file = hcom_dir.join("config.env");
+            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".comms"));
+        let config_toml = comms_dir.join("config.toml");
+        let env_file = comms_dir.join("config.env");
         lines.push(format!(
             "  Files: {}, {}",
             config_toml.display(),
@@ -1450,7 +1471,7 @@ fn command_help_raw(name: &str) -> String {
     if let Some(pos) = name.rfind(' ') {
         return command_help_raw(&name[..pos]);
     }
-    format!("Usage: hcom {}", name)
+    format!("Usage: comms {}", name)
 }
 
 /// Print help for a command to stdout.
@@ -1462,10 +1483,10 @@ pub fn print_help() {
     println!("{}", get_help_text());
     println!();
     println!("Identity:");
-    println!("  1. Run hcom start to get a name");
-    println!("  2. Use --name <name> on all hcom commands");
+    println!("  1. Run comms start to get a name");
+    println!("  2. Use --name <name> on all comms commands");
     println!();
-    println!("Run 'hcom <command> --help' for details.");
+    println!("Run 'comms <command> --help' for details.");
 }
 
 #[cfg(test)]
@@ -1483,6 +1504,7 @@ mod tests {
     fn all_commands_have_help() {
         let commands = [
             "ask",
+            "init",
             "claim",
             "release",
             "claims",
@@ -1526,7 +1548,7 @@ mod tests {
     #[test]
     fn unknown_command_fallback() {
         let help = get_command_help("nonexistent");
-        assert_eq!(help, "Usage: hcom nonexistent");
+        assert_eq!(help, "Usage: comms nonexistent");
     }
 
     #[test]
@@ -1549,13 +1571,13 @@ mod tests {
         // Section header
         assert!(format_entry("Examples:", "").starts_with('\n'));
         // Command line
-        assert!(format_entry("list", "Show agents").contains("hcom list"));
+        assert!(format_entry("list", "Show agents").contains("comms list"));
     }
 
     #[test]
     fn gemini_help_states_no_fork_support() {
         let help = get_command_help("gemini");
-        assert!(help.contains("Gemini does not support session forking (hcom f)."));
+        assert!(help.contains("Gemini does not support session forking (comms f)."));
         assert!(!help.contains("Resume / Fork:"));
     }
 
@@ -1563,15 +1585,15 @@ mod tests {
     fn agy_help_uses_full_launch_template_without_fake_args_env() {
         let help = get_command_help("agy");
         assert!(help.contains("Launch N Antigravity agents"));
-        assert!(help.contains("hcom antigravity"));
-        assert!(help.contains("hcom agy --sandbox"));
-        assert!(!help.contains("hcom agy --model"));
+        assert!(help.contains("comms antigravity"));
+        assert!(help.contains("comms agy --sandbox"));
+        assert!(!help.contains("comms agy --model"));
         assert!(help.contains("Run \"agy --help\" for agy options."));
         // Resume now supported via --conversation; fork still unsupported.
-        assert!(help.contains("hcom r <target>"));
-        assert!(help.contains("Antigravity does not support session forking (hcom f)."));
-        assert!(!help.contains("HCOM_AGY_ARGS"));
-        assert!(!help.contains("HCOM_ANTIGRAVITY_ARGS"));
+        assert!(help.contains("comms r <target>"));
+        assert!(help.contains("Antigravity does not support session forking (comms f)."));
+        assert!(!help.contains("COMMS_AGY_ARGS"));
+        assert!(!help.contains("COMMS_ANTIGRAVITY_ARGS"));
 
         let alias_help = get_command_help("antigravity");
         assert_eq!(alias_help, help);
@@ -1614,12 +1636,12 @@ mod tests {
     #[test]
     fn overlong_usage_wraps_description_to_its_column() {
         assert_eq!(
-            aligned("  hcom kill all", "Kill", 20),
-            "  hcom kill all      Kill"
+            aligned("  comms kill all", "Kill", 20),
+            "  comms kill all     Kill"
         );
-        let wrapped = aligned("  hcom events sub \"SQL WHERE\" [--once]", "Raw SQL", 20);
+        let wrapped = aligned("  comms events sub \"SQL WHERE\" [--once]", "Raw SQL", 20);
         let (first, second) = wrapped.split_once('\n').expect("wrapped");
-        assert_eq!(first, "  hcom events sub \"SQL WHERE\" [--once]");
+        assert_eq!(first, "  comms events sub \"SQL WHERE\" [--once]");
         assert_eq!(second.find("Raw SQL"), Some(21));
         assert_eq!(aligned("  --json ", "", 20), "  --json");
     }
@@ -1672,7 +1694,7 @@ mod tests {
                 let shared = |s: &&[HelpEntry]| std::ptr::eq(*s, *section);
                 assert!(
                     parent_page.iter().any(shared) || sub_only.iter().any(shared),
-                    "{topic}: section missing from `hcom {parent} --help`"
+                    "{topic}: section missing from `comms {parent} --help`"
                 );
             }
         }
@@ -1695,7 +1717,7 @@ mod tests {
         let help = get_command_help("config");
         for (key, _, _) in crate::commands::config::CONFIG_KEYS {
             let key = key
-                .strip_prefix("HCOM_")
+                .strip_prefix("COMMS_")
                 .unwrap_or(key)
                 .to_ascii_lowercase();
             let shown = help.contains(&key) || key.ends_with("_args");
@@ -1711,7 +1733,7 @@ mod tests {
     fn top_level_help_scopes_fork_to_supported_tools() {
         let help = get_help_text();
         assert!(help.contains(
-            "hcom f <target>                       Fork agent session (claude/codex/opencode/kilo/pi/omp/grok)"
+            "comms f <target>                       Fork agent session (claude/codex/opencode/kilo/pi/omp/grok)"
         ));
         assert!(!help.contains("Fork agent session (claude/codex/opencode/kilo/pi/omp/kimi)"));
         assert_eq!(

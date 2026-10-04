@@ -4,7 +4,7 @@
 //! pinned `codex` binary deterministically and for free is to point it at a
 //! localhost HTTP provider and script the `text/event-stream` turns ourselves.
 //! The external oracle lives outside the repo (the real codex binary parsing a
-//! real Responses SSE stream), so the test cannot be gamed by editing hcom to
+//! real Responses SSE stream), so the test cannot be gamed by editing comms to
 //! match the test.
 //!
 //! Transport lives in [`super::mock_http`]; this module is the OpenAI Responses
@@ -13,7 +13,7 @@
 
 use serde_json::Value;
 
-use super::Hcom;
+use super::Comms;
 pub use super::mock_http::Reply;
 use super::mock_http::{MockHttp, RecordedRequest};
 use super::real_tool::{
@@ -50,7 +50,7 @@ impl ToolCase for CodexCase {
         format!("http://127.0.0.1:{port}/v1")
     }
 
-    fn prepare(&self, h: &Hcom, base_url: &str) {
+    fn prepare(&self, h: &Comms, base_url: &str) {
         h.prepare_codex_config(base_url);
         // A conflicting default makes every lifecycle turn check that saved
         // launch overrides survive resume/fork (issue #147).
@@ -59,7 +59,7 @@ impl ToolCase for CodexCase {
         std::fs::write(path, format!("model_reasoning_effort = \"high\"\n{config}")).unwrap();
     }
 
-    fn launch_args(&self, _h: &Hcom) -> Vec<String> {
+    fn launch_args(&self, _h: &Comms) -> Vec<String> {
         vec![
             "--yolo".to_string(),
             "-c".to_string(),
@@ -78,7 +78,7 @@ impl ToolCase for CodexCase {
     }
 
     fn delivery_envelope_markers(&self) -> &'static [&'static str] {
-        &["<hcom>", "request"]
+        &["<comms>", "request"]
     }
 
     fn respond(&self, req: &RecordedRequest, ids: &ScenarioIds) -> Reply {

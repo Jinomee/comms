@@ -1,4 +1,4 @@
-//! Hermetic CLI smoke tests: invoke the `hcom` binary in a temp HCOM_DIR and
+//! Hermetic CLI smoke tests: invoke the `comms` binary in a temp COMMS_DIR and
 //! assert exit codes + stdout shape.
 
 mod support;
@@ -7,7 +7,7 @@ mod support;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::time::{Duration, Instant};
-use support::{Hcom, parse_hcom_marker};
+use support::{Comms, parse_comms_marker};
 
 #[test]
 fn fixture_drop_terminates_registered_process_group() {
@@ -24,7 +24,7 @@ fn fixture_drop_terminates_registered_process_group() {
         .expect("spawn cleanup test process group");
     let pid = i64::from(child.id());
 
-    let h = Hcom::new();
+    let h = Comms::new();
     h.track_cleanup_pid(pid);
     assert!(
         h.process_group_alive(pid),
@@ -52,7 +52,7 @@ fn fixture_drop_terminates_registered_process_group() {
 #[cfg(unix)]
 #[test]
 fn fixture_drop_terminates_orphan_without_instance_row() {
-    let h = Hcom::new();
+    let h = Comms::new();
     // Only the pidfile owns this process; neither instance rows nor explicit
     // fixture cleanup registration can discover it.
     // Reap the descendant on group termination so zombie lifetime does not
@@ -70,7 +70,7 @@ fn fixture_drop_terminates_orphan_without_instance_row() {
         .spawn()
         .expect("spawn orphan process group");
     let pid = i64::from(child.id());
-    let tmp = h.hcom_dir.join(".tmp");
+    let tmp = h.comms_dir.join(".tmp");
     std::fs::create_dir_all(&tmp).unwrap();
     std::fs::write(
         tmp.join("launched_pids.json"),
@@ -115,10 +115,10 @@ fn fixture_drop_terminates_orphan_without_instance_row() {
 
 #[test]
 fn help_prints_and_exits_zero() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let (code, stdout, _stderr) = h.run(["--help"]);
     assert_eq!(code, 0, "stdout={stdout}");
-    assert!(stdout.contains("hcom"), "stdout={stdout}");
+    assert!(stdout.contains("comms"), "stdout={stdout}");
     assert!(
         stdout.contains("Commands:") || stdout.contains("Launch:"),
         "stdout={stdout}"
@@ -127,22 +127,22 @@ fn help_prints_and_exits_zero() {
 
 #[test]
 fn status_json_in_fresh_dir() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let (code, stdout, _stderr) = h.run(["status", "--json"]);
     assert_eq!(code, 0);
     let v: serde_json::Value =
         serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("status json: {e}\n{stdout}"));
-    assert_eq!(v["hcom_dir"].as_str(), Some(h.path().to_str().unwrap()));
+    assert_eq!(v["comms_dir"].as_str(), Some(h.path().to_str().unwrap()));
     assert_eq!(v["instances"]["total"], 0);
 }
 
 #[test]
 fn status_clean_logs_displays_path() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let (code, stdout, _stderr) = h.run(["status"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("logs:      ✓ ok"));
-    let log_path = h.path().join(".tmp/logs/hcom.log");
+    let log_path = h.path().join(".tmp/logs/comms.log");
     assert!(
         stdout.contains(&log_path.display().to_string()),
         "stdout should contain log path: {stdout}"
@@ -151,7 +151,7 @@ fn status_clean_logs_displays_path() {
 
 #[test]
 fn list_json_empty() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let (code, stdout, _stderr) = h.run(["list", "--json"]);
     assert_eq!(code, 0);
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("list json");
@@ -161,7 +161,7 @@ fn list_json_empty() {
 
 #[test]
 fn events_empty_in_fresh_dir() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let (code, stdout, _stderr) = h.run(["events", "--last", "5"]);
     assert_eq!(code, 0);
     assert!(stdout.trim().is_empty(), "expected no events, got {stdout}");
@@ -169,7 +169,7 @@ fn events_empty_in_fresh_dir() {
 
 #[test]
 fn send_without_identity_errors_with_hint() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let (code, _stdout, stderr) = h.run(["send", "@nobody", "--", "hi"]);
     assert_ne!(code, 0, "send without identity must fail: stderr={stderr}");
     assert!(
@@ -180,7 +180,7 @@ fn send_without_identity_errors_with_hint() {
 
 #[test]
 fn send_to_missing_agent_lists_available() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let me = h.start();
 
     let (code, _stdout, stderr) = h.run(["send", "@nope", "--name", &me, "--", "hi"]);
@@ -193,23 +193,23 @@ fn send_to_missing_agent_lists_available() {
 
 #[test]
 fn send_strips_redundant_trailing_name_from_auto_resolved_sender() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let recipient = h.start();
     let process_id = "send-trailing-name-process";
 
     let mut start = h.cmd();
-    start.env("HCOM_PROCESS_ID", process_id).arg("start");
-    let start_out = start.output().expect("spawn hcom start");
+    start.env("COMMS_PROCESS_ID", process_id).arg("start");
+    let start_out = start.output().expect("spawn comms start");
     let start_stdout = String::from_utf8_lossy(&start_out.stdout);
     let start_stderr = String::from_utf8_lossy(&start_out.stderr);
     assert!(
         start_out.status.success(),
         "stdout={start_stdout} stderr={start_stderr}"
     );
-    let sender = parse_hcom_marker(&start_stdout).expect("sender marker");
+    let sender = parse_comms_marker(&start_stdout).expect("sender marker");
 
     let mut send = h.cmd();
-    send.env("HCOM_PROCESS_ID", process_id).args([
+    send.env("COMMS_PROCESS_ID", process_id).args([
         "send",
         &format!("@{recipient}"),
         "--",
@@ -217,7 +217,7 @@ fn send_strips_redundant_trailing_name_from_auto_resolved_sender() {
         "--name",
         &sender,
     ]);
-    let send_out = send.output().expect("spawn hcom send");
+    let send_out = send.output().expect("spawn comms send");
     let send_stdout = String::from_utf8_lossy(&send_out.stdout);
     let send_stderr = String::from_utf8_lossy(&send_out.stderr);
     assert!(
@@ -232,7 +232,7 @@ fn send_strips_redundant_trailing_name_from_auto_resolved_sender() {
 
 #[test]
 fn ai_tool_broadcast_to_many_requires_go_preview() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let sender = h.start();
     for _ in 0..4 {
         h.start();
@@ -246,7 +246,7 @@ fn ai_tool_broadcast_to_many_requires_go_preview() {
         "--",
         "probably meant one person",
     ]);
-    let out = cmd.output().expect("spawn hcom send");
+    let out = cmd.output().expect("spawn comms send");
     let code = out.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -258,7 +258,7 @@ fn ai_tool_broadcast_to_many_requires_go_preview() {
         stdout.contains("BROADCAST SEND PREVIEW")
             && stdout.contains("broadcast to 4 agents")
             && stdout.contains("Did you mean to send this to everyone?")
-            && stdout.contains("hcom send --go"),
+            && stdout.contains("comms send --go"),
         "stdout={stdout}"
     );
 
@@ -277,7 +277,7 @@ fn ai_tool_broadcast_to_many_requires_go_preview() {
         "--",
         "confirmed broadcast",
     ]);
-    let go_out = go_cmd.output().expect("spawn hcom --go send");
+    let go_out = go_cmd.output().expect("spawn comms --go send");
     let go_code = go_out.status.code().unwrap_or(-1);
     let go_stdout = String::from_utf8_lossy(&go_out.stdout);
     let go_stderr = String::from_utf8_lossy(&go_out.stderr);
@@ -290,7 +290,7 @@ fn ai_tool_broadcast_to_many_requires_go_preview() {
 
 #[test]
 fn non_destructive_reset_paths_deliver_pending_messages() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let sender = h.start();
     let process_id = "reset-pending-delivery-process";
     let recipient = h.start_with_process_id(process_id);
@@ -310,7 +310,7 @@ fn non_destructive_reset_paths_deliver_pending_messages() {
     send_message("pending during reset preview");
     let mut preview = h.cmd();
     preview
-        .env("HCOM_PROCESS_ID", process_id)
+        .env("COMMS_PROCESS_ID", process_id)
         .env("CODEX_SANDBOX", "1")
         .arg("reset");
     let output = preview.output().expect("run reset preview");
@@ -326,7 +326,7 @@ fn non_destructive_reset_paths_deliver_pending_messages() {
     send_message("pending during reset hooks");
     let mut hooks = h.cmd();
     hooks
-        .env("HCOM_PROCESS_ID", process_id)
+        .env("COMMS_PROCESS_ID", process_id)
         .env("CODEX_SANDBOX", "1")
         .args(["--go", "reset", "hooks"]);
     let output = hooks.output().expect("run reset hooks");
@@ -341,7 +341,7 @@ fn non_destructive_reset_paths_deliver_pending_messages() {
 
 #[test]
 fn start_send_events_roundtrip() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let sender = h.start();
     let recipient = h.start();
     assert_ne!(sender, recipient, "two starts must assign distinct names");
@@ -438,7 +438,7 @@ fn intent_and_reply_to_roundtrip() {
     // request → ack with --reply-to flattens through `events_v` so threads/replies
     // can be traced. Locks: data.intent on send, and data.reply_to_local resolved
     // from the parent event id.
-    let h = Hcom::new();
+    let h = Comms::new();
     let a = h.start();
     let b = h.start();
 
@@ -492,12 +492,12 @@ fn intent_and_reply_to_roundtrip() {
 
 #[test]
 fn remote_reply_to_origin_resolves_imported_event_row() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let a = h.start();
     let b = h.start();
 
     // Direct SQLite access to seed colliding local event and imported remote event
-    let conn = rusqlite::Connection::open(h.hcom_dir.join("hcom.db")).expect("open hcom db");
+    let conn = rusqlite::Connection::open(h.comms_dir.join("comms.db")).expect("open comms db");
 
     // Colliding local message at id = 42
     let local_data = serde_json::json!({
@@ -564,7 +564,7 @@ fn lifecycle_events_emitted_for_start_and_stop() {
     // life.started, stop emits life.stopped — filterable via --action.
     // events table is the lifecycle source of truth (see
     // feedback_events_are_source_of_truth memory).
-    let h = Hcom::new();
+    let h = Comms::new();
     let a = h.start();
 
     let (c, started_out, _) = h.run([
@@ -616,10 +616,10 @@ fn lifecycle_events_emitted_for_start_and_stop() {
 
 #[test]
 fn start_as_reclaims_stopped_identity() {
-    // Wiki contract (identity.md §--as + hcom-start.md Path B): after stop,
+    // Wiki contract (identity.md §--as + comms-start.md Path B): after stop,
     // `start --as <name>` rebinds the same name (no random reallocation).
     // Distinct from bare `start`, which would draw a fresh name.
-    let h = Hcom::new();
+    let h = Comms::new();
     let a = h.start();
 
     let (cs, _, es) = h.run(["stop", &a]);
@@ -628,7 +628,7 @@ fn start_as_reclaims_stopped_identity() {
     let (cr, stdout, stderr) = h.run(["start", "--as", &a]);
     assert_eq!(cr, 0, "start --as failed: stderr={stderr}");
     assert!(
-        stdout.contains(&format!("[hcom:{a}]")),
+        stdout.contains(&format!("[comms:{a}]")),
         "reclaim marker missing; stdout={stdout}"
     );
 
@@ -660,7 +660,7 @@ fn bigboss_send_bypasses_identity_gate() {
     // `send -b` is sender-as-bigboss and bypasses the identity gate that
     // normally requires `--name` / a bound session. Sender_kind=external
     // distinguishes the message from instance-to-instance traffic.
-    let h = Hcom::new();
+    let h = Comms::new();
     let recipient = h.start();
 
     // Note: no --name. -b is the sole identity signal.
@@ -689,7 +689,7 @@ fn bigboss_send_bypasses_identity_gate() {
 
 #[test]
 fn config_unknown_key_is_rejected() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let (code, _stdout, stderr) = h.run(["config", "no_such_key"]);
     assert_eq!(code, 1);
     assert!(
@@ -705,7 +705,7 @@ fn config_unknown_key_is_rejected() {
 
 #[test]
 fn config_known_unset_key_reports_not_set() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let (code, stdout, _stderr) = h.run(["config", "hints"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("(not set)"), "stdout={stdout}");
@@ -713,7 +713,7 @@ fn config_known_unset_key_reports_not_set() {
 
 #[test]
 fn unknown_command_errors() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let (code, _stdout, stderr) = h.run(["nonsense-not-a-command"]);
     assert_ne!(code, 0);
     assert!(!stderr.is_empty(), "expected error message on stderr");
@@ -721,18 +721,18 @@ fn unknown_command_errors() {
 
 #[test]
 fn antigravity_e2e_hook_dispatch() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let transcript = tempfile::NamedTempFile::new().expect("temp transcript");
     let transcript_path = transcript.path().to_string_lossy().to_string();
 
-    // Spawn hcom start with HCOM_PROCESS_ID to register a process binding
+    // Spawn comms start with COMMS_PROCESS_ID to register a process binding
     let mut start_cmd = h.cmd();
     start_cmd.arg("start");
-    start_cmd.env("HCOM_PROCESS_ID", "pid-agy-123");
-    let start_out = start_cmd.output().expect("failed to run hcom start");
-    let me = support::parse_hcom_marker(&String::from_utf8_lossy(&start_out.stdout))
-        .expect("no [hcom:NAME] marker");
-    let conn = rusqlite::Connection::open(h.hcom_dir.join("hcom.db")).expect("open hcom db");
+    start_cmd.env("COMMS_PROCESS_ID", "pid-agy-123");
+    let start_out = start_cmd.output().expect("failed to run comms start");
+    let me = support::parse_comms_marker(&String::from_utf8_lossy(&start_out.stdout))
+        .expect("no [comms:NAME] marker");
+    let conn = rusqlite::Connection::open(h.comms_dir.join("comms.db")).expect("open comms db");
     conn.execute(
         "UPDATE instances SET tool = 'antigravity' WHERE name = ?1",
         [&me],
@@ -752,12 +752,12 @@ fn antigravity_e2e_hook_dispatch() {
     let mut cmd = h.cmd();
     cmd.args(["gemini-sessionstart"]);
     cmd.env("ANTIGRAVITY_AGENT", "1");
-    cmd.env("HCOM_PROCESS_ID", "pid-agy-123");
+    cmd.env("COMMS_PROCESS_ID", "pid-agy-123");
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().expect("failed to spawn hcom sessionstart");
+    let mut child = cmd.spawn().expect("failed to spawn comms sessionstart");
     {
         let mut stdin = child.stdin.take().expect("failed to open stdin");
         stdin
@@ -783,10 +783,10 @@ fn antigravity_e2e_hook_dispatch() {
     let first_context = first["injectSteps"][0]["ephemeralMessage"]
         .as_str()
         .expect("initial Antigravity bootstrap");
-    assert!(first_context.contains("[HCOM SESSION]"));
+    assert!(first_context.contains("[COMMS SESSION]"));
     assert!(first_context.contains(&format!("--name {me}")));
 
-    // Verify session_id binding matches in the DB via hcom list --json
+    // Verify session_id binding matches in the DB via comms list --json
     let (code, stdout, stderr) = h.run(["list", &me, "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("failed to parse list json");
@@ -797,7 +797,7 @@ fn antigravity_e2e_hook_dispatch() {
     let mut cmd = h.cmd();
     cmd.args(["gemini-sessionstart"]);
     cmd.env("ANTIGRAVITY_AGENT", "1");
-    cmd.env("HCOM_PROCESS_ID", "pid-agy-123");
+    cmd.env("COMMS_PROCESS_ID", "pid-agy-123");
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -828,7 +828,7 @@ fn antigravity_e2e_hook_dispatch() {
     let repeated_context = repeated["injectSteps"][0]["ephemeralMessage"]
         .as_str()
         .expect("recurring Antigravity bootstrap");
-    assert!(repeated_context.contains("[HCOM SESSION]"));
+    assert!(repeated_context.contains("[COMMS SESSION]"));
     assert!(repeated_context.contains(&format!("--name {me}")));
 
     // 2. Now pipe PreToolUse to gemini-beforetool.
@@ -845,12 +845,12 @@ fn antigravity_e2e_hook_dispatch() {
     let mut cmd = h.cmd();
     cmd.args(["gemini-beforetool"]);
     cmd.env("ANTIGRAVITY_AGENT", "1");
-    cmd.env("HCOM_PROCESS_ID", "pid-agy-123");
+    cmd.env("COMMS_PROCESS_ID", "pid-agy-123");
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().expect("failed to spawn hcom beforetool");
+    let mut child = cmd.spawn().expect("failed to spawn comms beforetool");
     {
         let mut stdin = child.stdin.take().expect("failed to open stdin");
         stdin
@@ -897,12 +897,12 @@ fn antigravity_e2e_hook_dispatch() {
     let mut cmd = h.cmd();
     cmd.args(["gemini-aftertool"]);
     cmd.env("ANTIGRAVITY_AGENT", "1");
-    cmd.env("HCOM_PROCESS_ID", "pid-agy-123");
+    cmd.env("COMMS_PROCESS_ID", "pid-agy-123");
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().expect("failed to spawn hcom aftertool");
+    let mut child = cmd.spawn().expect("failed to spawn comms aftertool");
     {
         let mut stdin = child.stdin.take().expect("failed to open stdin");
         stdin
@@ -930,9 +930,9 @@ fn antigravity_e2e_hook_dispatch() {
 ///
 /// Cursor hook command names route directly to `Tool::Cursor` (no shared-prefix
 /// disambiguation like Antigravity's `ANTIGRAVITY_AGENT`), so the only env the
-/// gate check needs is `HCOM_PROCESS_ID` to resolve the bound instance.
+/// gate check needs is `COMMS_PROCESS_ID` to resolve the bound instance.
 fn run_cursor_hook(
-    h: &Hcom,
+    h: &Comms,
     hook: &str,
     process_id: &str,
     payload: &serde_json::Value,
@@ -942,7 +942,7 @@ fn run_cursor_hook(
 
     let mut cmd = h.cmd();
     cmd.args([hook]);
-    cmd.env("HCOM_PROCESS_ID", process_id);
+    cmd.env("COMMS_PROCESS_ID", process_id);
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -977,7 +977,7 @@ fn run_cursor_hook(
 /// `additional_context` and acks delivery.
 #[test]
 fn cursor_e2e_hook_dispatch() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let transcript = tempfile::NamedTempFile::new().expect("temp transcript");
     let transcript_path = transcript.path().to_string_lossy().to_string();
     let pid = "pid-cur-123";
@@ -986,10 +986,10 @@ fn cursor_e2e_hook_dispatch() {
     // Register a process binding so the hooks can resolve an instance.
     let mut start_cmd = h.cmd();
     start_cmd.arg("start");
-    start_cmd.env("HCOM_PROCESS_ID", pid);
-    let start_out = start_cmd.output().expect("failed to run hcom start");
-    let me = support::parse_hcom_marker(&String::from_utf8_lossy(&start_out.stdout))
-        .expect("no [hcom:NAME] marker");
+    start_cmd.env("COMMS_PROCESS_ID", pid);
+    let start_out = start_cmd.output().expect("failed to run comms start");
+    let me = support::parse_comms_marker(&String::from_utf8_lossy(&start_out.stdout))
+        .expect("no [comms:NAME] marker");
 
     // 1. sessionStart binds the conversation to the active instance. Cursor reads
     //    the id from `conversation_id` (snake_case, per the docs' common schema)
@@ -1099,7 +1099,7 @@ fn cursor_e2e_hook_dispatch() {
 /// native hook" runner, not cursor-specific.
 #[test]
 fn copilot_e2e_hook_dispatch() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let transcript = tempfile::NamedTempFile::new().expect("temp transcript");
     let transcript_path = transcript.path().to_string_lossy().to_string();
     let pid = "pid-cop-123";
@@ -1108,10 +1108,10 @@ fn copilot_e2e_hook_dispatch() {
     // Register a process binding so the hooks can resolve an instance.
     let mut start_cmd = h.cmd();
     start_cmd.arg("start");
-    start_cmd.env("HCOM_PROCESS_ID", pid);
-    let start_out = start_cmd.output().expect("failed to run hcom start");
-    let me = support::parse_hcom_marker(&String::from_utf8_lossy(&start_out.stdout))
-        .expect("no [hcom:NAME] marker");
+    start_cmd.env("COMMS_PROCESS_ID", pid);
+    let start_out = start_cmd.output().expect("failed to run comms start");
+    let me = support::parse_comms_marker(&String::from_utf8_lossy(&start_out.stdout))
+        .expect("no [comms:NAME] marker");
 
     // 1. SessionStart binds the session to the active instance.
     let _ = run_cursor_hook(
@@ -1202,7 +1202,7 @@ fn copilot_e2e_hook_dispatch() {
 
 /// Pipe argv to a native argv-style hook and return its parsed stdout.
 fn run_argv_hook(
-    h: &Hcom,
+    h: &Comms,
     hook: &str,
     process_id: Option<&str>,
     args: &[&str],
@@ -1211,7 +1211,7 @@ fn run_argv_hook(
     cmd.arg(hook);
     cmd.args(args);
     if let Some(process_id) = process_id {
-        cmd.env("HCOM_PROCESS_ID", process_id);
+        cmd.env("COMMS_PROCESS_ID", process_id);
     }
 
     let out = cmd.output().unwrap_or_else(|e| panic!("spawn {hook}: {e}"));
@@ -1228,12 +1228,12 @@ fn run_argv_hook(
 
 /// End-to-end Pi argv hook lifecycle.
 ///
-/// Pi's extension invokes hcom with argv, not JSON stdin. This test mirrors the
+/// Pi's extension invokes comms with argv, not JSON stdin. This test mirrors the
 /// native hook smoke tests above while staying hermetic: no real Pi process is
 /// launched, only a fake process binding plus the `pi-*` hook commands.
 #[test]
 fn pi_e2e_hook_dispatch() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let transcript = tempfile::NamedTempFile::new().expect("temp transcript");
     let transcript_path = transcript.path().to_string_lossy().to_string();
     let pid = "pid-pi-123";
@@ -1242,10 +1242,10 @@ fn pi_e2e_hook_dispatch() {
     // Register a process binding so pi-start can resolve an instance.
     let mut start_cmd = h.cmd();
     start_cmd.arg("start");
-    start_cmd.env("HCOM_PROCESS_ID", pid);
-    let start_out = start_cmd.output().expect("failed to run hcom start");
-    let me = support::parse_hcom_marker(&String::from_utf8_lossy(&start_out.stdout))
-        .expect("no [hcom:NAME] marker");
+    start_cmd.env("COMMS_PROCESS_ID", pid);
+    let start_out = start_cmd.output().expect("failed to run comms start");
+    let me = support::parse_comms_marker(&String::from_utf8_lossy(&start_out.stdout))
+        .expect("no [comms:NAME] marker");
 
     // 1. pi-start binds the session and returns bootstrap context to the plugin.
     let cwd = h.root.path().to_string_lossy().to_string();
@@ -1450,10 +1450,10 @@ impl Drop for ChildGuard {
 }
 
 fn run_events_wait_cli_oracle(timing: UnreadTiming, wait_secs: u64, expected_code: i32) {
-    let h = Hcom::new();
+    let h = Comms::new();
     let me = h.start();
     let other = h.start();
-    let db_path = h.hcom_dir.join("hcom.db");
+    let db_path = h.comms_dir.join("comms.db");
     let conn = rusqlite::Connection::open(&db_path).expect("open test db");
 
     conn.execute("DELETE FROM events", []).unwrap();
@@ -1553,7 +1553,7 @@ fn run_events_wait_cli_oracle(timing: UnreadTiming, wait_secs: u64, expected_cod
     let deadline_secs = wait_secs + 2;
     let (code, stdout, stderr) = child.wait_bounded(Duration::from_secs(deadline_secs));
 
-    let preview_pattern = format!("<hcom>{other} → {me}</hcom>");
+    let preview_pattern = format!("<comms>{other} → {me}</comms>");
     let preview_count = stdout.matches(&preview_pattern).count();
 
     let send_ok = send_code.is_none_or(|c| c == 0);
@@ -1587,7 +1587,7 @@ fn events_wait_cli_arriving_unread_then_matching_status_exits_zero() {
 
 #[test]
 fn commands_on_stopped_agent_explain_when_and_how_to_resume() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let me = h.start();
     let gone = h.start();
     let (cs, _, es) = h.run(["stop", &gone]);
@@ -1602,7 +1602,7 @@ fn commands_on_stopped_agent_explain_when_and_how_to_resume() {
             "{cmd}: stdout={stdout}"
         );
         assert!(
-            stdout.contains(&format!("hcom r {gone}")),
+            stdout.contains(&format!("comms r {gone}")),
             "{cmd}: stdout={stdout}"
         );
     }
@@ -1619,14 +1619,14 @@ fn commands_on_stopped_agent_explain_when_and_how_to_resume() {
     let (code, _stdout, stderr) = h.run(["send", &format!("@{gone}"), "--name", &me, "--", "hi"]);
     assert_eq!(code, 1);
     assert!(
-        stderr.contains(&format!("@{gone} stopped")) && stderr.contains(&format!("hcom r {gone}")),
+        stderr.contains(&format!("@{gone} stopped")) && stderr.contains(&format!("comms r {gone}")),
         "stderr={stderr}"
     );
 }
 
 #[test]
 fn unknown_agent_gets_typo_suggestion() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let me = h.start();
     let typo: String = {
         let mut c: Vec<char> = me.chars().collect();
@@ -1647,7 +1647,7 @@ fn unknown_agent_gets_typo_suggestion() {
 
 #[test]
 fn send_rejects_ambiguous_bare_word_and_self_target() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let me = h.start();
     let other = h.start();
 
@@ -1661,7 +1661,7 @@ fn send_rejects_ambiguous_bare_word_and_self_target() {
 
     let (code, _stdout, stderr) = h.run(["send", "hello", "--name", &me]);
     assert_eq!(code, 1);
-    assert!(stderr.contains("hcom send -- hello"), "stderr={stderr}");
+    assert!(stderr.contains("comms send -- hello"), "stderr={stderr}");
 
     let (code, _stdout, stderr) = h.run(["send", &format!("@{me}"), "--name", &me, "--", "x"]);
     assert_eq!(code, 1);
@@ -1675,7 +1675,7 @@ fn send_rejects_ambiguous_bare_word_and_self_target() {
 
 #[test]
 fn unknown_command_and_tool_suggest_corrections() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let (code, _stdout, stderr) = h.run(["lst"]);
     assert_eq!(code, 1);
     assert!(stderr.contains("Did you mean: list?"), "stderr={stderr}");
@@ -1690,7 +1690,7 @@ fn unknown_command_and_tool_suggest_corrections() {
 
 #[test]
 fn send_warns_when_name_disagrees_with_the_shell_identity() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let sender = h.start_with_process_id("pid-sender");
     let other = h.start_with_process_id("pid-other");
 
@@ -1707,7 +1707,7 @@ fn send_warns_when_name_disagrees_with_the_shell_identity() {
 
 #[test]
 fn send_is_quiet_when_name_matches_the_shell_identity() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let sender = h.start_with_process_id("pid-sender");
 
     let (code, stdout, stderr) =
@@ -1721,7 +1721,7 @@ fn send_is_quiet_when_name_matches_the_shell_identity() {
 
 #[test]
 fn send_with_from_skips_the_name_drift_warning() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let _sender = h.start_with_process_id("pid-sender");
     let other = h.start_with_process_id("pid-other");
 
@@ -1740,7 +1740,7 @@ fn send_with_from_skips_the_name_drift_warning() {
 
 #[test]
 fn from_in_message_text_does_not_suppress_the_name_drift_warning() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let sender = h.start_with_process_id("pid-sender");
     let other = h.start_with_process_id("pid-other");
 
@@ -1757,7 +1757,7 @@ fn from_in_message_text_does_not_suppress_the_name_drift_warning() {
 
 #[test]
 fn send_with_attached_from_skips_the_name_drift_warning() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let _sender = h.start_with_process_id("pid-sender");
     let other = h.start_with_process_id("pid-other");
 

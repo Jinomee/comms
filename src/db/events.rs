@@ -3,7 +3,7 @@
 use anyhow::Result;
 use rusqlite::params;
 
-use super::{HcomDb, chrono_now_iso, subscriptions};
+use super::{CommsDb, chrono_now_iso, subscriptions};
 
 /// Message from the events table
 #[derive(Debug, Clone)]
@@ -21,7 +21,7 @@ pub struct Message {
 }
 
 impl Message {
-    /// The id a reader passes to `hcom send --reply-to`: the origin reference
+    /// The id a reader passes to `comms send --reply-to`: the origin reference
     /// for relayed messages (the local id means nothing on the sender's
     /// device), the local event id otherwise.
     pub fn reply_id(&self) -> Option<String> {
@@ -31,7 +31,7 @@ impl Message {
     }
 }
 
-impl HcomDb {
+impl CommsDb {
     /// Check if a message event should be delivered to the given receiver.
     ///
     /// Skips own messages. Checks scope: "broadcast" delivers to all,
@@ -233,8 +233,8 @@ impl HcomDb {
         reason: Option<&str>,
         detail: Option<&str>,
     ) -> Result<(String, Option<String>)> {
-        let launcher = std::env::var("HCOM_LAUNCHED_BY").unwrap_or_else(|_| "unknown".to_string());
-        let batch_id = std::env::var("HCOM_LAUNCH_BATCH_ID").ok();
+        let launcher = std::env::var("COMMS_LAUNCHED_BY").unwrap_or_else(|_| "unknown".to_string());
+        let batch_id = std::env::var("COMMS_LAUNCH_BATCH_ID").ok();
 
         let mut event_data = serde_json::json!({
             "action": action,
@@ -357,7 +357,7 @@ impl HcomDb {
         let already_sent: bool = self.conn.query_row(
             "SELECT COUNT(*) FROM events
              WHERE type = 'message'
-               AND instance = 'sys_[hcom-launcher]'
+               AND instance = 'sys_[comms-launcher]'
                AND json_extract(data, '$.text') LIKE ?
              LIMIT 1",
             params![format!("%batch: {}%", batch_id)],
@@ -388,13 +388,13 @@ impl HcomDb {
 
         // Insert system message
         let msg_data = serde_json::json!({
-            "from": "[hcom-launcher]",
+            "from": "[comms-launcher]",
             "text": text,
             "scope": "mentions",
             "mentions": [launcher],
             "sender_kind": "system",
         });
-        self.log_event_with_ts("message", "sys_[hcom-launcher]", &msg_data, None)?;
+        self.log_event_with_ts("message", "sys_[comms-launcher]", &msg_data, None)?;
 
         Ok(())
     }
@@ -418,7 +418,7 @@ impl HcomDb {
         let already_sent: bool = self.conn.query_row(
             "SELECT COUNT(*) FROM events
              WHERE type = 'message'
-               AND instance = 'sys_[hcom-launcher]'
+               AND instance = 'sys_[comms-launcher]'
                AND json_extract(data, '$.text') = ?
              LIMIT 1",
             params![text],
@@ -430,13 +430,13 @@ impl HcomDb {
         }
 
         let msg_data = serde_json::json!({
-            "from": "[hcom-launcher]",
+            "from": "[comms-launcher]",
             "text": text,
             "scope": "mentions",
             "mentions": [launcher],
             "sender_kind": "system",
         });
-        self.log_event_with_ts("message", "sys_[hcom-launcher]", &msg_data, None)?;
+        self.log_event_with_ts("message", "sys_[comms-launcher]", &msg_data, None)?;
 
         Ok(())
     }
@@ -757,7 +757,7 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM events
                  WHERE type = 'message'
-                   AND instance = 'sys_[hcom-launcher]'
+                   AND instance = 'sys_[comms-launcher]'
                    AND json_extract(data, '$.text') = '@leku Launch failed: para: boom (batch: batch-1)'",
                 [],
                 |row| row.get(0),

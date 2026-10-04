@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::Hcom;
+use super::Comms;
 use super::mock_http::{RecordedRequest, Reply};
 use super::real_tool::{
     FORK_PROOF, INBOUND_PROOF, INITIAL_PROOF, RESUME_PROOF, ScenarioIds, ToolCase, ToolMeta,
@@ -67,7 +67,7 @@ pub fn claude_startup_gate(screen: &str) -> Option<ClaudeStartupGate> {
 }
 
 /// Whether the trust dialog's cursor sits on the option that accepts. Claude
-/// draws the cursor as `❯`, or `>` on Windows consoles; `hcom term` prefixes
+/// draws the cursor as `❯`, or `>` on Windows consoles; `comms term` prefixes
 /// each row with its number (`14:`).
 pub fn trust_accept_selected(screen: &str) -> bool {
     screen
@@ -91,7 +91,7 @@ fn trust_accept_selected_follows_the_cursor() {
     assert!(trust_accept_selected(
         "  No, exit\n❯ Yes, I trust this folder"
     ));
-    // Windows console glyph, as `hcom term` prints it (row numbers included).
+    // Windows console glyph, as `comms term` prints it (row numbers included).
     assert!(trust_accept_selected(
         "   13:    No, exit\n   14:  > Yes, I trust this folder"
     ));
@@ -307,8 +307,8 @@ impl ToolCase for ClaudeCase {
         format!("http://127.0.0.1:{port}")
     }
 
-    fn prepare(&self, h: &Hcom, base_url: &str) {
-        // Skip Claude's global first-run theme picker. On Windows, hcom's
+    fn prepare(&self, h: &Comms, base_url: &str) {
+        // Skip Claude's global first-run theme picker. On Windows, comms's
         // synchronous launch can remain inside that picker until its readiness
         // timeout, after which the test no longer has an inject endpoint to
         // drive it. Also pre-trust the workspace: startup screens are not what
@@ -316,8 +316,8 @@ impl ToolCase for ClaudeCase {
         // approval test re-seeds without trust so the trust gate stays covered.
         seed_claude_state(&h.claude_home, &[&h.workspace]);
 
-        // Provider routing + isolated config must survive hcom's CI=1 clean-shell
-        // launch rebuild, so they go through the `$HCOM_DIR/env` passthrough.
+        // Provider routing + isolated config must survive comms's CI=1 clean-shell
+        // launch rebuild, so they go through the `$COMMS_DIR/env` passthrough.
         let claude_home = h
             .claude_home
             .to_str()
@@ -325,7 +325,7 @@ impl ToolCase for ClaudeCase {
             .to_string();
         h.set_launch_envs(&[
             ("ANTHROPIC_BASE_URL", base_url),
-            ("ANTHROPIC_AUTH_TOKEN", "hcom-real-test-dummy-token"),
+            ("ANTHROPIC_AUTH_TOKEN", "comms-real-test-dummy-token"),
             ("CLAUDE_CONFIG_DIR", &claude_home),
             ("DISABLE_LOGIN_COMMAND", "1"),
             ("DISABLE_UPDATES", "1"),
@@ -346,7 +346,7 @@ impl ToolCase for ClaudeCase {
         ]);
     }
 
-    fn launch_args(&self, _h: &Hcom) -> Vec<String> {
+    fn launch_args(&self, _h: &Comms) -> Vec<String> {
         // The lifecycle only needs Write and Bash. Auto-allow those tools while
         // denying every other prompt; the separate approval test uses Claude's
         // default mode. --bare/--safe-mode would disable the hooks under test.
@@ -357,17 +357,17 @@ impl ToolCase for ClaudeCase {
             "dontAsk".to_string(),
             "--allowedTools".to_string(),
             "Write,Bash".to_string(),
-            // hcom installs its hooks into the user settings.json under
+            // comms installs its hooks into the user settings.json under
             // CLAUDE_CONFIG_DIR; load that source so they activate.
             "--setting-sources".to_string(),
             "user".to_string(),
         ]
     }
 
-    fn drive_startup(&self, h: &Hcom, name: &str) {
+    fn drive_startup(&self, h: &Comms, name: &str) {
         // Onboarding and trust are pre-seeded in prepare(), but the approval
         // test re-seeds without trust, so its fresh workspace surfaces the trust
-        // dialog, which hcom reports as `launch_blocked`. Accepting trust here is
+        // dialog, which comms reports as `launch_blocked`. Accepting trust here is
         // what lets Claude register hooks at all ("Skipping ... hook execution -
         // workspace trust not accepted" otherwise). Keep the theme handling as a
         // compatibility fallback for Claude versions that ignore the seeded state.
@@ -426,7 +426,7 @@ impl ToolCase for ClaudeCase {
     }
 
     fn delivery_envelope_markers(&self) -> &'static [&'static str] {
-        &["<hcom>"]
+        &["<comms>"]
     }
 
     fn respond(&self, req: &RecordedRequest, ids: &ScenarioIds) -> Reply {
@@ -458,7 +458,7 @@ impl ToolCase for ClaudeCase {
                     "msg_send",
                     TOOL_SEND,
                     "Bash",
-                    &json!({ "command": ids.send_cmd, "description": "send the hcom message" }),
+                    &json!({ "command": ids.send_cmd, "description": "send the comms message" }),
                 )),
                 TOOL_SEND => Reply::Sse(claude_text(
                     "msg_done",

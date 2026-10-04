@@ -255,10 +255,10 @@ pub(crate) fn event_line(
 }
 
 /// Push sub_lines (stopped snapshot details etc.) as indented dim lines.
-/// The last sub_line starting with "hcom " is styled as an actionable command.
+/// The last sub_line starting with "comms " is styled as an actionable command.
 fn push_sub_lines(lines: &mut Vec<Line<'static>>, ev: &Event) {
     for sub in &ev.sub_lines {
-        let style = if sub.starts_with("hcom ") {
+        let style = if sub.starts_with("comms ") {
             Style::default().fg(palette::CYAN)
         } else {
             Style::default().fg(palette::FG_DIM)

@@ -7,29 +7,29 @@ use anyhow::{Result, bail};
 
 use crate::paths;
 
-/// Add the hcom dir to Codex's workspace-write roots. A `-c` override is
+/// Add the comms dir to Codex's workspace-write roots. A `-c` override is
 /// ignored outside workspace-write, whereas `--add-dir` is fatal at startup
 /// when the effective sandbox is read-only (e.g. workspace-write on Windows
 /// without the Windows sandbox). The override replaces the whole list, so it
 /// carries the user's roots from the CLI or `$CODEX_HOME/config.toml`; roots
 /// set only in project or system config are dropped. `[permissions]` profiles
-/// ignore these legacy roots, so there the hcom dir is not made writable.
-pub fn ensure_hcom_writable(tokens: &[String], codex_home: Option<&Path>) -> Vec<String> {
+/// ignore these legacy roots, so there the comms dir is not made writable.
+pub fn ensure_comms_writable(tokens: &[String], codex_home: Option<&Path>) -> Vec<String> {
     const ROOTS_KEY: &str = "sandbox_workspace_write.writable_roots";
     let end = tokens
         .iter()
         .position(|token| token == "--")
         .unwrap_or(tokens.len());
     let options = &tokens[..end];
-    let hcom_dir = paths::hcom_dir().to_string_lossy().to_string();
+    let comms_dir = paths::comms_dir().to_string_lossy().to_string();
 
     let mut cli_roots = None;
     let mut i = 0;
     while i < options.len() {
         let token = options[i].as_str();
-        // Respect an explicit --add-dir for the hcom dir.
-        if (token == "--add-dir" && options.get(i + 1) == Some(&hcom_dir))
-            || token.strip_prefix("--add-dir=") == Some(hcom_dir.as_str())
+        // Respect an explicit --add-dir for the comms dir.
+        if (token == "--add-dir" && options.get(i + 1) == Some(&comms_dir))
+            || token.strip_prefix("--add-dir=") == Some(comms_dir.as_str())
         {
             return tokens.to_vec();
         }
@@ -62,10 +62,10 @@ pub fn ensure_hcom_writable(tokens: &[String], codex_home: Option<&Path>) -> Vec
     let mut roots = cli_roots
         .or_else(|| codex_home.and_then(config_writable_roots))
         .unwrap_or_default();
-    if roots.contains(&hcom_dir) {
+    if roots.contains(&comms_dir) {
         return tokens.to_vec();
     }
-    roots.push(hcom_dir);
+    roots.push(comms_dir);
     let value = toml::Value::Array(roots.into_iter().map(toml::Value::String).collect());
     let mut result = tokens.to_vec();
     // Later overrides win, so this replaces any user override above.
@@ -108,7 +108,7 @@ fn config_writable_roots(codex_home: &Path) -> Option<Vec<String>> {
 }
 
 /// Resolve the Codex state directory from the effective child launch
-/// environment, including values supplied through `~/.hcom/env` or `--env`.
+/// environment, including values supplied through `~/.comms/env` or `--env`.
 pub(crate) fn resolve_codex_home_from_env(
     env: &HashMap<String, String>,
     launch_dir: &Path,
@@ -155,7 +155,7 @@ fn resolve_codex_home_from_env_with(
 
 /// Probe whether `CODEX_HOME` is writable before launching codex.
 ///
-/// When hcom is invoked from inside a sandboxed parent codex (e.g.
+/// When comms is invoked from inside a sandboxed parent codex (e.g.
 /// `--sandbox workspace-write`), seatbelt/landlock is inherited by the entire
 /// process chain. The child codex then fails to init its state DB
 /// (SQLITE_READONLY) and hangs on an interactive "Repair Codex local data
@@ -176,7 +176,7 @@ pub(crate) fn ensure_codex_home_writable_at(codex_home: &Path, explicit_env: boo
         };
         parent
     };
-    let probe = probe_dir.join(".hcom_writable_probe");
+    let probe = probe_dir.join(".comms_writable_probe");
     match std::fs::write(&probe, b"") {
         Ok(_) => {
             let _ = std::fs::remove_file(&probe);
@@ -194,7 +194,7 @@ pub(crate) fn ensure_codex_home_writable_at(codex_home: &Path, explicit_env: boo
             bail!(
                 "Operation not permitted: cannot write to CODEX_HOME ({}): {}\n\
                  The current process is running inside a sandbox that denies writes \
-                 to the codex state directory. If this hcom command was invoked by \
+                 to the codex state directory. If this comms command was invoked by \
                  a sandboxed agent (e.g. codex --sandbox workspace-write), approve \
                  it to run unsandboxed and retry.",
                 codex_home.display(),
@@ -204,7 +204,7 @@ pub(crate) fn ensure_codex_home_writable_at(codex_home: &Path, explicit_env: boo
     }
 }
 
-/// Add hcom bootstrap to codex developer_instructions.
+/// Add comms bootstrap to codex developer_instructions.
 ///
 /// Builds full bootstrap and adds via `-c developer_instructions=...` flag.
 /// If user also provided developer_instructions, bootstrap comes first,
@@ -257,7 +257,7 @@ pub fn add_codex_developer_instructions(
 
     // `-c` values are TOML expressions. A raw multiline string happened to be
     // accepted by older Codex builds but is ignored by current builds,
-    // silently dropping the hcom identity bootstrap. Serialize a real TOML
+    // silently dropping the comms identity bootstrap. Serialize a real TOML
     // string so quotes, backslashes, and newlines survive on every platform.
     let encoded = toml::Value::String(combined).to_string();
     crate::hooks::runtime::insert_before_separator(
@@ -318,7 +318,7 @@ pub fn preprocess_codex_args(
     bootstrap_text: &str,
     codex_home: Option<&Path>,
 ) -> Vec<String> {
-    let args = ensure_hcom_writable(codex_args, codex_home);
+    let args = ensure_comms_writable(codex_args, codex_home);
     let args = ensure_terminal_socket_access(&args);
     add_codex_developer_instructions(&args, bootstrap_text)
 }
@@ -342,42 +342,42 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn has_hcom_writable_dir(result: &[String]) -> bool {
-        let hcom_dir = paths::hcom_dir().to_string_lossy().to_string();
-        injected_roots(result).contains(&hcom_dir)
+    fn has_comms_writable_dir(result: &[String]) -> bool {
+        let comms_dir = paths::comms_dir().to_string_lossy().to_string();
+        injected_roots(result).contains(&comms_dir)
     }
 
     fn init_config() {
-        // Config::init is idempotent-ish but needs to be called before paths::hcom_dir()
+        // Config::init is idempotent-ish but needs to be called before paths::comms_dir()
         crate::config::Config::init();
     }
 
     #[test]
     #[serial]
-    fn test_ensure_hcom_writable_adds_writable_root() {
+    fn test_ensure_comms_writable_adds_writable_root() {
         init_config();
         let tokens = s(&["--model", "gpt-6-luna"]);
-        let result = ensure_hcom_writable(&tokens, None);
+        let result = ensure_comms_writable(&tokens, None);
         assert_eq!(&result[..tokens.len()], &tokens);
         assert!(
-            has_hcom_writable_dir(&result),
-            "missing hcom directory: {result:?}"
+            has_comms_writable_dir(&result),
+            "missing comms directory: {result:?}"
         );
     }
 
     #[test]
     #[serial]
-    fn test_ensure_hcom_writable_respects_explicit_add_dir() {
+    fn test_ensure_comms_writable_respects_explicit_add_dir() {
         init_config();
-        let hcom_dir = paths::hcom_dir().to_string_lossy().to_string();
-        let tokens = vec!["--add-dir".to_string(), hcom_dir];
-        let result = ensure_hcom_writable(&tokens, None);
+        let comms_dir = paths::comms_dir().to_string_lossy().to_string();
+        let tokens = vec!["--add-dir".to_string(), comms_dir];
+        let result = ensure_comms_writable(&tokens, None);
         assert_eq!(result, tokens, "explicit --add-dir must suppress injection");
     }
 
     #[test]
     #[serial]
-    fn test_ensure_hcom_writable_respects_user_writable_roots() {
+    fn test_ensure_comms_writable_respects_user_writable_roots() {
         init_config();
         let tokens = s(&[
             "--sandbox",
@@ -385,18 +385,18 @@ mod tests {
             "-c",
             r#"sandbox_workspace_write.writable_roots=["/my/dir"]"#,
         ]);
-        let result = ensure_hcom_writable(&tokens, None);
+        let result = ensure_comms_writable(&tokens, None);
         assert_eq!(&result[..tokens.len()], &tokens);
-        let hcom_dir = paths::hcom_dir().to_string_lossy().to_string();
+        let comms_dir = paths::comms_dir().to_string_lossy().to_string();
         assert_eq!(
             injected_roots(&result),
-            vec!["/my/dir".to_string(), hcom_dir]
+            vec!["/my/dir".to_string(), comms_dir]
         );
     }
 
     #[test]
     #[serial]
-    fn test_ensure_hcom_writable_keeps_config_roots() {
+    fn test_ensure_comms_writable_keeps_config_roots() {
         init_config();
         let codex_home = tempfile::tempdir().unwrap();
         let root = codex_home
@@ -410,14 +410,14 @@ mod tests {
             format!("[sandbox_workspace_write]\nwritable_roots = {roots}\n"),
         )
         .unwrap();
-        let result = ensure_hcom_writable(&[], Some(codex_home.path()));
-        let hcom_dir = paths::hcom_dir().to_string_lossy().to_string();
-        assert_eq!(injected_roots(&result), vec![root, hcom_dir]);
+        let result = ensure_comms_writable(&[], Some(codex_home.path()));
+        let comms_dir = paths::comms_dir().to_string_lossy().to_string();
+        assert_eq!(injected_roots(&result), vec![root, comms_dir]);
     }
 
     #[test]
     #[serial]
-    fn test_ensure_hcom_writable_resolves_relative_config_roots() {
+    fn test_ensure_comms_writable_resolves_relative_config_roots() {
         init_config();
         let codex_home = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -425,27 +425,27 @@ mod tests {
             "[sandbox_workspace_write]\nwritable_roots = [\"rel\"]\n",
         )
         .unwrap();
-        let result = ensure_hcom_writable(&[], Some(codex_home.path()));
+        let result = ensure_comms_writable(&[], Some(codex_home.path()));
         let expected = codex_home.path().join("rel").to_string_lossy().into_owned();
         assert_eq!(injected_roots(&result)[0], expected);
     }
 
     #[test]
     #[serial]
-    fn test_ensure_hcom_writable_leaves_table_override() {
+    fn test_ensure_comms_writable_leaves_table_override() {
         init_config();
         let tokens = s(&["-c", r#"sandbox_workspace_write={writable_roots=["/x"]}"#]);
-        assert_eq!(ensure_hcom_writable(&tokens, None), tokens);
+        assert_eq!(ensure_comms_writable(&tokens, None), tokens);
     }
 
     #[test]
     #[serial]
-    fn test_ensure_hcom_writable_never_adds_add_dir() {
+    fn test_ensure_comms_writable_never_adds_add_dir() {
         // `--add-dir` is fatal when Codex's effective sandbox is read-only.
         init_config();
-        let result = ensure_hcom_writable(&s(&["-s", "read-only"]), None);
+        let result = ensure_comms_writable(&s(&["-s", "read-only"]), None);
         assert!(!result.iter().any(|arg| arg.starts_with("--add-dir")));
-        assert!(has_hcom_writable_dir(&result));
+        assert!(has_comms_writable_dir(&result));
     }
 
     #[test]
@@ -454,7 +454,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         ensure_codex_home_writable_at(dir.path(), true).unwrap();
 
-        assert!(!dir.path().join(".hcom_writable_probe").exists());
+        assert!(!dir.path().join(".comms_writable_probe").exists());
     }
 
     #[test]
@@ -465,7 +465,7 @@ mod tests {
         ensure_codex_home_writable_at(&codex_home, true).unwrap();
 
         assert!(!codex_home.exists());
-        assert!(!dir.path().join(".hcom_writable_probe").exists());
+        assert!(!dir.path().join(".comms_writable_probe").exists());
     }
 
     #[test]
@@ -477,7 +477,7 @@ mod tests {
         ensure_codex_home_writable_at(&home.join(".codex"), false).unwrap();
 
         assert!(!home.join(".codex").exists());
-        assert!(!home.join(".hcom_writable_probe").exists());
+        assert!(!home.join(".comms_writable_probe").exists());
     }
 
     #[test]
@@ -638,7 +638,7 @@ mod tests {
         ] {
             let result = preprocess_codex_args(&args, "BOOTSTRAP", None);
             assert_eq!(&result[..args.len()], &args);
-            assert!(has_hcom_writable_dir(&result));
+            assert!(has_comms_writable_dir(&result));
             assert!(result.contains(&"sandbox_workspace_write.network_access=true".to_string()));
             for flag in [
                 "--sandbox",
@@ -681,7 +681,7 @@ mod tests {
                 );
                 // A whole-table override owns writable_roots too.
                 let table = args.iter().any(|arg| arg.contains("={"));
-                assert_eq!(has_hcom_writable_dir(&result), !table);
+                assert_eq!(has_comms_writable_dir(&result), !table);
             }
         }
     }
@@ -710,9 +710,9 @@ mod tests {
     fn writable_directory_keeps_other_additional_directories() {
         init_config();
         let args = s(&["--sandbox", "workspace-write", "--add-dir", "/user/root"]);
-        let result = ensure_hcom_writable(&args, None);
+        let result = ensure_comms_writable(&args, None);
         assert_eq!(&result[..args.len()], &args);
-        assert!(has_hcom_writable_dir(&result));
+        assert!(has_comms_writable_dir(&result));
     }
 
     #[test]

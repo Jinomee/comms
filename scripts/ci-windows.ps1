@@ -21,29 +21,29 @@ Write-Host "[ci] logs: $logDir\<step>.log"
 # prefix/bin as on Unix), and must outrank any ambient install of the same tool.
 $env:PATH = (Join-Path $root "target/mock-tools") + ";" + $env:PATH
 
-# Agents launched from this checkout keep target/debug/hcom.exe mapped, and
+# Agents launched from this checkout keep target/debug/comms.exe mapped, and
 # Windows refuses to delete a mapped image — so cargo fails with "Access is
 # denied" before it compiles anything. Renaming a running executable IS allowed
 # (the mapping follows the inode), which frees the name for the new build while
 # live agents keep running off the renamed file. Preferred over killing the
 # agents or building into a temp target dir: neither leaves the dev_root binary
-# that `hcom` resolves to pointing at what was just built.
+# that `comms` resolves to pointing at what was just built.
 function Unlock-DevBinary {
-    $binary = Join-Path $root "target/debug/hcom.exe"
+    $binary = Join-Path $root "target/debug/comms.exe"
     if (-not (Test-Path -PathType Leaf $binary)) { return }
     # Sweep previous parks first; they are only removable once the agents that
     # were holding them have exited, so failures here are expected and ignored.
-    Get-ChildItem (Join-Path $root "target/debug") -Filter "hcom.exe.locked-*" -ErrorAction SilentlyContinue |
+    Get-ChildItem (Join-Path $root "target/debug") -Filter "comms.exe.locked-*" -ErrorAction SilentlyContinue |
         ForEach-Object { try { Remove-Item -Force $_.FullName -ErrorAction Stop } catch {} }
     # Park unconditionally rather than probing first: hooks of live agents
-    # execute hcom constantly, so "nothing holds it right now" says nothing
+    # execute comms constantly, so "nothing holds it right now" says nothing
     # about the moment cargo tries to unlink it a few seconds later.
-    $parked = "hcom.exe.locked-{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
+    $parked = "comms.exe.locked-{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
     try {
         Rename-Item $binary $parked -ErrorAction Stop
         Write-Host "[ci] parked locked dev binary as $parked"
     } catch {
-        Write-Host "[ci] warning: target/debug/hcom.exe is locked and could not be renamed"
+        Write-Host "[ci] warning: target/debug/comms.exe is locked and could not be renamed"
     }
 }
 

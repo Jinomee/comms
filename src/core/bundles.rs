@@ -1,14 +1,14 @@
 //! Bundle helpers for creating and validating bundle events.
 //!
 //! packages with event references, file lists, and transcript ranges.
-//! Used by `hcom bundle` and `hcom send --title`.
+//! Used by `comms bundle` and `comms send --title`.
 
 use rand::RngExt;
 use serde_json::Value;
 use std::path::Path;
 
 use super::detail_levels::validate_detail_level;
-use crate::shared::errors::HcomError;
+use crate::shared::errors::CommsError;
 use crate::shared::{SenderIdentity, SenderKind};
 
 /// Parse comma-separated list into list of non-empty trimmed strings.
@@ -174,13 +174,13 @@ pub fn validate_bundle(bundle: &mut Value) -> Result<(), String> {
         .is_some_and(|a| a.is_empty())
     {
         return Err("refs.transcript is required\n\
-             Find ranges: hcom transcript <agent> [--last N]\n\
+             Find ranges: comms transcript <agent> [--last N]\n\
              Format: \"1-5:normal,10:full\""
             .into());
     }
     if refs_obj["events"].as_array().is_some_and(|a| a.is_empty()) {
         return Err("refs.events is required\n\
-             Find events: hcom events [--last N]\n\
+             Find events: comms events [--last N]\n\
              Format: \"123,124\" or \"100-105\""
             .into());
     }
@@ -248,7 +248,7 @@ pub fn validate_bundle(bundle: &mut Value) -> Result<(), String> {
 ///
 /// Warns to stderr if parent not found (non-fatal).
 /// Call after validate_bundle when a DB handle is available.
-pub fn validate_extends_reference(bundle: &Value, db: &crate::db::HcomDb) {
+pub fn validate_extends_reference(bundle: &Value, db: &crate::db::CommsDb) {
     let extends_val = match bundle.get("extends").and_then(|v| v.as_str()) {
         Some(v) if !v.is_empty() => v,
         _ => return,
@@ -291,9 +291,9 @@ pub fn create_bundle_event(
     bundle: &mut Value,
     instance: &str,
     created_by: Option<&str>,
-    db: &crate::db::HcomDb,
-) -> Result<String, HcomError> {
-    validate_bundle(bundle).map_err(HcomError::InvalidInput)?;
+    db: &crate::db::CommsDb,
+) -> Result<String, CommsError> {
+    validate_bundle(bundle).map_err(CommsError::InvalidInput)?;
     validate_extends_reference(bundle, db);
 
     let obj = bundle.as_object_mut().unwrap();
@@ -311,7 +311,7 @@ pub fn create_bundle_event(
     }
 
     db.log_event("bundle", instance, &bundle.clone())
-        .map_err(|e| HcomError::DatabaseError(format!("Failed to persist bundle event: {e}")))?;
+        .map_err(|e| CommsError::DatabaseError(format!("Failed to persist bundle event: {e}")))?;
 
     Ok(bundle_id)
 }

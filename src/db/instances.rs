@@ -3,7 +3,7 @@
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 
-use super::{HcomDb, chrono_now_iso, subscriptions};
+use super::{CommsDb, chrono_now_iso, subscriptions};
 use crate::shared::constants::{ST_INACTIVE, ST_LISTENING};
 use crate::shared::time::now_epoch_i64;
 
@@ -186,7 +186,7 @@ pub fn observe_pid_identity(pid: u32) -> Result<Option<String>> {
     Ok(None)
 }
 
-impl HcomDb {
+impl CommsDb {
     /// Get instance status by name
     ///
     /// Returns:
@@ -236,7 +236,7 @@ impl HcomDb {
 
     /// Record an explicit kill before signalling the process.
     ///
-    /// The PTY exit cleanup may finalize the stop before `hcom kill` does; it
+    /// The PTY exit cleanup may finalize the stop before `comms kill` does; it
     /// reads `status_detail` back so the stopped event names the real initiator
     /// instead of "pty".
     pub fn mark_killed(&self, name: &str, initiator: &str) -> Result<()> {
@@ -257,7 +257,7 @@ impl HcomDb {
     ///   context: Gate context like "tui:not-ready", "tui:user-active", etc.
     ///   detail: Human-readable description like "user is typing"
     /// Preserve status_detail when it's "cmd:listen" — gate diagnostics must not
-    /// overwrite the flag that blocks PTY injection during `hcom listen`.
+    /// overwrite the flag that blocks PTY injection during `comms listen`.
     pub fn set_gate_status(&self, name: &str, context: &str, detail: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE instances SET status_context = ?,
@@ -701,7 +701,7 @@ impl HcomDb {
     /// Find the most recent stopped instance whose snapshot carries the given
     /// session_id. life.stopped events are the source of truth: they persist
     /// across the `session_bindings` cascade, so they're the right thing to
-    /// consult when reclaiming hcom identity by UUID after stop/kill.
+    /// consult when reclaiming comms identity by UUID after stop/kill.
     pub fn find_stopped_instance_by_session_id(&self, session_id: &str) -> Result<Option<String>> {
         self.conn
             .query_row(
@@ -1102,7 +1102,7 @@ impl HcomDb {
 
     /// Check if instance is idle (safe for PTY injection).
     /// Returns true only when status is "listening" AND detail is not "cmd:listen".
-    /// The "cmd:listen" detail is set by `hcom listen` as its first operation,
+    /// The "cmd:listen" detail is set by `comms listen` as its first operation,
     /// ensuring the gate blocks before any async setup (endpoint registration, etc.).
     pub fn is_idle(&self, name: &str) -> bool {
         match self.get_instance_status(name) {
@@ -1139,13 +1139,13 @@ impl HcomDb {
 
 #[cfg(test)]
 mod tests {
-    use super::super::HcomDb;
+    use super::super::CommsDb;
     use super::super::tests::{cleanup_test_db, setup_full_test_db};
     use rusqlite::params;
 
-    fn reopen_broken_schema(db_path: &std::path::Path) -> HcomDb {
+    fn reopen_broken_schema(db_path: &std::path::Path) -> CommsDb {
         // Use open_raw here: open_at would repair the table we deliberately dropped.
-        HcomDb::open_raw(db_path).unwrap()
+        CommsDb::open_raw(db_path).unwrap()
     }
 
     #[test]
@@ -1157,7 +1157,7 @@ mod tests {
         db.conn().execute("DROP TABLE instances", []).unwrap();
         drop(db);
 
-        // Now HcomDb will fail when trying to query
+        // Now CommsDb will fail when trying to query
         let db = reopen_broken_schema(&db_path);
 
         let result = db.get_instance_status("test");

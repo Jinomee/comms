@@ -1,6 +1,6 @@
 //! Relay worker process — manages the MQTT relay as a standalone process.
 //!
-//! Entry point for `hcom relay-worker`. Handles PID file management,
+//! Entry point for `comms relay-worker`. Handles PID file management,
 //! signal handling, auto-exit watchdog, and relay lifecycle.
 //!
 //! Auto-spawn: `maybe_auto_spawn()` checks config, PID, and instance count
@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use crate::config::HcomConfig;
-use crate::db::HcomDb;
+use crate::config::CommsConfig;
+use crate::db::CommsDb;
 use crate::log;
 use crate::relay::client::RelayCommand;
 
@@ -44,11 +44,11 @@ fn request_handoff() {
 // ── PID file helpers ────────────────────────────────────────────────
 
 fn pid_file_path() -> PathBuf {
-    crate::paths::hcom_dir().join(".tmp").join("relay.pid")
+    crate::paths::comms_dir().join(".tmp").join("relay.pid")
 }
 
 fn spawn_lock_path() -> PathBuf {
-    crate::paths::hcom_dir()
+    crate::paths::comms_dir()
         .join(".tmp")
         .join("relay.spawn.lock")
 }
@@ -58,7 +58,7 @@ fn write_pid_file_for(pid: u32) {
     // Seed heartbeat alongside the pidfile so readers in the startup window
     // (before the main loop starts ticking) don't see pid-alive + no-heartbeat
     // and falsely declare the worker dead.
-    if let Ok(db) = HcomDb::open() {
+    if let Ok(db) = CommsDb::open() {
         let _ = super::write_worker_heartbeat(&db);
     }
 }
@@ -91,7 +91,7 @@ fn read_pid_file() -> Option<u32> {
 /// Remove PID file and clear heartbeat KV.
 fn remove_pid_file() {
     let _ = std::fs::remove_file(pid_file_path());
-    if let Ok(db) = HcomDb::open() {
+    if let Ok(db) = CommsDb::open() {
         super::clear_worker_heartbeat(&db);
     }
 }
@@ -151,7 +151,7 @@ pub fn run() -> i32 {
     );
 
     // Load config
-    let config = match HcomConfig::load(None) {
+    let config = match CommsConfig::load(None) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error: Failed to load config: {e}");
@@ -174,7 +174,7 @@ pub fn run() -> i32 {
     };
 
     // Bind TCP notify listener for CLI → daemon push wake.
-    // CLI callers (hcom send, hooks) connect to trigger immediate push.
+    // CLI callers (comms send, hooks) connect to trigger immediate push.
     let notify_port = setup_notify_listener(&cmd_tx);
 
     // Install shutdown-signal handlers (set AtomicBool on terminate/interrupt).
@@ -194,7 +194,7 @@ pub fn run() -> i32 {
 
     // Clear notify port so CLI callers stop trying to connect
     if notify_port.is_some()
-        && let Ok(db) = HcomDb::open()
+        && let Ok(db) = CommsDb::open()
     {
         super::safe_kv_set(&db, "relay_daemon_port", None);
     }
@@ -221,7 +221,7 @@ fn setup_notify_listener(cmd_tx: &std::sync::mpsc::Sender<RelayCommand>) -> Opti
     let port = listener.local_addr().ok()?.port();
 
     // Store port in DB so CLI callers can find us
-    if let Ok(db) = HcomDb::open() {
+    if let Ok(db) = CommsDb::open() {
         super::safe_kv_set(&db, "relay_daemon_port", Some(&port.to_string()));
     }
 
@@ -259,9 +259,9 @@ fn setup_notify_listener(cmd_tx: &std::sync::mpsc::Sender<RelayCommand>) -> Opti
 /// fresh device).
 fn auto_exit_watchdog(cmd_tx: std::sync::mpsc::Sender<RelayCommand>, shutdown: Arc<AtomicBool>) {
     let mut consecutive_empty = 0u32;
-    let mut db = HcomDb::open().ok();
+    let mut db = CommsDb::open().ok();
     // An install replaces the executable file under a running worker. Exit when
-    // that happens and the next hcom call (every hook calls ensure_worker)
+    // that happens and the next comms call (every hook calls ensure_worker)
     // starts a worker from the new build, so an upgrade needs no manual restart
     // and none of the elevation that killing a worker can need.
     let exe_path = install_path();
@@ -290,7 +290,7 @@ fn auto_exit_watchdog(cmd_tx: std::sync::mpsc::Sender<RelayCommand>, shutdown: A
 
         // Re-open DB if previous connection failed
         if db.is_none() {
-            db = HcomDb::open().ok();
+            db = CommsDb::open().ok();
         }
 
         let count = match &db {
@@ -341,7 +341,7 @@ fn binary_replaced(path: &std::path::Path, started_with: ExeFingerprint) -> bool
 
 /// Check if relay is enabled in the current config (non-empty relay_id + relay_enabled flag).
 fn relay_enabled_in_config() -> bool {
-    HcomConfig::load(None)
+    CommsConfig::load(None)
         .map(|c| super::is_relay_enabled(&c))
         .unwrap_or(false)
 }
@@ -349,7 +349,7 @@ fn relay_enabled_in_config() -> bool {
 /// Count active local (non-remote) instances.
 /// Mirrors the filter in ensure_worker(true) so the watchdog exits when no syncable
 /// instances remain, not merely when all instances are stopped/dead.
-fn local_instance_count(db: &HcomDb) -> i64 {
+fn local_instance_count(db: &CommsDb) -> i64 {
     db.conn()
         .query_row(
             "SELECT COUNT(*) FROM instances \
@@ -409,8 +409,8 @@ fn do_spawn_with(binary: Option<PathBuf>) -> bool {
 
     // Pre-warm device_id in the parent so the spawned worker reads the same
     // UUID we'd report from this process. Without this, the worker and any
-    // concurrent CLI (hcom relay status, etc.) can race read_device_uuid on
-    // a fresh HCOM_DIR and end up with different UUIDs — causing the worker's
+    // concurrent CLI (comms relay status, etc.) can race read_device_uuid on
+    // a fresh COMMS_DIR and end up with different UUIDs — causing the worker's
     // published short_id to disagree with what `relay status` displays.
     if super::read_device_uuid().is_none() {
         log::log_warn(
@@ -433,7 +433,7 @@ fn do_spawn_with(binary: Option<PathBuf>) -> bool {
 
     // Detach into its own session so it survives parent terminal close (no
     // SIGHUP) and, on Windows, doesn't inherit the parent's stdio handles
-    // (which would otherwise keep any caller piping hcom's output from ever
+    // (which would otherwise keep any caller piping comms's output from ever
     // observing EOF).
     match crate::sys::process::spawn_detached(&mut cmd) {
         Ok(child) => {
@@ -465,7 +465,7 @@ fn do_spawn_with(binary: Option<PathBuf>) -> bool {
 ///
 /// Returns true if the worker is running (and port-ready when require_instances=false).
 pub fn ensure_worker(require_instances: bool) -> bool {
-    let config = match HcomConfig::load(None) {
+    let config = match CommsConfig::load(None) {
         Ok(c) => c,
         Err(_) => return false,
     };
@@ -479,7 +479,7 @@ pub fn ensure_worker(require_instances: bool) -> bool {
         if is_relay_worker_running() {
             return true;
         }
-        let db = match HcomDb::open() {
+        let db = match CommsDb::open() {
             Ok(db) => db,
             Err(_) => return false,
         };
@@ -527,7 +527,7 @@ pub fn ensure_worker(require_instances: bool) -> bool {
 /// Used by trigger_push() when no daemon is running, so events push on the
 /// worker's first cycle instead of sitting in the DB indefinitely.
 pub fn try_spawn_worker() {
-    let config = match HcomConfig::load(None) {
+    let config = match CommsConfig::load(None) {
         Ok(c) => c,
         Err(_) => return,
     };
@@ -542,7 +542,7 @@ pub fn try_spawn_worker() {
 fn poll_until_ready(timeout_ms: u64) -> bool {
     let start = std::time::Instant::now();
     let deadline = std::time::Duration::from_millis(timeout_ms);
-    let db = HcomDb::open().ok();
+    let db = CommsDb::open().ok();
 
     while start.elapsed() < deadline {
         if let Some(ref db) = db
@@ -618,14 +618,14 @@ mod tests {
     #[test]
     fn a_replaced_executable_is_detected_and_a_missing_one_is_not() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("hcom.exe");
+        let exe = dir.path().join("comms.exe");
         std::fs::write(&exe, b"old build").unwrap();
         let start = exe_fingerprint(&exe).unwrap();
         assert!(!binary_replaced(&exe, start), "unchanged file");
 
         // Mid-swap: the running file was renamed away and the new one is not
         // there yet.
-        std::fs::rename(&exe, dir.path().join("hcom.exe.pre-old")).unwrap();
+        std::fs::rename(&exe, dir.path().join("comms.exe.pre-old")).unwrap();
         assert!(
             !binary_replaced(&exe, start),
             "missing file is not a replacement"

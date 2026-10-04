@@ -44,7 +44,7 @@ impl App {
         let query = self.active_search_query().map(|q| q.to_owned());
         match query {
             Some(q) => {
-                let limit = std::env::var("HCOM_TUI_TIMELINE_LIMIT")
+                let limit = std::env::var("COMMS_TUI_TIMELINE_LIMIT")
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(5000);

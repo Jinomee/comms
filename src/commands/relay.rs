@@ -1,7 +1,7 @@
-//! `hcom relay` command — cross-device sync via MQTT pub/sub.
+//! `comms relay` command — cross-device sync via MQTT pub/sub.
 
 use crate::config;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::relay::broker::BrokerProbe;
 use crate::relay::token::DecodedToken;
 use crate::relay::{self, DEFAULT_BROKERS};
@@ -9,7 +9,7 @@ use crate::shared::CommandContext;
 use crate::shared::ansi::{FG_GRAY, FG_GREEN, FG_RED, FG_YELLOW, RESET};
 use crate::shared::time::format_age;
 
-/// Parsed arguments for `hcom relay`.
+/// Parsed arguments for `comms relay`.
 #[derive(clap::Parser, Debug)]
 #[command(name = "relay", about = "Cross-device sync via MQTT")]
 pub struct RelayArgs {
@@ -60,7 +60,7 @@ fn decode_join_token(token: &str) -> Option<DecodedToken> {
 
 /// Build the "Add devices" / "current group" join token from current config,
 /// or `None` if the relay isn't fully configured.
-fn current_join_token(config: &crate::config::HcomConfig) -> Option<String> {
+fn current_join_token(config: &crate::config::CommsConfig) -> Option<String> {
     if config.relay_id.is_empty() || config.relay.is_empty() {
         return None;
     }
@@ -73,20 +73,20 @@ fn relay_show_token() -> i32 {
     let config = config::load_config_snapshot().core;
     match current_join_token(&config) {
         Some(token) => {
-            println!("hcom relay connect {token}");
+            println!("comms relay connect {token}");
             if !config.relay_token.is_empty() {
                 println!("  (also needs: --password <secret>)");
             }
             0
         }
         None => {
-            eprintln!("No relay configured. Run: hcom relay new");
+            eprintln!("No relay configured. Run: comms relay new");
             1
         }
     }
 }
 
-fn validate_existing_relay_config(config: &crate::config::HcomConfig) -> Result<(), String> {
+fn validate_existing_relay_config(config: &crate::config::CommsConfig) -> Result<(), String> {
     if config.relay_id.is_empty() {
         return Err("no relay configured".to_string());
     }
@@ -115,7 +115,7 @@ fn format_time(timestamp: f64) -> String {
 /// Get device short ID via FNV-1a hash
 /// Auto-creates device_id file if missing (via read_device_uuid).
 /// Returns "?" when the device_id file cannot be created or read — display only.
-fn get_device_short_id(db: &HcomDb) -> String {
+fn get_device_short_id(db: &CommsDb) -> String {
     match crate::relay::read_device_uuid() {
         Some(uuid) => crate::relay::device_short_id_for_db(db, &uuid),
         None => "?".to_string(),
@@ -136,18 +136,18 @@ fn paint(code: &str, text: &str) -> String {
 }
 
 /// Show relay status.
-fn relay_status(db: &HcomDb) -> i32 {
+fn relay_status(db: &CommsDb) -> i32 {
     let config = config::load_config_snapshot().core;
 
     if config.relay_id.is_empty() {
         println!("{}", paint(FG_GRAY, "Relay: not configured"));
-        println!("Run: hcom relay new");
+        println!("Run: comms relay new");
         return 0;
     }
 
     if !config.relay_enabled {
         println!("{}", paint(FG_YELLOW, "Relay: disabled"));
-        println!("\nRun: hcom relay connect");
+        println!("\nRun: comms relay connect");
         return 0;
     }
 
@@ -351,12 +351,12 @@ fn relay_status(db: &HcomDb) -> i32 {
         println!("Key:       {}", relay::crypto::fingerprint(&psk));
     } else {
         println!(
-            "Key:       {} (run `hcom relay new`)",
+            "Key:       {} (run `comms relay new`)",
             paint(FG_RED, "missing")
         );
     }
 
-    println!("\nShow token: hcom relay token");
+    println!("\nShow token: comms relay token");
 
     0
 }
@@ -393,7 +393,7 @@ fn ensure_relay_worker_running_for_cli() -> bool {
     crate::relay::worker::is_relay_worker_running()
 }
 
-fn known_remote_device_shorts(db: &HcomDb) -> Vec<String> {
+fn known_remote_device_shorts(db: &CommsDb) -> Vec<String> {
     let own_device = crate::relay::read_device_uuid().unwrap_or_default();
     let mut shorts = Vec::new();
     if let Ok(entries) = db.kv_prefix("relay_short_") {
@@ -408,7 +408,7 @@ fn known_remote_device_shorts(db: &HcomDb) -> Vec<String> {
     shorts
 }
 
-fn relay_notify_off_all(db: &HcomDb, config: &crate::config::HcomConfig) {
+fn relay_notify_off_all(db: &CommsDb, config: &crate::config::CommsConfig) {
     let peers = known_remote_device_shorts(db);
     if peers.is_empty() {
         println!("No known remote peers to notify.");
@@ -434,17 +434,17 @@ fn relay_notify_off_all(db: &HcomDb, config: &crate::config::HcomConfig) {
     );
 }
 
-fn relay_off(db: &HcomDb, argv: &[String]) -> i32 {
+fn relay_off(db: &CommsDb, argv: &[String]) -> i32 {
     let all = argv.iter().any(|a| a == "--all");
     if argv.iter().any(|a| a != "--all") {
-        eprintln!("Usage: hcom relay off [--all]");
+        eprintln!("Usage: comms relay off [--all]");
         return 1;
     }
 
     let config = config::load_config_snapshot().core;
     if config.relay_id.is_empty() {
         eprintln!("No relay configured.");
-        eprintln!("Run: hcom relay new");
+        eprintln!("Run: comms relay new");
         return 1;
     }
 
@@ -470,17 +470,17 @@ fn relay_off(db: &HcomDb, argv: &[String]) -> i32 {
 
     crate::relay::worker::stop_relay_worker_blocking();
     println!("{}", paint(FG_YELLOW, "Relay: disabled"));
-    println!("\nRun 'hcom relay connect' to reconnect");
+    println!("\nRun 'comms relay connect' to reconnect");
     0
 }
 
 /// Enable or disable relay sync.
-fn relay_toggle(db: &HcomDb, enable: bool) -> i32 {
+fn relay_toggle(db: &CommsDb, enable: bool) -> i32 {
     let config = config::load_config_snapshot().core;
 
     if config.relay_id.is_empty() {
         eprintln!("No relay configured.");
-        eprintln!("Run: hcom relay new");
+        eprintln!("Run: comms relay new");
         return 1;
     }
 
@@ -544,7 +544,7 @@ fn persist_relay_config(
 }
 
 /// Create a new relay group.
-fn relay_new(db: &HcomDb, argv: &[String]) -> i32 {
+fn relay_new(db: &CommsDb, argv: &[String]) -> i32 {
     let (broker_url, auth_token, _) = parse_broker_flags(argv);
 
     // Ensure device_id file exists before spawning the daemon worker,
@@ -558,7 +558,7 @@ fn relay_new(db: &HcomDb, argv: &[String]) -> i32 {
 
     // Show previous group token if switching
     if let Some(old_token) = current_join_token(&config) {
-        println!("Current group: hcom relay connect {old_token}\n");
+        println!("Current group: comms relay connect {old_token}\n");
     }
 
     // Clear stale device state from the previous relay group so that
@@ -613,7 +613,7 @@ fn relay_new(db: &HcomDb, argv: &[String]) -> i32 {
             Some(b) => b,
             None => {
                 eprintln!("\nNo broker reachable. Check your network.");
-                eprintln!("Or use a private broker: hcom relay new --broker mqtts://host:port");
+                eprintln!("Or use a private broker: comms relay new --broker mqtts://host:port");
                 return 1;
             }
         }
@@ -635,7 +635,7 @@ fn relay_new(db: &HcomDb, argv: &[String]) -> i32 {
         if auth_token.is_some() {
             println!("Password: set");
         }
-        println!("\nOn other devices: hcom relay connect {token}");
+        println!("\nOn other devices: comms relay connect {token}");
         if auth_token.is_some() {
             println!("  (they will also need: --password <secret>)");
         }
@@ -644,15 +644,15 @@ fn relay_new(db: &HcomDb, argv: &[String]) -> i32 {
     if restart_relay_worker_for_config_change() {
         println!("\nConnected.");
     } else if crate::relay::worker::is_relay_worker_running() {
-        println!("\nDaemon started (not yet ready). Run 'hcom relay status' to confirm.");
+        println!("\nDaemon started (not yet ready). Run 'comms relay status' to confirm.");
     } else {
-        println!("\nCould not start daemon automatically. Run 'hcom relay daemon start'.");
+        println!("\nCould not start daemon automatically. Run 'comms relay daemon start'.");
     }
     0
 }
 
 /// Connect to relay — re-enable or join with token.
-fn relay_connect(db: &HcomDb, argv: &[String]) -> i32 {
+fn relay_connect(db: &CommsDb, argv: &[String]) -> i32 {
     let (broker_url, auth_token, remaining) = parse_broker_flags(argv);
 
     // Ensure device_id file exists before spawning the daemon worker,
@@ -669,7 +669,7 @@ fn relay_connect(db: &HcomDb, argv: &[String]) -> i32 {
         let config = config::load_config_snapshot().core;
         if config.relay_id.is_empty() {
             eprintln!("No relay configured.");
-            eprintln!("Run: hcom relay new");
+            eprintln!("Run: comms relay new");
             return 1;
         }
         if let Err(e) = validate_existing_relay_config(&config) {
@@ -704,9 +704,9 @@ fn relay_connect(db: &HcomDb, argv: &[String]) -> i32 {
             eprintln!(
                 "Legacy token (v0x01/v0x02) — rejected.\n\
                  \n\
-                 This hcom build requires a token that carries the relay key. Ask the source\n  \
-                 device to upgrade hcom and run\n  \
-                 hcom relay new\n\
+                 This comms build requires a token that carries the relay key. Ask the source\n  \
+                 device to upgrade comms and run\n  \
+                 comms relay new\n\
                  then re-share the new token. The new token format is v0x04 (~67 chars)."
             );
             return 1;
@@ -759,9 +759,9 @@ fn relay_connect(db: &HcomDb, argv: &[String]) -> i32 {
     if restart_relay_worker_for_config_change() {
         println!("\nConnected.");
     } else if crate::relay::worker::is_relay_worker_running() {
-        println!("\nDaemon started (not yet ready). Run 'hcom relay status' to confirm.");
+        println!("\nDaemon started (not yet ready). Run 'comms relay status' to confirm.");
     } else {
-        println!("\nCould not start daemon automatically. Run 'hcom relay daemon start'.");
+        println!("\nCould not start daemon automatically. Run 'comms relay daemon start'.");
     }
     0
 }
@@ -804,7 +804,7 @@ fn update_toml_key(content: &str, field: &str, value: &str) -> String {
     doc.to_string()
 }
 
-pub fn cmd_relay(db: &HcomDb, args: &RelayArgs, _ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_relay(db: &CommsDb, args: &RelayArgs, _ctx: Option<&CommandContext>) -> i32 {
     // --name already stripped by router's extract_global_flags_full()
     let argv = &args.args;
 
@@ -835,7 +835,7 @@ pub fn cmd_relay(db: &HcomDb, args: &RelayArgs, _ctx: Option<&CommandContext>) -
             } else {
                 eprintln!("Error: Unknown subcommand: {first}");
                 eprintln!(
-                    "Usage: hcom relay [new|token|connect|on|off|daemon] (see hcom relay --help)"
+                    "Usage: comms relay [new|token|connect|on|off|daemon] (see comms relay --help)"
                 );
                 1
             }
@@ -950,8 +950,8 @@ mod tests {
     #[test]
     #[serial]
     fn test_relay_off_all_disables_local_relay_without_peers() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let cfg = crate::config::HcomConfig {
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let cfg = crate::config::CommsConfig {
             relay: "mqtt://127.0.0.1:1".to_string(),
             relay_id: "relay-1".to_string(),
             relay_psk: relay::encode_psk(&fake_psk()),
@@ -960,21 +960,21 @@ mod tests {
         };
         crate::config::save_toml_config(&cfg, None).unwrap();
 
-        let db = HcomDb::open().unwrap();
+        let db = CommsDb::open().unwrap();
         let args = RelayArgs {
             args: vec!["off".to_string(), "--all".to_string()],
         };
         assert_eq!(cmd_relay(&db, &args, None), 0);
 
-        let updated = crate::config::HcomConfig::load(None).unwrap();
+        let updated = crate::config::CommsConfig::load(None).unwrap();
         assert!(!updated.relay_enabled);
     }
 
     #[test]
     #[serial]
     fn test_relay_push_subcommand_exists() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
-        let db = HcomDb::open().unwrap();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
+        let db = CommsDb::open().unwrap();
         let args = RelayArgs {
             args: vec!["push".to_string()],
         };
@@ -984,7 +984,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_relay_on_rejects_invalid_stored_config_without_enabling() {
-        let (_dir, _hcom_dir, _home, _guard) = isolated_test_env();
+        let (_dir, _comms_dir, _home, _guard) = isolated_test_env();
         let mut content = String::new();
         content = update_toml_key(&content, "relay_id", "\"relay-1\"");
         content = update_toml_key(&content, "relay", "\"\"");
@@ -992,13 +992,13 @@ mod tests {
         content = update_toml_key(&content, "relay_enabled", "false");
         std::fs::write(crate::paths::config_toml_path(), content).unwrap();
 
-        let db = HcomDb::open().unwrap();
+        let db = CommsDb::open().unwrap();
         let args = RelayArgs {
             args: vec!["on".to_string()],
         };
         assert_eq!(cmd_relay(&db, &args, None), 1);
 
-        let updated = crate::config::HcomConfig::load(None).unwrap();
+        let updated = crate::config::CommsConfig::load(None).unwrap();
         assert!(!updated.relay_enabled);
     }
 }

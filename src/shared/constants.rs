@@ -1,4 +1,4 @@
-//! Shared constants for hcom — version, limits, patterns, and status definitions.
+//! Shared constants for comms — version, limits, patterns, and status definitions.
 
 use regex::Regex;
 use std::sync::LazyLock;
@@ -13,7 +13,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SENDER: &str = "bigboss";
 
 /// System notification identity (launcher, watchdog, subscriptions).
-pub const SYSTEM_SENDER: &str = "hcom";
+pub const SYSTEM_SENDER: &str = "comms";
 
 /// Max messages delivered in a single hook response.
 pub const MAX_MESSAGES_PER_DELIVERY: usize = 50;
@@ -46,16 +46,16 @@ pub fn extract_mentions(text: &str) -> Vec<String> {
 // Released-tool lists moved to `crate::integration_spec` —
 // see `released_tool_names()` / `released_background_tool_names()`.
 
-/// HCOM identity vars — set per-instance, cleared to prevent parent identity leakage.
-pub const HCOM_IDENTITY_VARS: &[&str] = &[
-    "HCOM_PROCESS_ID",
-    "HCOM_LAUNCHED",
-    // HCOM_LAUNCHED_PRESET excluded — must survive into Rust binary for hook forwarding
-    "HCOM_PTY_MODE",
-    "HCOM_BACKGROUND",
-    "HCOM_LAUNCHED_BY",
-    "HCOM_LAUNCH_BATCH_ID",
-    "HCOM_LAUNCH_EVENT_ID",
+/// COMMS identity vars — set per-instance, cleared to prevent parent identity leakage.
+pub const COMMS_IDENTITY_VARS: &[&str] = &[
+    "COMMS_PROCESS_ID",
+    "COMMS_LAUNCHED",
+    // COMMS_LAUNCHED_PRESET excluded — must survive into Rust binary for hook forwarding
+    "COMMS_PTY_MODE",
+    "COMMS_BACKGROUND",
+    "COMMS_LAUNCHED_BY",
+    "COMMS_LAUNCH_BATCH_ID",
+    "COMMS_LAUNCH_EVENT_ID",
 ];
 
 pub const ST_ACTIVE: &str = "active";
@@ -94,12 +94,12 @@ pub fn status_icon(status: &str) -> &'static str {
 /// Terminal-title behavior, from config `terminal.title_mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleMode {
-    /// hcom leaves the title alone: the wrapped tool's own title passes through
-    /// untouched and hcom writes nothing.
+    /// comms leaves the title alone: the wrapped tool's own title passes through
+    /// untouched and comms writes nothing.
     Off,
-    /// hcom's status label only: `{icon} name [tool]` (the original behavior).
+    /// comms's status label only: `{icon} name [tool]` (the original behavior).
     Label,
-    /// hcom status + the tool's live title: `{icon} name - {tool title}`.
+    /// comms status + the tool's live title: `{icon} name - {tool title}`.
     Combined,
 }
 
@@ -117,7 +117,7 @@ impl TitleMode {
     }
 }
 
-/// Build the canonical pane-title label hcom writes into OSC 1/2 and pushes
+/// Build the canonical pane-title label comms writes into OSC 1/2 and pushes
 /// to host terminal label APIs (e.g. herdr's `pane.rename`).
 ///
 /// Format: `"{icon} {display} [{tool}]"` (e.g. `"◉ luna [claude]"`).

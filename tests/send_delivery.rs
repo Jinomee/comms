@@ -1,14 +1,14 @@
 //! Inline receive delivery must acknowledge only the output it emitted.
 mod support;
 use rusqlite::{Connection, params};
-use support::Hcom;
+use support::Comms;
 
 /// Create two isolated identities and select the receiver command-routing mode.
-fn setup(tool: &str) -> (Hcom, Connection, String, String) {
-    let h = Hcom::new();
+fn setup(tool: &str) -> (Comms, Connection, String, String) {
+    let h = Comms::new();
     let sender = h.start();
     let receiver = h.start();
-    let db = Connection::open(h.hcom_dir.join("hcom.db")).unwrap();
+    let db = Connection::open(h.comms_dir.join("comms.db")).unwrap();
     // Exercise command routing for each harness without launching a model.
     db.execute(
         "UPDATE instances SET tool=? WHERE name=?",
@@ -19,7 +19,7 @@ fn setup(tool: &str) -> (Hcom, Connection, String, String) {
 }
 
 /// Send an informational message and capture all inline receive output.
-fn send(h: &Hcom, from: &str, to: &str, body: &str) -> String {
+fn send(h: &Comms, from: &str, to: &str, body: &str) -> String {
     let (code, out, err) = h.run([
         "send",
         "--name",
@@ -34,7 +34,7 @@ fn send(h: &Hcom, from: &str, to: &str, body: &str) -> String {
     out
 }
 
-/// Queue a direct message by inserting its event, without spawning hcom.
+/// Queue a direct message by inserting its event, without spawning comms.
 fn queue(db: &Connection, from: &str, to: &str, text: &str) -> i64 {
     let data = serde_json::json!({"from":from,"text":text,"scope":"mentions","mentions":[to],"delivered_to":[to],"sender_kind":"instance","intent":"inform"});
     db.execute(
@@ -399,11 +399,11 @@ fn failed_send_still_delivers_pending_messages() {
 /// --from delivers to the process-bound invoking instance, not only --name.
 #[test]
 fn external_sender_delivers_to_process_bound_instance() {
-    let h = Hcom::new();
+    let h = Comms::new();
     let sender = h.start();
     let process_id = "send-delivery-adhoc";
     let receiver = h.start_with_process_id(process_id);
-    let db = Connection::open(h.hcom_dir.join("hcom.db")).unwrap();
+    let db = Connection::open(h.comms_dir.join("comms.db")).unwrap();
     db.execute(
         "UPDATE instances SET tool='adhoc' WHERE name=?",
         params![receiver],
@@ -621,7 +621,7 @@ fn failed_command_delivery_write_fails_command() {
 #[test]
 fn filter_listen_shows_system_messages() {
     let (h, db, _sender, receiver) = setup("adhoc");
-    let id = queue(&db, "[hcom-launcher]", &receiver, "launcher-sentinel");
+    let id = queue(&db, "[comms-launcher]", &receiver, "launcher-sentinel");
     let (_, out, err) = h.run([
         "listen",
         "--name",

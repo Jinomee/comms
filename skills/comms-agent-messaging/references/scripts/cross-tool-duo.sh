@@ -9,7 +9,7 @@ track_launch() {
 }
 cleanup() {
   for name in "${LAUNCHED_NAMES[@]}"; do
-    hcom kill "$name" --go 2>/dev/null || true
+    comms kill "$name" --go 2>/dev/null || true
   done
 }
 
@@ -26,23 +26,23 @@ thread="duo-$(date +%s)"
 trap cleanup ERR INT TERM
 
 # Launch Codex engineer
-launch_out=$(hcom 1 codex --tag eng --go --headless \
-  --hcom-prompt "Wait for spec from @arch-. Implement it. Then confirm: hcom send \"@arch-\" --thread ${thread} --intent inform -- \"IMPLEMENTED\". Then stop: hcom stop" 2>&1)
+launch_out=$(comms 1 codex --tag eng --go --headless \
+  --comms-prompt "Wait for spec from @arch-. Implement it. Then confirm: comms send \"@arch-\" --thread ${thread} --intent inform -- \"IMPLEMENTED\". Then stop: comms stop" 2>&1)
 track_launch "$launch_out"
 eng=$(echo "$launch_out" | grep '^Names: ' | sed 's/^Names: //' | tr -d ' ')
 echo "Engineer (Codex): $eng"
 
 # Launch Claude architect
-launch_out=$(hcom 1 claude --tag arch --go --headless \
-  --hcom-prompt "Design a 2-3 sentence spec for: ${task}. Send to @eng-: hcom send \"@eng-\" --thread ${thread} --intent request -- \"SPEC: <spec>\". Wait for confirmation. Then send: hcom send \"@bigboss\" --thread ${thread} --intent inform -- \"APPROVED\". Then stop: hcom stop" 2>&1)
+launch_out=$(comms 1 claude --tag arch --go --headless \
+  --comms-prompt "Design a 2-3 sentence spec for: ${task}. Send to @eng-: comms send \"@eng-\" --thread ${thread} --intent request -- \"SPEC: <spec>\". Wait for confirmation. Then send: comms send \"@bigboss\" --thread ${thread} --intent inform -- \"APPROVED\". Then stop: comms stop" 2>&1)
 track_launch "$launch_out"
 arch=$(echo "$launch_out" | grep '^Names: ' | sed 's/^Names: //' | tr -d ' ')
 echo "Architect (Claude): $arch"
 echo "Thread: $thread"
 echo "Waiting..."
 
-hcom events --wait 180 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%APPROVED%'" $name_arg >/dev/null 2>&1 && echo "PASS" || echo "FAIL"
+comms events --wait 180 --sql "type='message' AND msg_thread='${thread}' AND msg_text LIKE '%APPROVED%'" $name_arg >/dev/null 2>&1 && echo "PASS" || echo "FAIL"
 
 trap - ERR
-for name in "${LAUNCHED_NAMES[@]}"; do hcom kill "$name" --go 2>/dev/null || true; done
-hcom events --sql "msg_thread='${thread}'" --last 10 2>&1
+for name in "${LAUNCHED_NAMES[@]}"; do comms kill "$name" --go 2>/dev/null || true; done
+comms events --sql "msg_thread='${thread}'" --last 10 2>&1

@@ -1,14 +1,14 @@
 //! Relay MQTT roundtrip integration test.
 //!
-//! Two real hcom instances (separate HCOM_DIR), each with their own
+//! Two real comms instances (separate COMMS_DIR), each with their own
 //! daemon, talking through a real public MQTT broker.
 //! Zero mocking, zero fake payloads.
 //!
 //! Phases:
-//! 1. Device A: hcom relay new → daemon connects to broker
-//! 2. Device A: hcom send → event pushed to broker
-//! 3. Device B: hcom relay connect <token> → daemon connects, pulls
-//! 4. Verify: Device B sees Device A's event in hcom events (namespaced)
+//! 1. Device A: comms relay new → daemon connects to broker
+//! 2. Device A: comms send → event pushed to broker
+//! 3. Device B: comms relay connect <token> → daemon connects, pulls
+//! 4. Verify: Device B sees Device A's event in comms events (namespaced)
 //! 5. Verify: Device A sees Device B as remote device in relay status
 //! 6. Verify: Device B → Device A relay also works
 //! 7. Device A: real remote launch on Device B via RPC
@@ -16,12 +16,12 @@
 //! 9. Cleanup: relay off, daemon stop, remove temp dirs
 //!
 //! Requires:
-//! - cargo-built hcom test binary
+//! - cargo-built comms test binary
 //! - Network access to public MQTT brokers
 //! - pinned claude installed; model calls are routed to a localhost mock
 //!
 //! Run:
-//!     cargo test -p hcom --test test_relay_roundtrip -- --ignored --nocapture
+//!     cargo test -p comms --test test_relay_roundtrip -- --ignored --nocapture
 //!
 //! The harness uses platform-specific daemon cleanup where needed, but the
 //! relay contract itself runs unchanged on Unix and Windows.
@@ -111,34 +111,34 @@ impl Drop for TestLog {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-fn hcom_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_hcom"))
+fn comms_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_comms"))
 }
 
-/// The hcom test binary as a Git-Bash-safe, forward-slash, single-quoted
+/// The comms test binary as a Git-Bash-safe, forward-slash, single-quoted
 /// path, for embedding in a Bash tool command string. Claude's Bash tool runs
 /// under Git Bash on Windows, whose PATH does not reliably carry this test
 /// binary's directory through relay-worker → ConPTY-child → Bash-tool
 /// process inheritance — reference the exact binary rather than relying on
-/// bare `hcom` resolving via PATH. Mirrors `support::Hcom::bash_hcom_command`.
-fn bash_hcom_command() -> String {
-    let path = hcom_bin().to_string_lossy().replace('\\', "/");
+/// bare `comms` resolving via PATH. Mirrors `support::Comms::bash_comms_command`.
+fn bash_comms_command() -> String {
+    let path = comms_bin().to_string_lossy().replace('\\', "/");
     format!("'{}'", path.replace('\'', "'\\''"))
 }
 
-fn hcom_with_dir(cmd: &str, hcom_dir: &str) -> Output {
-    let bin = hcom_bin();
+fn comms_with_dir(cmd: &str, comms_dir: &str) -> Output {
+    let bin = comms_bin();
     let mut command = Command::new(&bin);
     command
         .args(shell_words::split(cmd).unwrap())
-        .env("HCOM_DIR", hcom_dir)
-        .env("HCOM_DEV_ROOT", env!("CARGO_MANIFEST_DIR"))
+        .env("COMMS_DIR", comms_dir)
+        .env("COMMS_DEV_ROOT", env!("CARGO_MANIFEST_DIR"))
         // Keep the relay test on the same deterministic localhost Claude mock
         // path as real_tool_claude.rs. merge_tool_args folds this into launch
         // and resume. Remote launch uses --headless, so no terminal emulator
         // (tmux/kitty/etc.) is required in CI.
         .env(
-            "HCOM_CLAUDE_ARGS",
+            "COMMS_CLAUDE_ARGS",
             format!(
                 "--model {MODEL} --permission-mode dontAsk --allowedTools Write,Bash --setting-sources user"
             ),
@@ -151,22 +151,22 @@ fn hcom_with_dir(cmd: &str, hcom_dir: &str) -> Output {
     if let Some(path) = std::env::var_os("PATH") {
         path_entries.extend(std::env::split_paths(&path));
     }
-    let path = std::env::join_paths(path_entries).expect("construct hcom test PATH");
+    let path = std::env::join_paths(path_entries).expect("construct comms test PATH");
     command.env("PATH", path);
 
-    apply_env_passthrough(&mut command, hcom_dir);
+    apply_env_passthrough(&mut command, comms_dir);
 
     // Hermetic: strip identity/tag so launched instances keep their base
     // name (e.g. "nano", not "review-d-nano" when the outer agent is tagged
     // "review-d").
     for var in [
-        "HCOM_TAG",
-        "HCOM_INSTANCE_NAME",
-        "HCOM_NAME",
-        "HCOM_PROCESS_ID",
-        "HCOM_LAUNCHED",
-        "HCOM_LAUNCHED_BY",
-        "HCOM_LAUNCH_BATCH_ID",
+        "COMMS_TAG",
+        "COMMS_INSTANCE_NAME",
+        "COMMS_NAME",
+        "COMMS_PROCESS_ID",
+        "COMMS_LAUNCHED",
+        "COMMS_LAUNCHED_BY",
+        "COMMS_LAUNCH_BATCH_ID",
     ] {
         command.env_remove(var);
     }
@@ -218,8 +218,8 @@ fn hcom_with_dir(cmd: &str, hcom_dir: &str) -> Output {
 /// though its own stdio is null, preventing `output()` from ever observing EOF
 /// after the short-lived CLI parent exits.
 fn run_command_with_timeout(mut command: Command, label: &str, timeout: Duration) -> Output {
-    let stdout_file = tempfile::tempfile().expect("create hcom stdout capture");
-    let stderr_file = tempfile::tempfile().expect("create hcom stderr capture");
+    let stdout_file = tempfile::tempfile().expect("create comms stdout capture");
+    let stderr_file = tempfile::tempfile().expect("create comms stderr capture");
     command
         .stdout(Stdio::from(
             stdout_file.try_clone().expect("clone stdout capture"),
@@ -228,7 +228,7 @@ fn run_command_with_timeout(mut command: Command, label: &str, timeout: Duration
             stderr_file.try_clone().expect("clone stderr capture"),
         ));
 
-    let mut child = command.spawn().expect("failed to execute hcom");
+    let mut child = command.spawn().expect("failed to execute comms");
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -239,14 +239,14 @@ fn run_command_with_timeout(mut command: Command, label: &str, timeout: Duration
                 let stdout = read_capture(&stdout_file);
                 let stderr = read_capture(&stderr_file);
                 panic!(
-                    "hcom command timed out after {timeout:?}: {label}\n\
+                    "comms command timed out after {timeout:?}: {label}\n\
                      -- stdout --\n{}\n-- stderr --\n{}",
                     String::from_utf8_lossy(&stdout),
                     String::from_utf8_lossy(&stderr)
                 );
             }
             Ok(None) => thread::sleep(Duration::from_millis(25)),
-            Err(error) => panic!("failed waiting for hcom command `{label}`: {error}"),
+            Err(error) => panic!("failed waiting for comms command `{label}`: {error}"),
         }
     };
 
@@ -268,8 +268,8 @@ fn read_capture(file: &std::fs::File) -> Vec<u8> {
     bytes
 }
 
-fn apply_env_passthrough(command: &mut Command, hcom_dir: &str) {
-    let env_path = Path::new(hcom_dir).join("env");
+fn apply_env_passthrough(command: &mut Command, comms_dir: &str) {
+    let env_path = Path::new(comms_dir).join("env");
     let Ok(content) = fs::read_to_string(env_path) else {
         return;
     };
@@ -282,18 +282,18 @@ fn apply_env_passthrough(command: &mut Command, hcom_dir: &str) {
             continue;
         };
         let key = key.trim();
-        if key.is_empty() || key.starts_with("HCOM_") {
+        if key.is_empty() || key.starts_with("COMMS_") {
             continue;
         }
         command.env(key, value.trim());
     }
 }
 
-fn check(label: &str, cmd: &str, hcom_dir: &str) -> String {
-    let out = hcom_with_dir(cmd, hcom_dir);
+fn check(label: &str, cmd: &str, comms_dir: &str) -> String {
+    let out = comms_with_dir(cmd, comms_dir);
     assert!(
         out.status.success(),
-        "Device {label}: hcom {cmd}\nstdout: {}\nstderr: {}",
+        "Device {label}: comms {cmd}\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
@@ -338,8 +338,8 @@ fn parse_device_id(status_output: &str) -> Option<String> {
     None
 }
 
-fn read_device_uuid(hcom_dir: &str) -> Option<String> {
-    let path = Path::new(hcom_dir).join(".tmp/device_id");
+fn read_device_uuid(comms_dir: &str) -> Option<String> {
+    let path = Path::new(comms_dir).join(".tmp/device_id");
     fs::read_to_string(path).ok().and_then(|s| {
         let trimmed = s.trim().to_string();
         if trimmed.is_empty() {
@@ -366,7 +366,7 @@ fn parse_names(output: &str) -> Vec<String> {
 
 /// Build a command for `tool` resolved against the real process `PATH`,
 /// following npm's Windows `.cmd`/`.bat` shims that `CreateProcess` cannot
-/// execute directly (mirrors `support::Hcom::external_cmd`, which resolves
+/// execute directly (mirrors `support::Comms::external_cmd`, which resolves
 /// against an isolated PATH instead of the real environment).
 fn external_tool_command(tool: &str) -> Command {
     #[cfg(windows)]
@@ -428,35 +428,35 @@ fn assert_tool_pinned(tool: &str, expected_version: &str, install_hint: &str) {
     );
 }
 
-fn list_instances(hcom_dir: &str) -> Vec<serde_json::Value> {
-    let out = hcom_with_dir("list --json", hcom_dir);
+fn list_instances(comms_dir: &str) -> Vec<serde_json::Value> {
+    let out = comms_with_dir("list --json", comms_dir);
     assert!(
         out.status.success(),
-        "hcom list --json failed for {hcom_dir}\nstdout: {}\nstderr: {}",
+        "comms list --json failed for {comms_dir}\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
     serde_json::from_slice(&out.stdout).expect("list --json must return JSON")
 }
 
-fn has_instance(hcom_dir: &str, name: &str) -> bool {
-    list_instances(hcom_dir)
+fn has_instance(comms_dir: &str, name: &str) -> bool {
+    list_instances(comms_dir)
         .iter()
         .any(|inst| inst["name"].as_str() == Some(name))
 }
 
-fn find_instance_by_base(hcom_dir: &str, base: &str) -> Option<serde_json::Value> {
-    list_instances(hcom_dir).into_iter().find(|inst| {
+fn find_instance_by_base(comms_dir: &str, base: &str) -> Option<serde_json::Value> {
+    list_instances(comms_dir).into_iter().find(|inst| {
         inst["base_name"].as_str() == Some(base) || inst["name"].as_str() == Some(base)
     })
 }
 
 /// Poll a device's events for a recent rpc_result with the given action.
 /// Returns the `data` object: `{request_id, action, ok, result}`.
-fn poll_rpc_result_on_device(hcom_dir: &str, action: &str) -> serde_json::Value {
+fn poll_rpc_result_on_device(comms_dir: &str, action: &str) -> serde_json::Value {
     poll_until(
         || {
-            let out = hcom_with_dir("events --last 30", hcom_dir);
+            let out = comms_with_dir("events --last 30", comms_dir);
             if !out.status.success() {
                 return None;
             }
@@ -475,7 +475,7 @@ fn poll_rpc_result_on_device(hcom_dir: &str, action: &str) -> serde_json::Value 
             }
             None
         },
-        &format!("rpc_result(action={action}) on {hcom_dir}"),
+        &format!("rpc_result(action={action}) on {comms_dir}"),
         Duration::from_secs(15),
         Duration::from_millis(500),
     )
@@ -493,7 +493,7 @@ fn screen_has_claude_prompt(text: &str) -> bool {
     })
 }
 
-/// Strip `hcom term`'s "  <N>: " row-index prefix (see `src/commands/term.rs`
+/// Strip `comms term`'s "  <N>: " row-index prefix (see `src/commands/term.rs`
 /// `format!("  {i:3}: {text}")`), if present, so line-start checks work on
 /// both `--json` line arrays (no prefix) and the default rendered output
 /// (prefixed).
@@ -525,8 +525,8 @@ fn screen_has_claude_prompt_ignores_unrelated_greater_than() {
     assert!(!screen_has_claude_prompt("no prompt here at all"));
 }
 
-fn get_screen_local_json(hcom_dir: &str, name: &str) -> Option<serde_json::Value> {
-    let out = hcom_with_dir(&format!("term {name} --json"), hcom_dir);
+fn get_screen_local_json(comms_dir: &str, name: &str) -> Option<serde_json::Value> {
+    let out = comms_with_dir(&format!("term {name} --json"), comms_dir);
     if !out.status.success() {
         return None;
     }
@@ -552,7 +552,7 @@ fn screen_lines_joined(screen: &serde_json::Value) -> String {
 /// lets the caller pass both the base name and the tagged full name,
 /// since different paths register events under different keys.
 fn wait_for_ready_event_any(
-    hcom_dir: &str,
+    comms_dir: &str,
     names: &[&str],
     after_id: i64,
     timeout: Duration,
@@ -563,7 +563,7 @@ fn wait_for_ready_event_any(
         // Pull a broad window and filter locally — --agent on the CLI does
         // a substring match that can over- or under-include depending on
         // tag/base shape. We trust the explicit name check below.
-        let out = hcom_with_dir("events --action ready --last 50", hcom_dir);
+        let out = comms_with_dir("events --action ready --last 50", comms_dir);
         if out.status.success() {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 let ev: serde_json::Value = match serde_json::from_str(line.trim()) {
@@ -591,7 +591,7 @@ fn wait_for_ready_event_any(
         );
         if last_diag.elapsed() >= Duration::from_secs(15) {
             last_diag = Instant::now();
-            let out = hcom_with_dir("events --action ready --last 10", hcom_dir);
+            let out = comms_with_dir("events --action ready --last 10", comms_dir);
             let tail = String::from_utf8_lossy(&out.stdout)
                 .lines()
                 .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -614,17 +614,17 @@ fn wait_for_ready_event_any(
 }
 
 /// Convenience: wait for a ready event for a single name.
-fn wait_for_ready_event(hcom_dir: &str, name: &str, after_id: i64, timeout: Duration) -> i64 {
-    wait_for_ready_event_any(hcom_dir, &[name], after_id, timeout)
+fn wait_for_ready_event(comms_dir: &str, name: &str, after_id: i64, timeout: Duration) -> i64 {
+    wait_for_ready_event_any(comms_dir, &[name], after_id, timeout)
 }
 
 /// After the lifecycle ready event, the inject port is registered and the
 /// PTY screen is drivable. Confirm the TUI rendered: prompt marker present
 /// and prompt_empty=true. Returns the screen JSON.
-fn wait_for_screen_drawn(hcom_dir: &str, name: &str, timeout: Duration) -> serde_json::Value {
+fn wait_for_screen_drawn(comms_dir: &str, name: &str, timeout: Duration) -> serde_json::Value {
     poll_until(
         || {
-            let s = get_screen_local_json(hcom_dir, name)?;
+            let s = get_screen_local_json(comms_dir, name)?;
             let has_prompt = screen_has_claude_prompt(&screen_lines_joined(&s));
             let prompt_empty = s["prompt_empty"].as_bool() == Some(true);
             if has_prompt && prompt_empty {
@@ -639,13 +639,13 @@ fn wait_for_screen_drawn(hcom_dir: &str, name: &str, timeout: Duration) -> serde
     )
 }
 
-fn drive_claude_startup(hcom_dir: &str, name: &str, timeout: Duration) {
+fn drive_claude_startup(comms_dir: &str, name: &str, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     let mut last_screen = String::new();
     let mut answers = ClaudeStartupAnswers::default();
     while Instant::now() < deadline {
-        let json_out = hcom_with_dir(&format!("term {name} --json"), hcom_dir);
-        let screen_out = hcom_with_dir(&format!("term {name}"), hcom_dir);
+        let json_out = comms_with_dir(&format!("term {name} --json"), comms_dir);
+        let screen_out = comms_with_dir(&format!("term {name}"), comms_dir);
         last_screen = String::from_utf8_lossy(&screen_out.stdout).to_string();
         let gate = claude_startup_gate(&last_screen);
         if screen_out.status.success()
@@ -657,7 +657,7 @@ fn drive_claude_startup(hcom_dir: &str, name: &str, timeout: Duration) {
         // Same as ClaudeCase::drive_startup: the trust dialog preselects
         // "No, exit", so move onto the accepting option before any Enter.
         if gate == Some(ClaudeStartupGate::Trust) && !trust_accept_selected(&last_screen) {
-            let down = hcom_with_dir(&format!("term inject {name} \u{1b}[B"), hcom_dir);
+            let down = comms_with_dir(&format!("term inject {name} \u{1b}[B"), comms_dir);
             assert!(
                 down.status.success(),
                 "drive startup trust-option move failed\nstdout: {}\nstderr: {}",
@@ -671,7 +671,7 @@ fn drive_claude_startup(hcom_dir: &str, name: &str, timeout: Duration) {
             // A successful inject delivered Enter to the PTY. Do not repeat it
             // while a stale frame still shows the gate: the next Enter could
             // land in Claude's ready prompt.
-            let inject = hcom_with_dir(&format!("term inject {name} --enter"), hcom_dir);
+            let inject = comms_with_dir(&format!("term inject {name} --enter"), comms_dir);
             assert!(
                 inject.status.success(),
                 "drive startup inject failed\nstdout: {}\nstderr: {}",
@@ -686,8 +686,8 @@ fn drive_claude_startup(hcom_dir: &str, name: &str, timeout: Duration) {
 
 /// Returns the highest event id currently visible on a device, for use as
 /// `after_id` in `wait_for_ready_event`.
-fn last_event_id(hcom_dir: &str) -> i64 {
-    let out = hcom_with_dir("events --last 1", hcom_dir);
+fn last_event_id(comms_dir: &str) -> i64 {
+    let out = comms_with_dir("events --last 1", comms_dir);
     if !out.status.success() {
         return 0;
     }
@@ -700,23 +700,23 @@ fn last_event_id(hcom_dir: &str) -> i64 {
 }
 
 fn try_remote_launch_claude_headless(
-    hcom_dir: &str,
+    comms_dir: &str,
     target_device: &str,
 ) -> Result<(String, String), String> {
-    // Model pinning comes via HCOM_CLAUDE_ARGS set in hcom_with_dir.
+    // Model pinning comes via COMMS_CLAUDE_ARGS set in comms_with_dir.
     // --dir is required for remote launches; use the platform temp directory,
     // which exists on both sides of this local-machine test. --headless keeps the
-    // launched Claude on hcom's detached PTY runner, preserving term screen /
+    // launched Claude on comms's detached PTY runner, preserving term screen /
     // inject coverage without requiring tmux or another terminal emulator.
     let launch_dir = std::env::temp_dir().to_string_lossy().replace('\\', "/");
     let cmd = format!(
         "1 claude --device {target_device} --headless --dir {} --go",
         shell_words::quote(&launch_dir)
     );
-    let out = hcom_with_dir(&cmd, hcom_dir);
+    let out = comms_with_dir(&cmd, comms_dir);
     if !out.status.success() {
         return Err(format!(
-            "hcom {cmd}\nstdout: {}\nstderr: {}",
+            "comms {cmd}\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr),
         ));
@@ -730,13 +730,13 @@ fn try_remote_launch_claude_headless(
     Ok((launched, stdout))
 }
 
-fn remote_term_screen_stdout(hcom_dir: &str, remote_name: &str) -> String {
+fn remote_term_screen_stdout(comms_dir: &str, remote_name: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut last_stdout = String::new();
     let mut last_stderr = String::new();
     while Instant::now() < deadline {
-        ensure_relay_worker(hcom_dir);
-        let out = hcom_with_dir(&format!("term {remote_name}"), hcom_dir);
+        ensure_relay_worker(comms_dir);
+        let out = comms_with_dir(&format!("term {remote_name}"), comms_dir);
         last_stdout = String::from_utf8_lossy(&out.stdout).to_string();
         last_stderr = String::from_utf8_lossy(&out.stderr).to_string();
         if out.status.success()
@@ -752,8 +752,8 @@ fn remote_term_screen_stdout(hcom_dir: &str, remote_name: &str) -> String {
     );
 }
 
-fn write_claude_mock_env(hcom_dir: &Path, base_url: &str) {
-    let claude_home = hcom_dir.join("claude-home");
+fn write_claude_mock_env(comms_dir: &Path, base_url: &str) {
+    let claude_home = comms_dir.join("claude-home");
     // Remote launches run in the platform temp dir (see
     // try_remote_launch_claude_headless); pre-trust it so startup screens don't
     // each cost a delivery-start fallback. Relay, not trust, is under test here.
@@ -762,7 +762,7 @@ fn write_claude_mock_env(hcom_dir: &Path, base_url: &str) {
         ("ANTHROPIC_BASE_URL", base_url.to_string()),
         (
             "ANTHROPIC_AUTH_TOKEN",
-            "hcom-relay-test-dummy-token".to_string(),
+            "comms-relay-test-dummy-token".to_string(),
         ),
         (
             "CLAUDE_CONFIG_DIR",
@@ -789,7 +789,7 @@ fn write_claude_mock_env(hcom_dir: &Path, base_url: &str) {
         .iter()
         .map(|(key, value)| format!("{key}={value}\n"))
         .collect::<String>();
-    fs::write(hcom_dir.join("env"), body).expect("write Claude mock env passthrough");
+    fs::write(comms_dir.join("env"), body).expect("write Claude mock env passthrough");
 }
 
 fn relay_claude_mock_response(req: &RecordedRequest) -> Reply {
@@ -814,7 +814,7 @@ fn relay_claude_mock_response(req: &RecordedRequest) -> Reply {
             TOOL_RELAY_PONG,
             "Bash",
             &serde_json::json!({
-                "command": format!("{} send @bigboss --intent inform -- PONG", bash_hcom_command()),
+                "command": format!("{} send @bigboss --intent inform -- PONG", bash_comms_command()),
                 "description": "send the relay roundtrip PONG response",
             }),
         ));
@@ -822,17 +822,17 @@ fn relay_claude_mock_response(req: &RecordedRequest) -> Reply {
     Reply::Sse(claude_text("msg_relay_roundtrip", "OK"))
 }
 
-/// `hcom relay on` is idempotent — a no-op if the worker is already running.
+/// `comms relay on` is idempotent — a no-op if the worker is already running.
 /// The worker's auto-exit watchdog only fires when relay is *not* enabled in
 /// config (see `auto_exit_watchdog` in src/relay/worker.rs); both test
 /// devices enable relay in Phases 1/3, so this call is cheap insurance
 /// before an RPC rather than a fix for a known auto-exit race.
-fn ensure_relay_worker(hcom_dir: &str) {
-    let out = hcom_with_dir("relay on", hcom_dir);
+fn ensure_relay_worker(comms_dir: &str) {
+    let out = comms_with_dir("relay on", comms_dir);
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
-        eprintln!("    WARN: relay on failed on {hcom_dir}: {stdout} {stderr}");
+        eprintln!("    WARN: relay on failed on {comms_dir}: {stdout} {stderr}");
     }
     // Brief settle so the daemon is actually listening before the next RPC.
     thread::sleep(Duration::from_millis(500));
@@ -853,9 +853,9 @@ fn phase10_diagnostics(
     let device_b_screen = get_screen_local_json(path_b, launched_name)
         .map(|s| s.to_string())
         .unwrap_or_else(|| "<no screen>".to_string());
-    let device_b_events = hcom_with_dir("events --last 20", path_b);
-    let relay_status_a = hcom_with_dir("relay status", path_a);
-    let relay_status_b = hcom_with_dir("relay status", path_b);
+    let device_b_events = comms_with_dir("events --last 20", path_b);
+    let relay_status_a = comms_with_dir("relay status", path_a);
+    let relay_status_b = comms_with_dir("relay status", path_b);
     let recent_mock_requests: String = claude_mock
         .requests()
         .iter()
@@ -875,16 +875,16 @@ fn phase10_diagnostics(
     )
 }
 
-/// Tail of a device's hcom.log — this is where the relay-worker's own
+/// Tail of a device's comms.log — this is where the relay-worker's own
 /// crash would surface, since `main()` installs a panic hook that logs
 /// panics via `log::log_error` instead of letting them hit stderr (the
 /// worker's stdout/stderr are redirected to null so it survives the
 /// parent terminal closing; see `do_spawn` in src/relay/worker.rs).
-fn tail_hcom_log(hcom_dir: &str, lines: usize) -> String {
-    let log_path = Path::new(hcom_dir)
+fn tail_comms_log(comms_dir: &str, lines: usize) -> String {
+    let log_path = Path::new(comms_dir)
         .join(".tmp")
         .join("logs")
-        .join("hcom.log");
+        .join("comms.log");
     match fs::read_to_string(&log_path) {
         Ok(content) => {
             let all: Vec<&str> = content.lines().collect();
@@ -895,19 +895,19 @@ fn tail_hcom_log(hcom_dir: &str, lines: usize) -> String {
     }
 }
 
-/// Bounded, non-panicking `hcom relay status` for the panic-hook path.
-/// Deliberately doesn't reuse `hcom_with_dir`/`run_command_with_timeout`:
+/// Bounded, non-panicking `comms relay status` for the panic-hook path.
+/// Deliberately doesn't reuse `comms_with_dir`/`run_command_with_timeout`:
 /// those panic on spawn failure, wait failure, or a 90s timeout, and a panic
 /// raised from inside a panic hook aborts the whole process (`rtabort!`,
 /// uncatchable by `catch_unwind`) instead of just failing this test — see
 /// `install_diagnostic_panic_hook`. Every failure mode here folds into the
 /// returned string instead, and the bound is a short 10s since this only
 /// ever needs a cheap local status read, not a network round trip.
-fn safe_relay_status(hcom_dir: &str) -> String {
-    let mut command = Command::new(hcom_bin());
+fn safe_relay_status(comms_dir: &str) -> String {
+    let mut command = Command::new(comms_bin());
     command
         .args(["relay", "status"])
-        .env("HCOM_DIR", hcom_dir)
+        .env("COMMS_DIR", comms_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -940,7 +940,7 @@ fn safe_relay_status(hcom_dir: &str) -> String {
 }
 
 /// Installs a process-wide panic hook that dumps both devices' relay
-/// status and hcom.log tail before the default hook runs. Any phase's
+/// status and comms.log tail before the default hook runs. Any phase's
 /// `check()`/`poll_until()`/`assert!` can panic — a bare "timed out" or
 /// "command failed" panic gives no way to tell whether a device's own
 /// relay-worker died out from under it (the Phase 13 Windows flake this
@@ -950,7 +950,7 @@ fn safe_relay_status(hcom_dir: &str) -> String {
 /// is unchanged; this only adds extra stderr before that.
 ///
 /// The hook body must never itself panic (see `safe_relay_status`'s doc for
-/// why), which is also why it uses `tail_hcom_log`'s plain `Result`-based
+/// why), which is also why it uses `tail_comms_log`'s plain `Result`-based
 /// file read rather than anything that could panic on a missing/unreadable
 /// log.
 fn install_diagnostic_panic_hook(path_a: String, path_b: String) {
@@ -961,8 +961,8 @@ fn install_diagnostic_panic_hook(path_a: String, path_b: String) {
         for (label, dir) in [("A", &path_a), ("B", &path_b)] {
             eprintln!("Device {label} relay status:\n{}", safe_relay_status(dir));
             eprintln!(
-                "Device {label} hcom.log (last 60 lines):\n{}",
-                tail_hcom_log(dir, 60)
+                "Device {label} comms.log (last 60 lines):\n{}",
+                tail_comms_log(dir, 60)
             );
         }
         eprintln!("----- end relay diagnostics -----\n");
@@ -971,12 +971,12 @@ fn install_diagnostic_panic_hook(path_a: String, path_b: String) {
 
 /// Kill orphan debug relay-worker processes from previous failed test runs.
 /// Without this, a stale daemon can hold MQTT connections and interfere with
-/// new test runs (the test creates isolated HCOM_DIRs but can't find orphan
+/// new test runs (the test creates isolated COMMS_DIRs but can't find orphan
 /// PIDs once the old temp dir is deleted).
 #[cfg(unix)]
 fn kill_orphan_debug_daemons() {
     let Ok(output) = std::process::Command::new("pgrep")
-        .args(["-f", "target/debug/hcom relay-worker"])
+        .args(["-f", "target/debug/comms relay-worker"])
         .output()
     else {
         return;
@@ -994,12 +994,12 @@ fn kill_orphan_debug_daemons() {
 #[cfg(windows)]
 fn kill_orphan_debug_daemons() {
     // Windows has no built-in command-line process matcher equivalent to
-    // pgrep. Each run uses unique HCOM_DIRs and its PID-file-owned daemons are
+    // pgrep. Each run uses unique COMMS_DIRs and its PID-file-owned daemons are
     // still cleaned by RelayGuard below.
 }
 
-fn kill_daemon(hcom_dir: &str) {
-    let pid_path = Path::new(hcom_dir).join(".tmp").join("relay.pid");
+fn kill_daemon(comms_dir: &str) {
+    let pid_path = Path::new(comms_dir).join(".tmp").join("relay.pid");
     if let Ok(content) = fs::read_to_string(&pid_path)
         && let Ok(pid) = content.trim().parse::<i64>()
     {
@@ -1026,7 +1026,7 @@ impl Drop for RelayGuard {
         if let Some(dir_b) = &self.dir_b {
             let d_str = dir_b.to_string_lossy();
             for name in self.local_kill_b.borrow().iter() {
-                let _ = hcom_with_dir(&format!("kill {name}"), &d_str);
+                let _ = comms_with_dir(&format!("kill {name}"), &d_str);
             }
         }
         // Devices are independent; `relay off` blocks ~2-3s each on the worker.
@@ -1034,8 +1034,8 @@ impl Drop for RelayGuard {
             for d in [&self.dir_a, &self.dir_b].into_iter().flatten() {
                 s.spawn(move || {
                     let d_str = d.to_string_lossy();
-                    let _ = hcom_with_dir("relay off", &d_str);
-                    let _ = hcom_with_dir("relay daemon stop", &d_str);
+                    let _ = comms_with_dir("relay off", &d_str);
+                    let _ = comms_with_dir("relay daemon stop", &d_str);
                     kill_daemon(&d_str);
                     let _ = fs::remove_dir_all(d);
                 });
@@ -1077,7 +1077,7 @@ fn test_relay_roundtrip() {
     let log = TestLog::new();
 
     logln!(log, "{}", "=".repeat(60));
-    logln!(log, "Relay Roundtrip: two real hcom instances via MQTT");
+    logln!(log, "Relay Roundtrip: two real comms instances via MQTT");
     logln!(log, "{}", "=".repeat(60));
     logln!(log, "\n  Device A: {path_a}");
     logln!(log, "  Device B: {path_b}");
@@ -1095,7 +1095,7 @@ fn test_relay_roundtrip() {
     // Wait for connected
     poll_until(
         || {
-            let out = hcom_with_dir("relay status", &path_a);
+            let out = comms_with_dir("relay status", &path_a);
             if out.status.success() {
                 let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
                 if stdout.contains("connected") {
@@ -1111,7 +1111,7 @@ fn test_relay_roundtrip() {
     logln!(log, "  OK: Device A connected to broker");
 
     let status_a =
-        String::from_utf8_lossy(&hcom_with_dir("relay status", &path_a).stdout).to_string();
+        String::from_utf8_lossy(&comms_with_dir("relay status", &path_a).stdout).to_string();
     let short_a = parse_device_id(&status_a).expect("Could not parse Device A short ID");
     logln!(log, "  OK: Device A short ID: {short_a}");
 
@@ -1128,7 +1128,7 @@ fn test_relay_roundtrip() {
 
     poll_until(
         || {
-            let out = hcom_with_dir("relay status", &path_a);
+            let out = comms_with_dir("relay status", &path_a);
             if out.status.success() {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 let lower = stdout.to_lowercase();
@@ -1160,7 +1160,7 @@ fn test_relay_roundtrip() {
     // relay connect auto-starts the daemon via ensure_worker; wait for it to connect
     poll_until(
         || {
-            let out = hcom_with_dir("relay status", &path_b);
+            let out = comms_with_dir("relay status", &path_b);
             if out.status.success() {
                 let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
                 if stdout.contains("connected") {
@@ -1180,7 +1180,7 @@ fn test_relay_roundtrip() {
 
     let (ev, data) = poll_until(
         || {
-            let out = hcom_with_dir("events --last 50", &path_b);
+            let out = comms_with_dir("events --last 50", &path_b);
             if !out.status.success() {
                 eprintln!(
                     "    events cmd failed: {}",
@@ -1257,13 +1257,13 @@ fn test_relay_roundtrip() {
     );
 
     let status_b =
-        String::from_utf8_lossy(&hcom_with_dir("relay status", &path_b).stdout).to_string();
+        String::from_utf8_lossy(&comms_with_dir("relay status", &path_b).stdout).to_string();
     let short_b = parse_device_id(&status_b).expect("Could not parse Device B short ID");
     logln!(log, "  OK: Device B short ID: {short_b}");
 
     let remote_line: String = poll_until(
         || {
-            let out = hcom_with_dir("relay status", &path_a);
+            let out = comms_with_dir("relay status", &path_a);
             if !out.status.success() {
                 return None;
             }
@@ -1306,7 +1306,7 @@ fn test_relay_roundtrip() {
 
     poll_until(
         || {
-            let out = hcom_with_dir("relay status", &path_b);
+            let out = comms_with_dir("relay status", &path_b);
             if out.status.success() {
                 let lower = String::from_utf8_lossy(&out.stdout).to_lowercase();
                 if lower.contains("up to date") {
@@ -1326,7 +1326,7 @@ fn test_relay_roundtrip() {
 
     let (_, data_b) = poll_until(
         || {
-            let out = hcom_with_dir("events --last 50", &path_a);
+            let out = comms_with_dir("events --last 50", &path_a);
             if !out.status.success() {
                 return None;
             }
@@ -1501,7 +1501,7 @@ fn test_relay_roundtrip() {
     );
 
     const INJECT_MARKER: &str = "relay-inject-marker";
-    let inject_out = hcom_with_dir(
+    let inject_out = comms_with_dir(
         &format!("term inject {remote_name} {INJECT_MARKER}"),
         &path_a,
     );
@@ -1553,9 +1553,9 @@ fn test_relay_roundtrip() {
     // Clear the input box by injecting Ctrl-U via a second inject with the
     // marker as its payload re-used (no-op) then --enter. Simpler: just
     // submit via --enter so the input_text clears. Phase 10 sends its own
-    // real message separately via `hcom send`, so this enter only flushes
+    // real message separately via `comms send`, so this enter only flushes
     // the marker and doesn't step on the test.
-    let clear_out = hcom_with_dir(&format!("term inject {remote_name} --enter"), &path_a);
+    let clear_out = comms_with_dir(&format!("term inject {remote_name} --enter"), &path_a);
     assert!(
         clear_out.status.success(),
         "remote term inject (enter) failed:\nstdout: {}\nstderr: {}",
@@ -1626,13 +1626,13 @@ fn test_relay_roundtrip() {
     // one universally-addressable target; the agent's system prompt
     // ("Prioritize @bigboss") makes the reply land cleanly, and bigboss
     // messages relay back like any other event.
-    let send_out = hcom_with_dir(
+    let send_out = comms_with_dir(
         &format!("send -b @{launched_name}:{short_b} --intent request -- \"{question}\""),
         &path_a,
     );
     assert!(
         send_out.status.success(),
-        "hcom send failed: {}",
+        "comms send failed: {}",
         String::from_utf8_lossy(&send_out.stderr)
     );
     logln!(
@@ -1642,7 +1642,7 @@ fn test_relay_roundtrip() {
 
     poll_until(
         || {
-            let out = hcom_with_dir("events --type message --last 20", &path_b);
+            let out = comms_with_dir("events --type message --last 20", &path_b);
             let stdout = String::from_utf8_lossy(&out.stdout);
             stdout.contains(question).then_some(())
         },
@@ -1655,7 +1655,7 @@ fn test_relay_roundtrip() {
     // Step 1: Device B's claude received and processed (status round-trip).
     let step1_deadline = Instant::now() + Duration::from_secs(120);
     loop {
-        let out = hcom_with_dir(
+        let out = comms_with_dir(
             &format!("events --type status --agent {launched_name} --last 20"),
             &path_b,
         );
@@ -1715,7 +1715,7 @@ fn test_relay_roundtrip() {
     let mut last_log_count = 0usize;
     let pong_deadline = Instant::now() + Duration::from_secs(90);
     let pong_event = loop {
-        let out = hcom_with_dir("events --type message --last 50", &path_a);
+        let out = comms_with_dir("events --type message --last 50", &path_a);
         let mut found = None;
         if out.status.success() {
             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1774,7 +1774,7 @@ fn test_relay_roundtrip() {
     );
 
     ensure_relay_worker(&path_a);
-    let config_get_out = hcom_with_dir(&format!("config -i {remote_name} --json"), &path_a);
+    let config_get_out = comms_with_dir(&format!("config -i {remote_name} --json"), &path_a);
     let config_get_stdout = String::from_utf8_lossy(&config_get_out.stdout).to_string();
     assert!(
         config_get_out.status.success(),
@@ -1791,7 +1791,7 @@ fn test_relay_roundtrip() {
     assert_eq!(
         config_json["full_name"].as_str(),
         Some(launched_name.as_str()),
-        "config_get full_name should equal base name (HCOM_TAG stripped): {config_json}"
+        "config_get full_name should equal base name (COMMS_TAG stripped): {config_json}"
     );
     assert!(
         config_json["tag"].is_null()
@@ -1823,7 +1823,7 @@ fn test_relay_roundtrip() {
         "\n[Phase 12] Device A: remote config_set tag on Device B ({remote_name})..."
     );
 
-    let config_set_out = hcom_with_dir(
+    let config_set_out = comms_with_dir(
         &format!("config -i {remote_name} tag test-relay-tag"),
         &path_a,
     );
@@ -1841,7 +1841,7 @@ fn test_relay_roundtrip() {
     );
 
     // Re-fetch via RPC: tag should now be present.
-    let refetch_out = hcom_with_dir(&format!("config -i {remote_name} --json"), &path_a);
+    let refetch_out = comms_with_dir(&format!("config -i {remote_name} --json"), &path_a);
     let refetch_stdout = String::from_utf8_lossy(&refetch_out.stdout).to_string();
     let refetch_json: serde_json::Value = serde_json::from_str(refetch_stdout.trim())
         .unwrap_or_else(|e| panic!("refetched config not JSON ({e}): {refetch_stdout}"));
@@ -1853,7 +1853,7 @@ fn test_relay_roundtrip() {
     logln!(log, "  OK: refetched config has tag=test-relay-tag");
 
     // Double-check directly against Device B's SQLite DB.
-    let db_path_b = Path::new(&path_b).join("hcom.db");
+    let db_path_b = Path::new(&path_b).join("comms.db");
     let db = rusqlite::Connection::open(&db_path_b).expect("open Device B database");
     let sql_tag: String = db
         .query_row(
@@ -1913,7 +1913,7 @@ fn test_relay_roundtrip() {
     // than asserting on the very first check.
     poll_until(
         || {
-            let post_kill_term = hcom_with_dir(&format!("term {remote_name}"), &path_a);
+            let post_kill_term = comms_with_dir(&format!("term {remote_name}"), &path_a);
             let post_kill_stdout = String::from_utf8_lossy(&post_kill_term.stdout).to_string();
             (post_kill_stdout.contains("Remote term screen failed")
                 || !post_kill_term.status.success())
@@ -1931,9 +1931,9 @@ fn test_relay_roundtrip() {
         "\n[Phase 14] Device A: remote resume on Device B ({remote_name})..."
     );
 
-    // Model pinned via HCOM_CLAUDE_ARGS in hcom_with_dir (haiku).
+    // Model pinned via COMMS_CLAUDE_ARGS in comms_with_dir (haiku).
     ensure_relay_worker(&path_a);
-    let resume_out = hcom_with_dir(&format!("r {remote_name}"), &path_a);
+    let resume_out = comms_with_dir(&format!("r {remote_name}"), &path_a);
     let resume_stdout = String::from_utf8_lossy(&resume_out.stdout).to_string();
     let resume_stderr = String::from_utf8_lossy(&resume_out.stderr).to_string();
     logln!(
@@ -2002,7 +2002,7 @@ fn test_relay_roundtrip() {
             find_instance_by_base(&path_b, &resumed_name)
                 .and_then(|inst| inst["name"].as_str().map(|s| s.to_string()))
                 .or_else(|| {
-                    let list = hcom_with_dir("list --names", &path_b);
+                    let list = comms_with_dir("list --names", &path_b);
                     let names = String::from_utf8_lossy(&list.stdout).trim().to_string();
                     eprintln!(
                         "    waiting for resumed base='{resumed_name}', current names: {names:?}"
@@ -2033,28 +2033,28 @@ fn test_relay_roundtrip() {
         "  OK: resumed instance PTY ready (life event + TUI drawn)"
     );
 
-    // Evidence the resume actually rebooted claude into hcom, not just
+    // Evidence the resume actually rebooted claude into comms, not just
     // flipped a DB row: the life event log records a "bootstrap" action.
     let events_have_bootstrap = {
-        let out = hcom_with_dir(
+        let out = comms_with_dir(
             &format!("events --agent {resumed_full_name} --last 40"),
             &path_b,
         );
         String::from_utf8_lossy(&out.stdout).contains("bootstrap")
     };
-    // Fallback evidence: hcom's hooks flip hooks_bound=true on first
+    // Fallback evidence: comms's hooks flip hooks_bound=true on first
     // daemon contact after a resume.
     let hooks_bound = find_instance_by_base(&path_b, &resumed_name)
         .and_then(|inst| inst["hooks_bound"].as_bool())
         .unwrap_or(false);
     assert!(
         events_have_bootstrap || hooks_bound,
-        "no evidence of hcom rebind on resumed {resumed_full_name} \
+        "no evidence of comms rebind on resumed {resumed_full_name} \
          (events={events_have_bootstrap}, hooks_bound={hooks_bound})"
     );
     logln!(
         log,
-        "  OK: resumed instance is rebound to hcom (events={events_have_bootstrap}, hooks_bound={hooks_bound})"
+        "  OK: resumed instance is rebound to comms (events={events_have_bootstrap}, hooks_bound={hooks_bound})"
     );
 
     let unexpected = claude_mock.unexpected();

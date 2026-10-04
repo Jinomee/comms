@@ -1,11 +1,11 @@
-//! Ask command: `hcom ask <claude|codex> <question>`
+//! Ask command: `comms ask <claude|codex> <question>`
 //!
 //! One-shot consult: start the target agent headless in the current
 //! directory, wait for its final answer, print it to stdout, exit. Read-only
 //! unless `--write` is passed. Meant to be run as a background task by the
 //! asking agent, so the answer arrives as that task's output.
 //!
-//! The child is a plain `claude -p` / `codex exec` process — not an hcom
+//! The child is a plain `claude -p` / `codex exec` process — not an comms
 //! instance — so it never registers, gets hooks, or receives messages.
 
 use std::collections::HashSet;
@@ -19,7 +19,7 @@ use crate::router::GlobalFlags;
 use crate::tool::Tool;
 
 /// Env var carrying how many asks deep the current process is.
-pub const ASK_DEPTH_ENV: &str = "HCOM_ASK_DEPTH";
+pub const ASK_DEPTH_ENV: &str = "COMMS_ASK_DEPTH";
 /// Nested asks allowed below a top-level ask (an asked agent may not ask again).
 const MAX_ASK_DEPTH: u32 = 1;
 /// Files up to this size are inlined into the prompt; larger ones are referenced by path.
@@ -55,7 +55,7 @@ const CLAUDE_SESSION_SCOPED_ENV: &[&str] = &[
     "CLAUDE_PID",
 ];
 
-/// Parsed arguments for `hcom ask`.
+/// Parsed arguments for `comms ask`.
 #[derive(clap::Parser, Debug)]
 #[command(
     name = "ask",
@@ -209,7 +209,7 @@ fn execute(args: &AskArgs) -> Result<i32> {
         println!("{}", answer.text.trim_end());
         if let Some(session) = &answer.session {
             eprintln!(
-                "\n[follow up: hcom ask {} --continue {} \"...\"]",
+                "\n[follow up: comms ask {} --continue {} \"...\"]",
                 agent.name(),
                 session
             );
@@ -244,12 +244,12 @@ fn read_question(words: &[String]) -> Result<String> {
 
 /// Who is asking, for the prompt preamble.
 fn asker_name() -> String {
-    if let Ok(name) = std::env::var("HCOM_INSTANCE_NAME")
+    if let Ok(name) = std::env::var("COMMS_INSTANCE_NAME")
         && !name.is_empty()
     {
         return name;
     }
-    let ctx = crate::shared::context::HcomContext::from_os();
+    let ctx = crate::shared::context::CommsContext::from_os();
     if ctx.is_inside_ai_tool() {
         format!("another {} agent", ctx.tool)
     } else {
@@ -353,11 +353,11 @@ fn env_strip_set(agent: AskAgent) -> HashSet<String> {
         strip.insert((*var).to_string());
     }
     for var in [
-        "HCOM",
-        "HCOM_INSTANCE_NAME",
-        "HCOM_TOOL",
-        "HCOM_TAG",
-        "HCOM_NOTES",
+        "COMMS",
+        "COMMS_INSTANCE_NAME",
+        "COMMS_TOOL",
+        "COMMS_TAG",
+        "COMMS_NOTES",
     ]
     .into_iter()
     .chain(CLAUDE_SESSION_SCOPED_ENV.iter().copied())
@@ -634,8 +634,8 @@ mod tests {
     #[test]
     fn strip_set_clears_caller_identity() {
         let strip = env_strip_set(AskAgent::Claude);
-        assert!(strip.contains("HCOM_INSTANCE_NAME"));
-        assert!(strip.contains("HCOM_PROCESS_ID"));
+        assert!(strip.contains("COMMS_INSTANCE_NAME"));
+        assert!(strip.contains("COMMS_PROCESS_ID"));
         assert!(strip.contains("CLAUDECODE"));
         assert!(strip.contains("CLAUDE_CODE_SESSION_ID"));
         assert!(!strip.contains("ANTHROPIC_BASE_URL"));

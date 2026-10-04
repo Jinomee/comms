@@ -1,4 +1,4 @@
-//! Shared CLI infrastructure for hcom commands.
+//! Shared CLI infrastructure for comms commands.
 //!
 //! - `CommandContext` builder (`_build_ctx_for_command`)
 //! - Identity gating (`REQUIRE_IDENTITY`)
@@ -7,12 +7,12 @@
 //! - `format_messages_human` — human-readable message formatting
 
 use crate::claude_actor;
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::identity;
 use crate::instance_lifecycle as lifecycle;
 use crate::shared::ansi::{BOLD, DIM, FG_CYAN, RESET};
 use crate::shared::{
-    CommandContext, HcomError, ST_ACTIVE, ST_INACTIVE, SenderKind, status_fg, status_icon,
+    CommandContext, CommsError, ST_ACTIVE, ST_INACTIVE, SenderKind, status_fg, status_icon,
 };
 use crate::shared::{MAX_MESSAGES_PER_DELIVERY, SenderIdentity};
 
@@ -30,13 +30,13 @@ const STATUS_SKIP_COMMANDS: &[&str] = &["listen", "start", "stop", "kill", "rese
 /// propagates to the caller (printed + exit 1).
 /// Without explicit name, resolution errors are swallowed (best-effort).
 pub fn build_ctx_for_command(
-    db: &HcomDb,
+    db: &CommsDb,
     cmd: Option<&str>,
     explicit_name: Option<&str>,
     go: bool,
     process_id: Option<&str>,
     codex_thread_id: Option<&str>,
-) -> Result<CommandContext, HcomError> {
+) -> Result<CommandContext, CommsError> {
     let verified_actor = claude_actor::resolve_env_actor(db)?;
     if let (Some(actor), Some(name)) = (verified_actor.as_ref(), explicit_name) {
         claude_actor::ensure_explicit_matches(db, actor, name)?;
@@ -95,7 +95,7 @@ pub fn build_ctx_for_command(
 /// Returns `None` when the shell is unbound, the two agree, or the named
 /// instance is a subagent of the bound row (subagents share the parent's shell).
 fn drift_warning(
-    db: &HcomDb,
+    db: &CommsDb,
     resolved: &SenderIdentity,
     process_id: Option<&str>,
 ) -> Option<String> {
@@ -116,8 +116,8 @@ fn drift_warning(
     }
     let name = &resolved.name;
     Some(format!(
-        "[hcom] warning: --name '{name}' but this shell is bound to '{bound}'. \
-         If you are '{name}', run 'hcom start --as {name}'."
+        "[comms] warning: --name '{name}' but this shell is bound to '{bound}'. \
+         If you are '{name}', run 'comms start --as {name}'."
     ))
 }
 
@@ -151,16 +151,16 @@ pub fn check_identity_gate(
         .is_some_and(|id| matches!(id.kind, SenderKind::Instance) && id.instance_data.is_some());
 
     if !is_participant {
-        let hcom_cmd = crate::runtime_env::build_hcom_command();
+        let comms_cmd = crate::runtime_env::build_comms_command();
         let mut msg = format!(
-            "hcom identity not found, you need to run '{hcom_cmd} start' first, then use '{hcom_cmd} {cmd}'"
+            "comms identity not found, you need to run '{comms_cmd} start' first, then use '{comms_cmd} {cmd}'"
         );
         if is_inside_ai_tool {
             msg.push_str(&format!(
-                "\nUsage:\n  {hcom_cmd} start              # New hcom identity (assigns new name)\n  {hcom_cmd} start --as <name>  # Rebind to existing identity\n  Then use the command: {hcom_cmd} {cmd} --name <name>"
+                "\nUsage:\n  {comms_cmd} start              # New comms identity (assigns new name)\n  {comms_cmd} start --as <name>  # Rebind to existing identity\n  Then use the command: {comms_cmd} {cmd} --name <name>"
             ));
         } else {
-            msg.push_str(&format!("\nUsage: {hcom_cmd} start"));
+            msg.push_str(&format!("\nUsage: {comms_cmd} start"));
         }
         return Err(msg);
     }
@@ -179,7 +179,7 @@ pub fn check_identity_gate(
 /// Status model:
 /// - Adhoc: inactive:tool:* (no hooks to reset, just records "this happened")
 /// - Others: active:tool:* (hooks will reset to idle when turn ends)
-pub fn set_hookless_command_status(db: &HcomDb, cmd_name: &str, ctx: &CommandContext) {
+pub fn set_hookless_command_status(db: &CommsDb, cmd_name: &str, ctx: &CommandContext) {
     if STATUS_SKIP_COMMANDS.contains(&cmd_name) {
         return;
     }
@@ -236,7 +236,7 @@ pub fn claim_inline_delivery() {
 }
 
 /// The invoking instance, if the router delivers its messages inline after
-/// every hcom command.
+/// every comms command.
 ///
 /// Only adhoc instances: they have no hooks, so command output is their only
 /// delivery path while working. Hooked tools (including codex, via
@@ -260,7 +260,7 @@ pub struct InlineBatch {
 }
 
 impl InlineBatch {
-    pub fn take(db: &HcomDb, name: &str) -> Option<Self> {
+    pub fn take(db: &CommsDb, name: &str) -> Option<Self> {
         let mut messages = db.get_unread_messages(name);
         if messages.is_empty() {
             return None;
@@ -281,18 +281,18 @@ impl InlineBatch {
             return String::new();
         }
         format!(
-            "[+{} more unread — run: hcom listen --name {name}]\n",
+            "[+{} more unread — run: comms listen --name {name}]\n",
             self.remaining
         )
     }
 
     /// Note for messages that arrived after this batch was taken (empty if none,
     /// or if the remaining note already covers them).
-    pub fn arrived_since_note(&self, db: &HcomDb, name: &str) -> String {
+    pub fn arrived_since_note(&self, db: &CommsDb, name: &str) -> String {
         if self.remaining > 0 || db.get_unread_messages(name).is_empty() {
             return String::new();
         }
-        format!("[hcom] new message(s) arrived — run: hcom listen --name {name}\n")
+        format!("[comms] new message(s) arrived — run: comms listen --name {name}\n")
     }
 
     /// Write `output` to stdout, then acknowledge the batch.
@@ -305,7 +305,7 @@ impl InlineBatch {
     /// command's own status would not reflect it (router delivery, send --from).
     pub fn emit(
         &self,
-        db: &HcomDb,
+        db: &CommsDb,
         name: &str,
         output: &str,
         set_status: bool,
@@ -356,7 +356,7 @@ impl InlineBatch {
 /// Returns Ok(true) if messages were delivered, Err if writing them failed
 /// (they stay unread).
 pub fn maybe_deliver_pending_messages(
-    db: &HcomDb,
+    db: &CommsDb,
     ctx: &CommandContext,
     has_json_flag: bool,
 ) -> Result<bool, String> {
@@ -371,7 +371,7 @@ pub fn maybe_deliver_pending_messages(
     };
     let formatted = format_hook_messages_simple_from_msgs(db, &batch.messages, &identity.name);
     let output = format!(
-        "\n{}\n[hcom]\n{}\n{}\n",
+        "\n{}\n[comms]\n{}\n{}\n",
         "─".repeat(40),
         "─".repeat(40),
         formatted,
@@ -389,7 +389,7 @@ pub fn maybe_deliver_pending_messages(
 /// With colors: status icon colored, sender bold, metadata dim.
 #[allow(dead_code)]
 pub fn format_messages_human(
-    db: &HcomDb,
+    db: &CommsDb,
     messages: &[serde_json::Value],
     instance_name: &str,
 ) -> String {
@@ -480,7 +480,7 @@ fn build_message_prefix(
 }
 
 /// Format: `[intent:thread #id]` or `[intent #id]` or `[thread:name #id]` or `[new message #id]`,
-/// where `id` is what `hcom send --reply-to` accepts.
+/// where `id` is what `comms send --reply-to` accepts.
 pub(crate) fn format_envelope_prefix(
     intent: Option<&str>,
     thread: Option<&str>,
@@ -503,7 +503,7 @@ pub(crate) fn format_envelope_prefix(
 ///
 #[allow(dead_code)]
 fn format_hook_messages_simple(
-    db: &HcomDb,
+    db: &CommsDb,
     messages: &[serde_json::Value],
     instance_name: &str,
 ) -> String {
@@ -579,7 +579,7 @@ fn format_hook_messages_simple(
 ///
 /// Used by `maybe_deliver_pending_messages` which works with `db::Message` directly.
 fn format_hook_messages_simple_from_msgs(
-    db: &HcomDb,
+    db: &CommsDb,
     messages: &[crate::db::Message],
     instance_name: &str,
 ) -> String {
@@ -645,16 +645,16 @@ fn format_hook_messages_simple_from_msgs(
 mod tests {
     use super::*;
 
-    fn make_test_db() -> (HcomDb, tempfile::TempDir) {
+    fn make_test_db() -> (CommsDb, tempfile::TempDir) {
         crate::config::Config::init();
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = HcomDb::open_raw(&db_path).unwrap();
+        let db = CommsDb::open_raw(&db_path).unwrap();
         db.init_db().unwrap();
         (db, dir)
     }
 
-    fn insert_instance(db: &HcomDb, name: &str, tool: &str) {
+    fn insert_instance(db: &CommsDb, name: &str, tool: &str) {
         let now = chrono::Utc::now().timestamp() as f64;
         db.conn()
             .execute(
@@ -664,7 +664,7 @@ mod tests {
             .unwrap();
     }
 
-    fn insert_process_binding(db: &HcomDb, process_id: &str, instance_name: &str) {
+    fn insert_process_binding(db: &CommsDb, process_id: &str, instance_name: &str) {
         let now = chrono::Utc::now().timestamp() as f64;
         db.conn()
             .execute(
@@ -1226,7 +1226,7 @@ mod tests {
 
         let resolved = identity::resolve_from_name(&db, "riko").unwrap();
         let warning = drift_warning(&db, &resolved, Some("pid-1")).unwrap();
-        assert!(warning.contains("hcom start --as riko"), "{warning}");
+        assert!(warning.contains("comms start --as riko"), "{warning}");
         assert!(
             !warning.contains("  "),
             "the warning is printed to a terminal; it must not carry a run of spaces: {warning:?}"

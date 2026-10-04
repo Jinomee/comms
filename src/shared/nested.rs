@@ -1,13 +1,13 @@
-//! Keep hooks of an agent nested under an hcom-launched agent from acting as it.
+//! Keep hooks of an agent nested under an comms-launched agent from acting as it.
 //!
-//! An hcom-launched agent exports `HCOM_PROCESS_ID` to every shell command it
+//! An comms-launched agent exports `COMMS_PROCESS_ID` to every shell command it
 //! runs. Another agent started from those shells as a plain sub-worker
-//! (`codex exec`, `opencode run`, ...) inherits it, and if that agent loads hcom
+//! (`codex exec`, `opencode run`, ...) inherits it, and if that agent loads comms
 //! hooks (persistent install, or a runtime injection var it also inherited),
 //! its hooks would bind to and act as the parent.
 //!
 //! A hook knows its tool from the hook command. It belongs to a nested agent if
-//! - that tool differs from the launched `HCOM_TOOL`, or
+//! - that tool differs from the launched `COMMS_TOOL`, or
 //! - its env carries the tool's shell-only markers, which only an agent started
 //!   from that tool's shell inherits (the launcher strips them).
 //!
@@ -16,8 +16,8 @@
 //!
 //! Supported: any cross-tool child, and same-tool Codex, Gemini and Grok children.
 //! Per-run tools (Claude, Codex, Copilot, Pi, Omp, OpenCode, Kilo; see
-//! `hooks::runtime`) load hcom only through launch args or env, so a plain
-//! same-tool child doesn't load hcom at all (OpenCode's inherited env var is
+//! `hooks::runtime`) load comms only through launch args or env, so a plain
+//! same-tool child doesn't load comms at all (OpenCode's inherited env var is
 //! made inert by the plugin's owner-PID guard). Persistent Cursor, Kimi and
 //! Antigravity still lack same-tool detection.
 
@@ -56,7 +56,7 @@ fn runs_hooks_of(parent: Tool, hook_tool: Tool, env: &HashMap<String, String>) -
     }
 }
 
-/// A hook serving an agent nested under an hcom-launched agent.
+/// A hook serving an agent nested under an comms-launched agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NestedAgent {
     pub parent: Tool,
@@ -65,11 +65,11 @@ pub struct NestedAgent {
 
 /// Detect a `hook_tool` hook running for an agent nested under the launched one.
 ///
-/// Only applies when a launch identity was inherited (`HCOM_PROCESS_ID` plus the
-/// launcher's `HCOM_TOOL`).
+/// Only applies when a launch identity was inherited (`COMMS_PROCESS_ID` plus the
+/// launcher's `COMMS_TOOL`).
 pub fn detect(env: &HashMap<String, String>, hook_tool: Tool) -> Option<NestedAgent> {
-    env.get("HCOM_PROCESS_ID").filter(|v| !v.is_empty())?;
-    let parent: Tool = env.get("HCOM_TOOL")?.parse().ok()?;
+    env.get("COMMS_PROCESS_ID").filter(|v| !v.is_empty())?;
+    let parent: Tool = env.get("COMMS_TOOL")?.parse().ok()?;
     let nested = !runs_hooks_of(parent, hook_tool, env)
         || (hook_tool == parent
             && shell_only_markers(hook_tool)
@@ -83,11 +83,11 @@ pub fn detect(env: &HashMap<String, String>, hook_tool: Tool) -> Option<NestedAg
 
 /// Env vars carrying the parent's identity, to drop from a nested agent's view.
 fn inherited_identity_vars(nested: NestedAgent) -> Vec<&'static str> {
-    let mut vars: Vec<&'static str> = crate::shared::constants::HCOM_IDENTITY_VARS.to_vec();
+    let mut vars: Vec<&'static str> = crate::shared::constants::COMMS_IDENTITY_VARS.to_vec();
     vars.extend([
-        "HCOM_TOOL",
-        "HCOM_INSTANCE_NAME",
-        "HCOM_LAUNCHED_PRESET",
+        "COMMS_TOOL",
+        "COMMS_INSTANCE_NAME",
+        "COMMS_LAUNCHED_PRESET",
         crate::claude_actor::ENV_VAR,
         crate::claude_actor::SESSION_ENV_VAR,
     ]);
@@ -149,9 +149,9 @@ mod tests {
 
     fn launched(tool: &str, extra: &[(&str, &str)]) -> HashMap<String, String> {
         let mut e = env(&[
-            ("HCOM_PROCESS_ID", "pid-1"),
-            ("HCOM_LAUNCHED", "1"),
-            ("HCOM_TOOL", tool),
+            ("COMMS_PROCESS_ID", "pid-1"),
+            ("COMMS_LAUNCHED", "1"),
+            ("COMMS_TOOL", tool),
         ]);
         e.extend(env(extra));
         e
@@ -171,7 +171,7 @@ mod tests {
     fn requires_inherited_launch_identity() {
         let vanilla = env(&[("CLAUDECODE", "1"), ("CODEX_SESSION_ID", "s")]);
         assert_eq!(detect(&vanilla, Tool::Codex), None);
-        let no_baseline = env(&[("HCOM_PROCESS_ID", "p")]);
+        let no_baseline = env(&[("COMMS_PROCESS_ID", "p")]);
         assert_eq!(detect(&no_baseline, Tool::Codex), None);
     }
 
@@ -183,9 +183,9 @@ mod tests {
                 ("CLAUDECODE", "1"),
                 ("CLAUDE_ENV_FILE", "/x"),
                 ("CLAUDE_CODE_SESSION_ID", "parent"),
-                ("HCOM_CLAUDE_ACTOR", "tok"),
-                ("HCOM_CLAUDE_ACTOR_SESSION", "parent"),
-                ("HCOM_DIR", "/h"),
+                ("COMMS_CLAUDE_ACTOR", "tok"),
+                ("COMMS_CLAUDE_ACTOR_SESSION", "parent"),
+                ("COMMS_DIR", "/h"),
             ],
         );
         assert_eq!(
@@ -196,19 +196,19 @@ mod tests {
             })
         );
         for gone in [
-            "HCOM_PROCESS_ID",
-            "HCOM_LAUNCHED",
-            "HCOM_TOOL",
+            "COMMS_PROCESS_ID",
+            "COMMS_LAUNCHED",
+            "COMMS_TOOL",
             "CLAUDECODE",
             "CLAUDE_ENV_FILE",
             "CLAUDE_CODE_SESSION_ID",
-            "HCOM_CLAUDE_ACTOR",
-            "HCOM_CLAUDE_ACTOR_SESSION",
+            "COMMS_CLAUDE_ACTOR",
+            "COMMS_CLAUDE_ACTOR_SESSION",
         ] {
             assert!(!e.contains_key(gone), "{gone} should be scrubbed");
         }
-        assert_eq!(e.get("HCOM_DIR").map(String::as_str), Some("/h"));
-        let ctx = crate::shared::HcomContext::from_env(&e, "/tmp".into());
+        assert_eq!(e.get("COMMS_DIR").map(String::as_str), Some("/h"));
+        let ctx = crate::shared::CommsContext::from_env(&e, "/tmp".into());
         assert_eq!(ctx.process_id, None);
         assert!(!ctx.is_launched);
     }
@@ -220,7 +220,7 @@ mod tests {
             &[("CODEX_SESSION_ID", "parent"), ("CODEX_THREAD_ID", "t")],
         );
         assert!(scrub_env(&mut e, Tool::Codex).is_some());
-        for gone in ["HCOM_PROCESS_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"] {
+        for gone in ["COMMS_PROCESS_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"] {
             assert!(!e.contains_key(gone), "{gone} should be scrubbed");
         }
         assert!(detect(&launched("gemini", &[("GEMINI_CLI", "1")]), Tool::Gemini).is_some());

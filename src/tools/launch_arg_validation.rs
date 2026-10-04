@@ -16,22 +16,22 @@ pub(crate) enum RejectedArgKind {
 pub(crate) const GROK_REJECTED_ARGS: &[RejectedArg] = &[
     RejectedArg {
         token: "-p",
-        reason: "exits after one prompt; not a persistent hcom agent",
+        reason: "exits after one prompt; not a persistent comms agent",
         kind: RejectedArgKind::Flag,
     },
     RejectedArg {
         token: "--single",
-        reason: "exits after one prompt; not a persistent hcom agent",
+        reason: "exits after one prompt; not a persistent comms agent",
         kind: RejectedArgKind::Flag,
     },
     RejectedArg {
         token: "--prompt-file",
-        reason: "one-shot prompt from a file; not a persistent hcom agent",
+        reason: "one-shot prompt from a file; not a persistent comms agent",
         kind: RejectedArgKind::Flag,
     },
     RejectedArg {
         token: "--prompt-json",
-        reason: "one-shot JSON prompt; not a persistent hcom agent",
+        reason: "one-shot JSON prompt; not a persistent comms agent",
         kind: RejectedArgKind::Flag,
     },
 ];
@@ -121,12 +121,12 @@ pub(crate) const OMP_REJECTED_ARGS: &[RejectedArg] = &[
     },
     RejectedArg {
         token: "--mode",
-        reason: "can disable the interactive extension host used by hcom delivery",
+        reason: "can disable the interactive extension host used by comms delivery",
         kind: RejectedArgKind::Flag,
     },
     RejectedArg {
         token: "--no-extensions",
-        reason: "prevents hcom's delivery extension from loading",
+        reason: "prevents comms's delivery extension from loading",
         kind: RejectedArgKind::Flag,
     },
     RejectedArg {
@@ -143,12 +143,12 @@ pub(crate) const OMP_REJECTED_ARGS: &[RejectedArg] = &[
 pub(crate) const GEMINI_REJECTED_ARGS: &[RejectedArg] = &[
     RejectedArg {
         token: "-p",
-        reason: "runs headless and exits before joining hcom; use -i/--prompt-interactive instead",
+        reason: "runs headless and exits before joining comms; use -i/--prompt-interactive instead",
         kind: RejectedArgKind::Flag,
     },
     RejectedArg {
         token: "--prompt",
-        reason: "runs headless and exits before joining hcom; use -i/--prompt-interactive instead",
+        reason: "runs headless and exits before joining comms; use -i/--prompt-interactive instead",
         kind: RejectedArgKind::Flag,
     },
 ];
@@ -199,7 +199,7 @@ pub(crate) fn validate_rejected_args(
                 }
         }) {
             errors.push(format!(
-                "{tool} argument `{}` is not supported by `{invocation}`: {}. Launch the hcom-managed interactive PTY instead.",
+                "{tool} argument `{}` is not supported by `{invocation}`: {}. Launch the comms-managed interactive PTY instead.",
                 rule.token, rule.reason
             ));
         }
@@ -215,7 +215,7 @@ mod tests {
     fn long_flags_match_equals_form() {
         let errors = validate_rejected_args(
             "Kimi",
-            "hcom kimi",
+            "comms kimi",
             &["--prompt=task".to_string()],
             KIMI_REJECTED_ARGS,
         );
@@ -226,13 +226,17 @@ mod tests {
     #[test]
     fn benign_flags_pass() {
         for (tool, invocation, rejected) in [
-            ("Kimi", "hcom kimi", KIMI_REJECTED_ARGS),
-            ("OpenCode", "hcom opencode", OPENCODE_REJECTED_ARGS),
-            ("Kilo", "hcom kilo", KILO_REJECTED_ARGS),
-            ("Pi", "hcom pi", PI_REJECTED_ARGS),
-            ("Oh My Pi", "hcom omp", OMP_REJECTED_ARGS),
-            ("Gemini", "hcom gemini", GEMINI_REJECTED_ARGS),
-            ("Antigravity", "hcom antigravity", ANTIGRAVITY_REJECTED_ARGS),
+            ("Kimi", "comms kimi", KIMI_REJECTED_ARGS),
+            ("OpenCode", "comms opencode", OPENCODE_REJECTED_ARGS),
+            ("Kilo", "comms kilo", KILO_REJECTED_ARGS),
+            ("Pi", "comms pi", PI_REJECTED_ARGS),
+            ("Oh My Pi", "comms omp", OMP_REJECTED_ARGS),
+            ("Gemini", "comms gemini", GEMINI_REJECTED_ARGS),
+            (
+                "Antigravity",
+                "comms antigravity",
+                ANTIGRAVITY_REJECTED_ARGS,
+            ),
         ] {
             assert!(
                 validate_rejected_args(
@@ -255,7 +259,7 @@ mod tests {
             vec!["--prompt=task".to_string()],
         ] {
             let errors =
-                validate_rejected_args("Gemini", "hcom gemini", &headless, GEMINI_REJECTED_ARGS);
+                validate_rejected_args("Gemini", "comms gemini", &headless, GEMINI_REJECTED_ARGS);
             assert_eq!(errors.len(), 1, "expected rejection for {headless:?}");
             assert!(errors[0].contains("prompt-interactive"));
         }
@@ -263,7 +267,7 @@ mod tests {
         assert!(
             validate_rejected_args(
                 "Gemini",
-                "hcom gemini",
+                "comms gemini",
                 &["-i".to_string(), "task".to_string()],
                 GEMINI_REJECTED_ARGS,
             )
@@ -278,14 +282,14 @@ mod tests {
             vec!["--mode=rpc".to_string()],
             vec!["--no-extensions".to_string()],
         ] {
-            let errors = validate_rejected_args("Oh My Pi", "hcom omp", &args, OMP_REJECTED_ARGS);
+            let errors = validate_rejected_args("Oh My Pi", "comms omp", &args, OMP_REJECTED_ARGS);
             assert_eq!(errors.len(), 1, "expected rejection for {args:?}");
         }
 
         assert!(
             validate_rejected_args(
                 "Oh My Pi",
-                "hcom omp",
+                "comms omp",
                 &["--model".to_string(), "opus".to_string()],
                 OMP_REJECTED_ARGS,
             )
@@ -299,7 +303,7 @@ mod tests {
         // subcommand only.
         let errors = validate_rejected_args(
             "Oh My Pi",
-            "hcom omp",
+            "comms omp",
             &["acp".to_string()],
             OMP_REJECTED_ARGS,
         );
@@ -310,7 +314,7 @@ mod tests {
         assert!(
             validate_rejected_args(
                 "Oh My Pi",
-                "hcom omp",
+                "comms omp",
                 &["--model".to_string(), "acp".to_string()],
                 OMP_REJECTED_ARGS,
             )
@@ -323,7 +327,7 @@ mod tests {
         assert!(
             validate_rejected_args(
                 "OpenCode",
-                "hcom opencode",
+                "comms opencode",
                 &["--model".to_string(), "run".to_string()],
                 OPENCODE_REJECTED_ARGS,
             )

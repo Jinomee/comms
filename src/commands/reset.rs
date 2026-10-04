@@ -1,12 +1,12 @@
-//! `hcom reset` command — archive and clear conversation, optionally hooks/config.
+//! `comms reset` command — archive and clear conversation, optionally hooks/config.
 //!
 //!
 //! Modes:
-//!   hcom reset              Clear database (archive conversation)
-//!   hcom reset hooks        Remove hooks
-//!   hcom reset all          Stop all + clear db + remove hooks + reset config
+//!   comms reset              Clear database (archive conversation)
+//!   comms reset hooks        Remove hooks
+//!   comms reset all          Stop all + clear db + remove hooks + reset config
 
-use crate::db::HcomDb;
+use crate::db::CommsDb;
 use crate::shared::{CommandContext, is_inside_ai_tool};
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,14 +16,14 @@ pub enum ResetTarget {
 }
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "reset", about = "Reset hcom components")]
+#[command(name = "reset", about = "Reset comms components")]
 pub struct ResetArgs {
     /// Reset scope
     #[arg(value_enum)]
     pub target: Option<ResetTarget>,
 }
 
-pub fn cmd_reset(db: HcomDb, args: &ResetArgs, ctx: Option<&CommandContext>) -> i32 {
+pub fn cmd_reset(db: CommsDb, args: &ResetArgs, ctx: Option<&CommandContext>) -> i32 {
     if let Some(exit_code) = try_cmd_reset_preserving_db(&db, args, ctx) {
         return exit_code;
     }
@@ -36,7 +36,7 @@ pub fn cmd_reset(db: HcomDb, args: &ResetArgs, ctx: Option<&CommandContext>) -> 
 /// The router calls this first so it can retain its connection and perform
 /// normal post-command delivery. `cmd_reset` also calls it for direct callers.
 pub(crate) fn try_cmd_reset_preserving_db(
-    db: &HcomDb,
+    db: &CommsDb,
     args: &ResetArgs,
     ctx: Option<&CommandContext>,
 ) -> Option<i32> {
@@ -56,7 +56,7 @@ pub(crate) fn try_cmd_reset_preserving_db(
     None
 }
 
-fn cmd_reset_database(db: HcomDb, args: &ResetArgs, ctx: Option<&CommandContext>) -> i32 {
+fn cmd_reset_database(db: CommsDb, args: &ResetArgs, ctx: Option<&CommandContext>) -> i32 {
     let target = args.target;
     let mut exit_codes = Vec::new();
 
@@ -73,7 +73,7 @@ fn cmd_reset_database(db: HcomDb, args: &ResetArgs, ctx: Option<&CommandContext>
     super::reset_ops::clean_temp_files();
 
     // Explicitly release command-owned database connection before archive/clear.
-    // On Windows, SQLite's open file handle prevents deleting hcom.db, hcom.db-wal, and hcom.db-shm.
+    // On Windows, SQLite's open file handle prevents deleting comms.db, comms.db-wal, and comms.db-shm.
     drop(db);
 
     // Archive and clear database

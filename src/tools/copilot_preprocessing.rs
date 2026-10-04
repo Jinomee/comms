@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 const COPILOT_PRINT_FLAGS: &[&str] = &["-p", "--prompt", "--continue"];
 
-/// Reject one-shot/resume shortcuts that would break hcom's PTY delivery model.
+/// Reject one-shot/resume shortcuts that would break comms's PTY delivery model.
 pub(crate) fn validate_copilot_args(tokens: &[String]) -> Vec<String> {
     let found: Vec<&str> = COPILOT_PRINT_FLAGS
         .iter()
@@ -22,7 +22,7 @@ pub(crate) fn validate_copilot_args(tokens: &[String]) -> Vec<String> {
         return Vec::new();
     }
     vec![format!(
-        "Copilot one-shot/continue mode is not supported by `hcom copilot`: {} would bypass the live interactive PTY hooks used for message delivery. Remove the flag and launch the interactive or `--headless` PTY session instead.",
+        "Copilot one-shot/continue mode is not supported by `comms copilot`: {} would bypass the live interactive PTY hooks used for message delivery. Remove the flag and launch the interactive or `--headless` PTY session instead.",
         found.join(", ")
     )]
 }
@@ -115,7 +115,7 @@ pub(crate) fn ensure_copilot_workspace_trusted(workspace: &Path) -> anyhow::Resu
         std::fs::create_dir_all(parent)?;
     }
     eprintln!(
-        "[hcom] Auto-approving Copilot folder trust prompt for {} (config: {})",
+        "[comms] Auto-approving Copilot folder trust prompt for {} (config: {})",
         normalized.display(),
         path.display()
     );

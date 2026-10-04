@@ -4,11 +4,11 @@
 //! Records full screen state at each phase for regression detection.
 //!
 //! Requires:
-//! - tmux installed and available by default, or another terminal preset via HCOM_TEST_TERMINAL
+//! - tmux installed and available by default, or another terminal preset via COMMS_TEST_TERMINAL
 //! - Target tool CLI installed (claude/gemini/codex/opencode/kilo/pi/omp/antigravity/cursor/kimi/copilot)
 //!
 //! Phases (claude/gemini/codex/antigravity/cursor/copilot):
-//! 1. Launch tool via `hcom 1 <tool>` with HCOM_TERMINAL=<terminal>
+//! 1. Launch tool via `comms 1 <tool>` with COMMS_TERMINAL=<terminal>
 //! 2. Wait for ready event, capture and validate full screen state
 //! 3. Send message → verify delivery via events, capture post-delivery screen
 //! 4. Inject uncommitted text → verify gate blocks delivery, capture screen
@@ -22,9 +22,9 @@
 //! 4. Cleanup
 //!
 //! Run (must use --test-threads=1 — tests launch real agents and interfere in parallel):
-//!     cargo test -p hcom --test test_pty_delivery -- --ignored --nocapture --test-threads=1
-//!     cargo test -p hcom --test test_pty_delivery test_pty_claude -- --ignored --nocapture --test-threads=1
-//!     HCOM_TEST_TERMINAL=kitty cargo test -p hcom --test test_pty_delivery test_pty_claude -- --ignored --nocapture --test-threads=1
+//!     cargo test -p comms --test test_pty_delivery -- --ignored --nocapture --test-threads=1
+//!     cargo test -p comms --test test_pty_delivery test_pty_claude -- --ignored --nocapture --test-threads=1
+//!     COMMS_TEST_TERMINAL=kitty cargo test -p comms --test test_pty_delivery test_pty_claude -- --ignored --nocapture --test-threads=1
 //!
 //! Why `#[ignore]`:
 //! These tests are not part of `cargo test` deliberately. They launch real agent
@@ -67,7 +67,7 @@ macro_rules! logln {
 
 /// Ready patterns — each must be one of `IntegrationSpec.ready_patterns` (the
 /// one visible under the args these tests launch with). This test is
-/// an integration test against the hcom binary so it can't import the crate;
+/// an integration test against the comms binary so it can't import the crate;
 /// the patterns are short and rarely change, drift is caught by the test
 /// itself when the expected pattern fails to appear on screen.
 fn ready_patterns(tool: &str) -> &'static [&'static str] {
@@ -83,7 +83,7 @@ fn ready_patterns(tool: &str) -> &'static [&'static str] {
         "pi" => &["/ commands"],
         // OMP (Oh My Pi) has no reliable on-screen ready marker: its only chrome
         // candidates live in the preset/theme-configurable status line. Launch
-        // readiness is proven by the hcom extension bind instead
+        // readiness is proven by the comms extension bind instead
         // (`launch_ready_on_plugin_bind`), so the spec ready_patterns is empty and
         // is_ready() is always true — same handling as cursor here. See OMP spec.
         "omp" => &[],
@@ -147,7 +147,7 @@ fn require_ready(tool: &str) -> bool {
 
 /// Timeout for the Phase 2 clean-prompt delivery wait.
 ///
-/// hcom delivers to an idle agent by injecting only the `<hcom>` trigger (see
+/// comms delivers to an idle agent by injecting only the `<comms>` trigger (see
 /// `delivery.rs` build_wake_inject_text — Claude/Codex/Cursor all trigger-only);
 /// the message body is then surfaced by a hook *during the agent's turn*. For
 /// Claude/Codex/Gemini that hook fires fast, so 20s is ample. Cursor instead
@@ -178,30 +178,30 @@ const SENDER: &str = "ptytest";
 // ── Helpers ────────────────────────────────────────────────────────────
 
 fn configure_test_terminal_env() -> String {
-    let terminal = std::env::var("HCOM_TEST_TERMINAL")
-        .or_else(|_| std::env::var("HCOM_TERMINAL"))
+    let terminal = std::env::var("COMMS_TEST_TERMINAL")
+        .or_else(|_| std::env::var("COMMS_TERMINAL"))
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "tmux".to_string());
 
     // SAFETY: Integration tests run serially (serial_lock guards callers).
     unsafe {
-        std::env::set_var("HCOM_TERMINAL", &terminal);
-        std::env::set_var("HCOM_TAG", "ptytest");
+        std::env::set_var("COMMS_TERMINAL", &terminal);
+        std::env::set_var("COMMS_TAG", "ptytest");
     }
 
     terminal
 }
 
-fn hcom(cmd: &str) -> Output {
-    Command::new("hcom")
+fn comms(cmd: &str) -> Output {
+    Command::new("comms")
         .args(shell_words::split(cmd).unwrap())
         .output()
-        .expect("failed to execute hcom")
+        .expect("failed to execute comms")
 }
 
 fn base_name_from_instance_name(instance_name: &str) -> String {
-    let tag = std::env::var("HCOM_TAG").unwrap_or_default();
+    let tag = std::env::var("COMMS_TAG").unwrap_or_default();
     let prefix = format!("{tag}-");
     instance_name
         .strip_prefix(&prefix)
@@ -232,11 +232,11 @@ fn assert_launch_process_started(out: &Output) -> Option<String> {
     );
 }
 
-fn hcom_check(cmd: &str) -> String {
-    let out = hcom(cmd);
+fn comms_check(cmd: &str) -> String {
+    let out = comms(cmd);
     assert!(
         out.status.success(),
-        "Command failed: hcom {cmd}\nstderr: {}\nstdout: {}",
+        "Command failed: comms {cmd}\nstderr: {}\nstdout: {}",
         String::from_utf8_lossy(&out.stderr),
         String::from_utf8_lossy(&out.stdout),
     );
@@ -244,11 +244,11 @@ fn hcom_check(cmd: &str) -> String {
 }
 
 fn send_msg(msg: &str) {
-    hcom_check(&format!("send --from {SENDER} --intent inform '{msg}'"));
+    comms_check(&format!("send --from {SENDER} --intent inform '{msg}'"));
 }
 
 fn get_screen(name: &str) -> Option<serde_json::Value> {
-    let out = hcom(&format!("term {name} --json"));
+    let out = comms(&format!("term {name} --json"));
     if !out.status.success() {
         return None;
     }
@@ -257,7 +257,7 @@ fn get_screen(name: &str) -> Option<serde_json::Value> {
 
 fn get_events(instance: &str, last: u32, full: bool) -> Vec<serde_json::Value> {
     let full_flag = if full { " --full" } else { "" };
-    let out = hcom(&format!(
+    let out = comms(&format!(
         "events --agent {instance} --last {last}{full_flag}"
     ));
     if !out.status.success() {
@@ -349,7 +349,7 @@ impl Drop for InstanceGuard {
     fn drop(&mut self) {
         if let Some(name) = &self.base_name {
             eprintln!("\nCleaning up {name}...");
-            let _ = hcom(&format!("kill {name}"));
+            let _ = comms(&format!("kill {name}"));
             thread::sleep(Duration::from_secs(1));
         }
     }
@@ -696,7 +696,7 @@ fn run_pty_test(tool: &str) {
 
     // Record last event ID before launch
     let pre_launch_id = {
-        let out = hcom("events --last 1");
+        let out = comms("events --last 1");
         if out.status.success() {
             String::from_utf8_lossy(&out.stdout)
                 .lines()
@@ -723,7 +723,7 @@ fn run_pty_test(tool: &str) {
         // copilot: no flag — its default model is probably cheap.
         _ => "",
     };
-    let out = hcom(&format!("--go 1 {tool}{model_flag}"));
+    let out = comms(&format!("--go 1 {tool}{model_flag}"));
     let launched_base_name = assert_launch_process_started(&out);
     if out.status.code() == Some(2) {
         logln!(
@@ -741,7 +741,7 @@ fn run_pty_test(tool: &str) {
     } else {
         poll_until(
             || {
-                let out = hcom("events --action ready --last 5");
+                let out = comms("events --action ready --last 5");
                 if !out.status.success() {
                     return None;
                 }
@@ -767,7 +767,7 @@ fn run_pty_test(tool: &str) {
     };
 
     guard.base_name = Some(base_name.clone());
-    let tag = std::env::var("HCOM_TAG").unwrap_or_default();
+    let tag = std::env::var("COMMS_TAG").unwrap_or_default();
     let instance_name = if tag.is_empty() {
         base_name.clone()
     } else {
@@ -834,13 +834,13 @@ fn run_pty_test(tool: &str) {
     // Phrasing matters on two axes:
     // 1. Gemini-2.5-flash-lite interprets human-style directives ("do not reply")
     //    as needing user confirmation and calls ask_user → approval gate,
-    //    blocking forever. Keep the `[hcom heartbeat]` automated-signal framing.
-    // 2. Codex and OpenCode would otherwise run `hcom send … --intent ack` and
-    //    burn tokens (the ack is rejected by hcom since inform can't be acked,
-    //    but the tool call still fires). Explicit "no tools, no hcom send" cuts
+    //    blocking forever. Keep the `[comms heartbeat]` automated-signal framing.
+    // 2. Codex and OpenCode would otherwise run `comms send … --intent ack` and
+    //    burn tokens (the ack is rejected by comms since inform can't be acked,
+    //    but the tool call still fires). Explicit "no tools, no comms send" cuts
     //    that out without tripping (1).
     send_msg(&format!(
-        "@{instance_name} [hcom heartbeat] automated test ping. acknowledge inline with \"ok\" only. no tools. no hcom send."
+        "@{instance_name} [comms heartbeat] automated test ping. acknowledge inline with \"ok\" only. no tools. no comms send."
     ));
     logln!(log, "  OK: Message sent");
 
@@ -952,7 +952,7 @@ fn run_pty_test(tool: &str) {
     // Extra settle time
     thread::sleep(Duration::from_secs(2));
 
-    hcom_check(&format!("term inject {base_name} uncommitted text here"));
+    comms_check(&format!("term inject {base_name} uncommitted text here"));
     logln!(log, "  OK: Injected uncommitted text");
 
     // Verify text appears in input box
@@ -995,7 +995,7 @@ fn run_pty_test(tool: &str) {
     let baseline_event2 = get_last_event_id(&base_name);
 
     send_msg(&format!(
-        "@{instance_name} [hcom heartbeat-2 should-block] automated test ping. acknowledge inline with \"ok\" only. no tools. no hcom send."
+        "@{instance_name} [comms heartbeat-2 should-block] automated test ping. acknowledge inline with \"ok\" only. no tools. no comms send."
     ));
     logln!(log, "  OK: Message sent (should be blocked)");
 
@@ -1043,7 +1043,7 @@ fn run_pty_test(tool: &str) {
 
     let baseline_event3 = get_last_event_id(&base_name);
 
-    hcom_check(&format!("term inject {base_name} --enter"));
+    comms_check(&format!("term inject {base_name} --enter"));
     logln!(log, "  OK: Sent --enter to submit uncommitted text");
 
     // Wait for screen to settle
@@ -1136,7 +1136,7 @@ fn run_pty_test_plugin_family(tool: &str, read_hook: &str) {
     logln!(log, "{}", "=".repeat(60));
 
     let pre_launch_id = {
-        let out = hcom("events --last 1");
+        let out = comms("events --last 1");
         if out.status.success() {
             String::from_utf8_lossy(&out.stdout)
                 .lines()
@@ -1153,7 +1153,7 @@ fn run_pty_test_plugin_family(tool: &str, read_hook: &str) {
     logln!(log, "\n[Phase 1] Launching {tool} in {terminal}...");
     let t0 = Instant::now();
 
-    let out = hcom(&format!("--go 1 {tool}"));
+    let out = comms(&format!("--go 1 {tool}"));
     let launched_base_name = assert_launch_process_started(&out);
     if out.status.code() == Some(2) {
         logln!(
@@ -1170,7 +1170,7 @@ fn run_pty_test_plugin_family(tool: &str, read_hook: &str) {
     } else {
         poll_until(
             || {
-                let out = hcom("events --action ready --last 5");
+                let out = comms("events --action ready --last 5");
                 if !out.status.success() {
                     return None;
                 }
@@ -1196,7 +1196,7 @@ fn run_pty_test_plugin_family(tool: &str, read_hook: &str) {
     };
 
     guard.base_name = Some(base_name.clone());
-    let tag = std::env::var("HCOM_TAG").unwrap_or_default();
+    let tag = std::env::var("COMMS_TAG").unwrap_or_default();
     let instance_name = if tag.is_empty() {
         base_name.clone()
     } else {
@@ -1327,7 +1327,7 @@ fn run_pty_test_plugin_family(tool: &str, read_hook: &str) {
         active_id, listening_event["id"]
     ));
 
-    // Confirm the bootstrap path in hcom.log (non-fatal). The two plugin families
+    // Confirm the bootstrap path in comms.log (non-fatal). The two plugin families
     // bootstrap differently, so we look for different events:
     //   - opencode/kilo: session is created by the delivery thread's PTY inject,
     //     logged as `delivery.bootstrap_inject`.
@@ -1340,7 +1340,7 @@ fn run_pty_test_plugin_family(tool: &str, read_hook: &str) {
     } else {
         ("delivery.bootstrap_inject", "PTY bootstrap inject")
     };
-    let log_path = dirs::home_dir().unwrap().join(".hcom/.tmp/logs/hcom.log");
+    let log_path = dirs::home_dir().unwrap().join(".comms/.tmp/logs/comms.log");
     if let Ok(content) = fs::read_to_string(&log_path) {
         let confirmed = content
             .lines()
@@ -1348,12 +1348,12 @@ fn run_pty_test_plugin_family(tool: &str, read_hook: &str) {
         if confirmed {
             logln!(
                 log,
-                "  OK: {bootstrap_desc} confirmed in hcom.log ({bootstrap_event})"
+                "  OK: {bootstrap_desc} confirmed in comms.log ({bootstrap_event})"
             );
         } else {
             logln!(
                 log,
-                "  WARN: {bootstrap_event} not found in hcom.log for {base_name} (log may have rotated)"
+                "  WARN: {bootstrap_event} not found in comms.log for {base_name} (log may have rotated)"
             );
         }
     }
@@ -1380,7 +1380,7 @@ fn run_pty_test_plugin_family(tool: &str, read_hook: &str) {
     //
     // Two co-conditions for true quiescence:
     //   1. Latest event is status=listening (agent is idle right now).
-    //   2. `hcom <read-hook> --check` is "false" (cursor caught up; plugin
+    //   2. `comms <read-hook> --check` is "false" (cursor caught up; plugin
     //      won't re-trigger another piggyback). Listening alone is correlative
     //      — if pendingAckId or deliveryInFlight ever got stuck, listening
     //      could appear stable while the cursor was still behind.
@@ -1391,7 +1391,7 @@ fn run_pty_test_plugin_family(tool: &str, read_hook: &str) {
             if last["data"]["status"].as_str() != Some("listening") {
                 return None;
             }
-            let out = hcom(&format!("{read_hook} --name {base_name} --check"));
+            let out = comms(&format!("{read_hook} --name {base_name} --check"));
             if !out.status.success() {
                 return None;
             }
