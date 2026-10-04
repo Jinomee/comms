@@ -1,0 +1,345 @@
+//! hcom — inter-agent communication for AI coding tools.
+//!
+//! Humans usually launch agents with `hcom <tool>` and talk to them through
+//! each tool's own UI. Agents use `hcom` CLI commands (learnt through bootstrap.rs)
+//! as a side-channel for messaging and coordination with other agents.
+
+mod bootstrap;
+mod claude_actor;
+mod cli_context;
+pub mod commands;
+mod config;
+pub mod core;
+mod db;
+mod delivery;
+pub mod hooks;
+pub mod identity;
+mod instance_binding;
+mod instance_lifecycle;
+mod instance_names;
+mod instances;
+pub mod integration_spec;
+pub mod launcher;
+mod log;
+pub mod messages;
+mod notify;
+mod paths;
+mod pidtrack;
+mod pty;
+pub mod relay;
+pub mod router;
+mod runtime_env;
+pub mod scripts;
+pub mod shared;
+mod shell_env;
+mod sys;
+pub mod terminal;
+mod tool;
+pub mod tools;
+pub mod transcript;
+mod tui;
+mod update;
+
+use anyhow::{Context, Result, bail};
+use std::panic;
+use std::str::FromStr;
+
+fn main() -> Result<()> {
+    // Hooks of an agent nested under an hcom-launched one must not act as it.
+    // Runs first: every later env reader should see only the child's view.
+    let nested = std::env::args()
+        .nth(1)
+        .and_then(|arg| tool::Tool::from_hook_name(&arg))
+        .and_then(shared::nested::scrub_inherited_identity);
+
+    // Initialize global config from environment variables
+    config::Config::init();
+
+    if let Some(nested) = nested {
+        log::log_info(
+            "identity",
+            "nested_agent.scrubbed",
+            &format!(
+                "child={} parent={}: ignoring inherited hcom identity",
+                nested.child, nested.parent
+            ),
+        );
+    }
+
+    // Set custom panic hook to log to file instead of stderr (prevents TUI corruption)
+    panic::set_hook(Box::new(|panic_info| {
+        let location = panic_info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        log::log_error("native", "panic", &format!("{} at {}", message, location));
+    }));
+
+    // Dispatch via router (replaces manual MainAction matching)
+    router::dispatch()
+}
+
+/// Run PTY wrapper mode.
+///
+/// Uses Unix pseudo-terminals on Unix and ConPTY (via `portable-pty`) on
+/// Windows; the proxy backend is selected inside `pty::Proxy`.
+pub fn run_pty(args: &[String]) -> Result<()> {
+    if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
+        eprintln!("hcom pty - PTY wrapper for hcom");
+        eprintln!();
+        eprintln!("Usage: hcom pty <tool> [args...]");
+        eprintln!();
+        let tools = integration_spec::ALL
+            .iter()
+            .filter(|spec| spec.released)
+            .map(|spec| {
+                if spec.aliases.is_empty() {
+                    spec.name.to_string()
+                } else {
+                    format!("{} ({})", spec.name, spec.aliases.join(", "))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("Tools: {tools}");
+        eprintln!();
+        eprintln!("The PTY wrapper provides:");
+        eprintln!("  - Text injection via TCP port (INJECT_PORT)");
+        eprintln!("  - State queries via TCP port (STATE_PORT)");
+        eprintln!("  - Ready detection for tool startup");
+        eprintln!();
+        eprintln!("Environment:");
+        eprintln!("  HCOM_INSTANCE_NAME    Instance name for logging");
+        eprintln!("  HCOM_DIR              Custom hcom directory");
+        if args.is_empty() {
+            bail!("Tool name required");
+        }
+        return Ok(());
+    }
+
+    let tool_str = &args[0];
+
+    // Generated runners pin the tool resolved from the caller's PATH before
+    // installing their runtime-first PATH. Windows runner scripts additionally
+    // pass tool args via a JSON sidecar because the PowerShell → native-exe
+    // boundary corrupts arguments with embedded double quotes.
+    let mut arg_index = 1;
+    let tool_path = if args.get(arg_index).map(String::as_str) == Some("--hcom-tool-path") {
+        let Some(path) = args.get(arg_index + 1) else {
+            bail!("--hcom-tool-path requires a path");
+        };
+        arg_index += 2;
+        Some(path.as_str())
+    } else {
+        None
+    };
+
+    let sidecar_args: Vec<String>;
+    let tool_args: Vec<&str> =
+        if args.get(arg_index).map(String::as_str) == Some("--hcom-args-file") {
+            let Some(path) = args.get(arg_index + 1) else {
+                bail!("--hcom-args-file requires a path");
+            };
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read args file {path}"))?;
+            let _ = std::fs::remove_file(path);
+            sidecar_args = serde_json::from_str(&content)
+                .with_context(|| format!("Invalid JSON in args file {path}"))?;
+            sidecar_args.iter().map(|s| s.as_str()).collect()
+        } else {
+            args[arg_index..].iter().map(|s| s.as_str()).collect()
+        };
+
+    // Keep arbitrary commands explicit so they cannot inherit a known tool's
+    // delivery behavior merely because parsing failed.
+    let (ready_patterns, target) = match tool::Tool::from_str(tool_str) {
+        Ok(tool) => (
+            tool.ready_patterns()
+                .iter()
+                .map(|p| p.to_string())
+                .collect(),
+            pty::PtyTarget::Known(tool),
+        ),
+        Err(_) => (vec![], pty::PtyTarget::AdhocCommand(tool_str.to_string())),
+    };
+
+    let instance_name = config::Config::get().instance_name;
+
+    // Resolve tool to full path (PATH may be minimal in launched environments)
+    let tool_exe = tool_str
+        .parse::<tool::Tool>()
+        .map(|t| t.spec().cli_binary)
+        .unwrap_or(tool_str);
+    let resolved = tool_path
+        .map(ToString::to_string)
+        .or_else(|| terminal::which_bin(tool_exe))
+        .unwrap_or_else(|| tool_exe.to_string());
+
+    // On Termux, some wrapped tools need a launcher override instead of direct exec.
+    let (command, extra_args): (String, Vec<String>);
+    #[cfg(windows)]
+    let windows_launcher = terminal::resolve_windows_tool_launcher(tool_exe, &resolved);
+    #[cfg(not(windows))]
+    let windows_launcher: Option<(String, Vec<String>)> = None;
+    if let Some((launcher, prefix_args)) = windows_launcher {
+        command = launcher;
+        extra_args = prefix_args;
+    } else if let Some((launcher, prefix_args)) =
+        terminal::resolve_termux_tool_launcher(tool_exe, &resolved)
+    {
+        command = launcher;
+        extra_args = prefix_args;
+    } else {
+        command = resolved;
+        extra_args = vec![];
+    }
+    let mut child_env = pty_child_env();
+    let grok_acp = if target.known_tool() == Some(tool::Tool::Grok) && instance_name.is_some() {
+        let launch = delivery::grok::Launch::new(&command, &extra_args, &tool_args)?;
+        child_env.extend(launch.child_env());
+        Some(launch)
+    } else {
+        None
+    };
+    let leader_args = grok_acp.as_ref().map(|l| l.tui_args()).unwrap_or_default();
+    let grok_leader = grok_acp.clone();
+    let full_args: Vec<&str> = extra_args
+        .iter()
+        .map(|s| s.as_str())
+        .chain(leader_args.iter().map(String::as_str))
+        .chain(tool_args.iter().copied())
+        .collect();
+
+    // Create and run PTY
+    let instance_name_for_failure = instance_name.clone();
+    let mut proxy = match pty::Proxy::spawn(
+        &command,
+        &full_args,
+        pty::ProxyConfig {
+            ready_patterns,
+            instance_name,
+            target,
+            env_vars: child_env,
+            grok_acp,
+        },
+    ) {
+        Ok(proxy) => proxy,
+        Err(e) => {
+            let err = e.context("Failed to spawn PTY");
+            // The launched terminal window may close on process exit before
+            // anyone can read stderr (depends on the terminal's own
+            // exit/profile behavior, which hcom doesn't control), so stderr
+            // alone can't be relied on. Log so the failure survives, and —
+            // same path used for a child that exits before binding — push it
+            // through the launch-failure event so the launcher (human or the
+            // agent that ran `hcom N <tool>`) is notified immediately instead
+            // of waiting on the generic stale-placeholder timeout.
+            log::log_error("pty", "spawn_failed", &format!("{err:#}"));
+            // Grok may have started its persistent leader before the failure.
+            if let Some(launch) = grok_leader.as_ref() {
+                launch.stop_leader();
+            }
+            if let Some(name) = instance_name_for_failure.as_deref()
+                && let Ok(db) = db::HcomDb::open()
+                && let Ok(Some(instance)) = db.get_instance_full(name)
+            {
+                let fallback = format!("{err:#}");
+                if let Some(detail) = instance_lifecycle::finalize_launch_failure_detail(
+                    &db,
+                    &instance,
+                    Some(&fallback),
+                ) {
+                    let _ = db.emit_launch_failed_event(
+                        name,
+                        shared::ST_INACTIVE,
+                        "launch_failed",
+                        "spawn_failed",
+                        &detail,
+                    );
+                }
+            }
+            return Err(err);
+        }
+    };
+
+    let exit_code = proxy.run().context("PTY run failed");
+
+    // Drop proxy to run cleanup (join delivery thread, which does DB cleanup)
+    drop(proxy);
+    // Only once the TUI is gone: a live TUI would respawn its leader.
+    if let Some(launch) = grok_leader {
+        launch.stop_leader();
+    }
+    let exit_code = exit_code?;
+
+    std::process::exit(exit_code);
+}
+
+fn pty_child_env() -> Vec<(String, String)> {
+    vec![("HCOM_LAUNCHED".to_string(), "1".to_string())]
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::router::{self, Action};
+
+    fn args(s: &[&str]) -> Vec<String> {
+        s.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Test that no args runs Rust TUI
+    #[test]
+    fn test_no_args_runs_rust_tui() {
+        let action = router::resolve_action(&[]);
+        assert_eq!(action, Action::Tui);
+    }
+
+    /// Test that PTY mode is correctly identified
+    #[test]
+    fn test_pty_mode() {
+        let action = router::resolve_action(&args(&["pty", "claude"]));
+        assert_eq!(
+            action,
+            Action::Pty {
+                args: args(&["claude"])
+            }
+        );
+    }
+
+    /// Test that client mode is correctly identified for non-pty commands
+    #[test]
+    fn test_client_mode() {
+        let action = router::resolve_action(&args(&["list"]));
+        match action {
+            Action::Command { cmd, .. } => assert_eq!(cmd, "list"),
+            _ => panic!("Expected Command action, got {:?}", action),
+        }
+    }
+
+    /// Test PTY mode with multiple args
+    #[test]
+    fn test_pty_mode_with_args() {
+        let action = router::resolve_action(&args(&["pty", "claude", "--arg1", "--arg2"]));
+        assert_eq!(
+            action,
+            Action::Pty {
+                args: args(&["claude", "--arg1", "--arg2"])
+            }
+        );
+    }
+
+    #[test]
+    fn test_pty_child_env_marks_launched() {
+        assert_eq!(
+            super::pty_child_env(),
+            vec![("HCOM_LAUNCHED".to_string(), "1".to_string())]
+        );
+    }
+}

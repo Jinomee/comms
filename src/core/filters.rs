@@ -1,0 +1,1081 @@
+//! Composable event filter system for queries, subscriptions, and listen.
+//!
+//! - `hcom events` (queries)
+//! - `hcom events sub` (subscriptions)
+//! - `hcom listen` (blocking waits)
+//!
+//! Flag parsing extracts known filter flags from argv, SQL generation builds
+//! WHERE clauses from parsed filters.
+
+use std::collections::HashMap;
+
+use crate::shared::constants::{ST_BLOCKED, ST_LISTENING};
+
+/// Mapping of CLI flags to internal filter keys.
+const FLAG_MAP: &[(&str, &str)] = &[
+    ("--agent", "instance"),
+    ("--type", "type"),
+    ("--status", "status"),
+    ("--context", "context"),
+    ("--file", "file"),
+    ("--cmd", "cmd"),
+    ("--from", "from"),
+    ("--participant", "participant"),
+    ("--mention", "mention"),
+    ("--action", "action"),
+    ("--after", "after"),
+    ("--before", "before"),
+    ("--intent", "intent"),
+    ("--thread", "thread"),
+    ("--reply-to", "reply_to"),
+    ("--collision", "collision"),
+];
+
+/// Flags that require type='status'.
+const STATUS_FLAGS: &[&str] = &["status", "context", "file", "cmd"];
+/// Flags that require type='message'.
+const MESSAGE_FLAGS: &[&str] = &[
+    "from",
+    "participant",
+    "mention",
+    "intent",
+    "thread",
+    "reply_to",
+];
+/// Flags that require type='life'.
+const LIFE_FLAGS: &[&str] = &["action"];
+
+/// File-write tool contexts for SQL filters.
+pub const FILE_WRITE_CONTEXTS: &str = "('tool:Write', 'tool:Edit', 'tool:NotebookEdit', 'tool:write_file', 'tool:replace', 'tool:apply_patch', 'tool:write', 'tool:edit', 'tool:write_to_file', 'tool:replace_file_content', 'tool:multi_replace_file_content', 'tool:StrReplace', 'tool:create', 'tool:search_replace', 'tool:MultiEdit', 'tool:patch')";
+
+/// Whether `context` is listed in [`FILE_WRITE_CONTEXTS`].
+pub fn is_file_write_context(context: &str) -> bool {
+    FILE_WRITE_CONTEXTS.contains(&format!("'{context}'"))
+}
+
+/// SQL: `inner` event is within 30s of `outer`. The ISO-timestamp range lets
+/// SQLite walk `idx_timestamp` (callers write `+inner.type` so the planner does
+/// not pick the far less selective `idx_type`); ABS keeps the exact window.
+pub fn collision_window_sql(outer: &str, inner: &str) -> String {
+    format!(
+        "{inner}.timestamp >= strftime('%Y-%m-%dT%H:%M:%S', {outer}.timestamp, '-30 seconds') \
+         AND {inner}.timestamp < strftime('%Y-%m-%dT%H:%M:%S', {outer}.timestamp, '+31 seconds') \
+         AND ABS(strftime('%s', {outer}.timestamp) - strftime('%s', {inner}.timestamp)) < 30"
+    )
+}
+
+/// All file operation contexts.
+pub const FILE_OP_CONTEXTS: &[&str] = &[
+    "tool:Write",
+    "tool:Edit",
+    "tool:NotebookEdit",
+    "tool:Read",
+    "tool:write_file",
+    "tool:replace",
+    "tool:read_file",
+    "tool:apply_patch",
+    "tool:write",
+    "tool:edit",
+    "tool:write_to_file",
+    "tool:replace_file_content",
+    "tool:multi_replace_file_content",
+    "tool:StrReplace",
+    "tool:create",
+    "tool:search_replace",
+    "tool:MultiEdit",
+    "tool:patch",
+];
+
+/// Shell tool contexts.
+pub const SHELL_TOOL_CONTEXTS: &str = "('tool:Bash', 'tool:run_shell_command', 'tool:shell', 'tool:run_command', 'tool:Shell', 'tool:run_terminal_cmd', 'tool:execute_command', 'tool:shell_command', 'tool:bash', 'tool:powershell', 'tool:run_terminal_command')";
+
+/// Parsed filter values — multiple values per key (OR semantics).
+pub type FilterMap = HashMap<String, Vec<String>>;
+
+fn flag_to_key(flag: &str) -> Option<&'static str> {
+    FLAG_MAP.iter().find(|(f, _)| *f == flag).map(|(_, k)| *k)
+}
+
+/// Expand shortcut flags to full flags.
+///
+/// - `--idle NAME` -> `--agent NAME --status listening`
+/// - `--blocked NAME` -> `--agent NAME --status blocked`
+pub fn expand_shortcuts(argv: &[String]) -> Vec<String> {
+    let mut expanded = Vec::with_capacity(argv.len());
+    let mut i = 0;
+
+    while i < argv.len() {
+        if argv[i] == "--idle" && i + 1 < argv.len() {
+            expanded.push("--agent".into());
+            expanded.push(argv[i + 1].clone());
+            expanded.push("--status".into());
+            expanded.push(ST_LISTENING.into());
+            i += 2;
+        } else if argv[i] == "--blocked" && i + 1 < argv.len() {
+            expanded.push("--agent".into());
+            expanded.push(argv[i + 1].clone());
+            expanded.push("--status".into());
+            expanded.push(ST_BLOCKED.into());
+            i += 2;
+        } else {
+            expanded.push(argv[i].clone());
+            i += 1;
+        }
+    }
+
+    expanded
+}
+
+/// Parse event filter flags from argv.
+///
+/// Returns (filters, remaining_argv). Multiple instances of the same flag
+/// are collected into a list (OR semantics).
+///
+/// After parsing, call `resolve_filter_names(&mut filters, db)` to resolve
+/// tag-name display names (e.g., "team-luna" → "luna") for instance filters.
+/// Call `resolve_filter_names` after parsing to resolve tag-name display names.
+pub fn parse_event_flags(argv: &[String]) -> Result<(FilterMap, Vec<String>), String> {
+    let mut filters = FilterMap::new();
+    let mut remaining = Vec::new();
+    let mut i = 0;
+
+    while i < argv.len() {
+        let arg = &argv[i];
+
+        if arg == "--collision" {
+            // Boolean flag (no value)
+            filters
+                .entry("collision".into())
+                .or_default()
+                .push("true".into());
+            i += 1;
+        } else if let Some(key) = flag_to_key(arg) {
+            if key == "collision" {
+                // Already handled above
+                filters
+                    .entry("collision".into())
+                    .or_default()
+                    .push("true".into());
+                i += 1;
+            } else {
+                if i + 1 >= argv.len() {
+                    return Err(format!("Flag {} requires a value", arg));
+                }
+                let value = argv[i + 1].clone();
+                filters.entry(key.into()).or_default().push(value);
+                i += 2;
+            }
+        } else {
+            remaining.push(arg.clone());
+            i += 1;
+        }
+    }
+
+    Ok((filters, remaining))
+}
+
+/// Resolve instance filter names through display-name/tag lookup.
+///
+/// Converts tag-name format ("team-luna") to base name ("luna") using the DB.
+/// Must be called after `parse_event_flags` when a DB handle is available.
+/// Without this, `--agent team-luna` won't match instance "luna" with tag "team".
+///
+///
+pub fn resolve_filter_names(filters: &mut FilterMap, db: &crate::db::HcomDb) {
+    for key in ["instance", "participant", "mention"] {
+        let Some(names) = filters.get_mut(key) else {
+            continue;
+        };
+        let resolved: Vec<String> = names
+            .iter()
+            .map(|name| {
+                crate::identity::resolve_display_name(db, name).unwrap_or_else(|| name.clone())
+            })
+            .collect();
+        *names = resolved;
+    }
+}
+
+/// Validate that filters don't mix incompatible event types.
+pub fn validate_type_constraints(filters: &FilterMap) -> Result<(), String> {
+    let mut required_types = Vec::new();
+
+    if STATUS_FLAGS.iter().any(|f| filters.contains_key(*f)) {
+        required_types.push("status");
+    }
+    if MESSAGE_FLAGS.iter().any(|f| filters.contains_key(*f)) {
+        required_types.push("message");
+    }
+    if LIFE_FLAGS.iter().any(|f| filters.contains_key(*f)) {
+        required_types.push("life");
+    }
+
+    // Explicit --type takes precedence
+    if let Some(explicit) = filters.get("type") {
+        let explicit_set: std::collections::HashSet<&str> =
+            explicit.iter().map(|s| s.as_str()).collect();
+        let conflicting: Vec<&&str> = required_types
+            .iter()
+            .filter(|t| !explicit_set.contains(**t))
+            .collect();
+        if !conflicting.is_empty() {
+            return Err(format!(
+                "Filters require type {{{}}} but --type specified {{{}}}",
+                conflicting
+                    .iter()
+                    .map(|t| **t)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                explicit.join(", ")
+            ));
+        }
+    }
+
+    if required_types.len() > 1 {
+        required_types.sort();
+        return Err(format!(
+            "Cannot combine filters from different event types: {}\n\
+             Status filters: --status, --context, --file, --cmd\n\
+             Message filters: --from, --mention, --intent, --thread, --reply-to\n\
+             Life filters: --action",
+            required_types.join(", ")
+        ));
+    }
+
+    Ok(())
+}
+
+/// Escape single quotes for SQL string literals.
+fn escape_sql(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// Escape LIKE wildcards and quotes for SQL LIKE patterns.
+fn escape_sql_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+        .replace('\'', "''")
+}
+
+/// Generate `col = val` for single value, `col IN (...)` for multiple.
+fn eq_or_in(column: &str, values: &[String]) -> String {
+    if values.len() == 1 {
+        format!("{} = '{}'", column, escape_sql(&values[0]))
+    } else {
+        let escaped: Vec<String> = values.iter().map(|x| escape_sql(x)).collect();
+        format!("{} IN ('{}')", column, escaped.join("', '"))
+    }
+}
+
+/// Wrap multiple clauses in OR, or return single clause unwrapped.
+fn or_wrap(clauses: Vec<String>) -> String {
+    if clauses.len() == 1 {
+        clauses.into_iter().next().unwrap()
+    } else {
+        format!("({})", clauses.join(" OR "))
+    }
+}
+
+/// Build SQL WHERE clause from filter flags.
+///
+/// Composition rules:
+/// - Multiple values for same flag = OR (any can match)
+/// - Different flags = AND (all must match)
+/// - Automatically infers type based on filter flags used
+pub fn build_sql_from_flags(filters: &FilterMap) -> Result<String, String> {
+    if filters.is_empty() {
+        return Ok(String::new());
+    }
+
+    validate_type_constraints(filters)?;
+
+    let mut clauses: Vec<String> = Vec::new();
+
+    // Instance filter
+    if let Some(values) = filters.get("instance") {
+        clauses.push(eq_or_in("instance", values));
+    }
+
+    // Type filter
+    if let Some(values) = filters.get("type") {
+        clauses.push(eq_or_in("type", values));
+    } else if STATUS_FLAGS.iter().any(|f| filters.contains_key(*f)) {
+        clauses.push("type = 'status'".into());
+    } else if MESSAGE_FLAGS.iter().any(|f| filters.contains_key(*f)) {
+        clauses.push("type = 'message'".into());
+    } else if LIFE_FLAGS.iter().any(|f| filters.contains_key(*f)) {
+        clauses.push("type = 'life'".into());
+    }
+
+    // A participant is either the message's routing instance (the sender) or
+    // one of its delivery recipients. Unlike --agent, this reconstructs both
+    // sides of an hcom transport exchange.
+    if let Some(values) = filters.get("participant") {
+        let participant_clauses: Vec<String> = values
+            .iter()
+            .map(|value| {
+                let value = escape_sql(value);
+                format!(
+                    "(instance = '{value}' OR EXISTS (SELECT 1 FROM json_each(msg_delivered_to) WHERE value = '{value}'))"
+                )
+            })
+            .collect();
+        clauses.push(or_wrap(participant_clauses));
+    }
+
+    // Status filter
+    if let Some(values) = filters.get("status") {
+        clauses.push(eq_or_in("status_val", values));
+    }
+
+    // Context filter
+    if let Some(values) = filters.get("context") {
+        let context_clauses: Vec<String> = values
+            .iter()
+            .map(|pattern| {
+                if pattern.contains('*') {
+                    let parts: Vec<&str> = pattern.split('*').collect();
+                    let sql_pattern: String = parts
+                        .iter()
+                        .map(|p| escape_sql_like(p))
+                        .collect::<Vec<_>>()
+                        .join("%");
+                    format!("status_context LIKE '{}' ESCAPE '\\'", sql_pattern)
+                } else {
+                    format!("status_context = '{}'", escape_sql(pattern))
+                }
+            })
+            .collect();
+        clauses.push(or_wrap(context_clauses));
+    }
+
+    // File filter (status_detail for file write tools)
+    if let Some(values) = filters.get("file") {
+        clauses.push(format!("status_context IN {}", FILE_WRITE_CONTEXTS));
+        let file_clauses: Vec<String> = values
+            .iter()
+            .map(|pattern| {
+                if pattern.contains('*') {
+                    let parts: Vec<&str> = pattern.split('*').collect();
+                    let sql_pattern: String = parts
+                        .iter()
+                        .map(|p| escape_sql_like(p))
+                        .collect::<Vec<_>>()
+                        .join("%");
+                    format!("status_detail LIKE '{}' ESCAPE '\\'", sql_pattern)
+                } else {
+                    format!(
+                        "status_detail LIKE '%{}%' ESCAPE '\\'",
+                        escape_sql_like(pattern)
+                    )
+                }
+            })
+            .collect();
+        clauses.push(or_wrap(file_clauses));
+    }
+
+    // Cmd filter (status_detail for shell tools)
+    // Supports =exact, ^starts-with, else contains — no $ or * glob
+    if let Some(values) = filters.get("cmd") {
+        clauses.push(format!("status_context IN {}", SHELL_TOOL_CONTEXTS));
+        let cmd_clauses: Vec<String> = values
+            .iter()
+            .map(|pattern| {
+                if let Some(stripped) = pattern.strip_prefix('=') {
+                    format!("status_detail = '{}'", escape_sql(stripped))
+                } else if let Some(stripped) = pattern.strip_prefix('^') {
+                    format!(
+                        "status_detail LIKE '{}%' ESCAPE '\\'",
+                        escape_sql_like(stripped)
+                    )
+                } else {
+                    format!(
+                        "status_detail LIKE '%{}%' ESCAPE '\\'",
+                        escape_sql_like(pattern)
+                    )
+                }
+            })
+            .collect();
+        clauses.push(or_wrap(cmd_clauses));
+    }
+
+    // Message filters
+    if let Some(values) = filters.get("from") {
+        clauses.push(eq_or_in("msg_from", values));
+    }
+
+    if let Some(values) = filters.get("mention") {
+        let mention_clauses: Vec<String> = values
+            .iter()
+            .map(|name| {
+                format!(
+                    "EXISTS (SELECT 1 FROM json_each(msg_mentions) WHERE value = '{}')",
+                    escape_sql(name)
+                )
+            })
+            .collect();
+        clauses.push(or_wrap(mention_clauses));
+    }
+
+    if let Some(values) = filters.get("intent") {
+        clauses.push(eq_or_in("msg_intent", values));
+    }
+
+    if let Some(values) = filters.get("thread") {
+        clauses.push(eq_or_in("msg_thread", values));
+    }
+
+    if let Some(values) = filters.get("reply_to") {
+        clauses.push(eq_or_in("msg_reply_to", values));
+    }
+
+    // Life filters
+    if let Some(values) = filters.get("action") {
+        clauses.push(eq_or_in("life_action", values));
+    }
+
+    // Time range filters
+    if let Some(values) = filters.get("after") {
+        for ts in values {
+            clauses.push(format!("timestamp >= '{}'", escape_sql(ts)));
+        }
+    }
+
+    if let Some(values) = filters.get("before") {
+        for ts in values {
+            clauses.push(format!("timestamp < '{}'", escape_sql(ts)));
+        }
+    }
+
+    // Collision filter
+    if filters.contains_key("collision") {
+        let collision_sql = format!(
+            "(type = 'status' AND status_context IN {ctx}\n\
+             AND events_v.status_detail IS NOT NULL\n\
+             AND events_v.status_detail != ''\n\
+             AND EXISTS (\n\
+             \x20   SELECT 1 FROM events_v e\n\
+             \x20   WHERE +e.type = 'status' AND e.status_context IN {ctx}\n\
+             \x20   AND e.status_detail IS NOT NULL AND e.status_detail != ''\n\
+             \x20   AND e.status_detail = events_v.status_detail\n\
+             \x20   AND e.instance != events_v.instance\n\
+             \x20   AND {window}\n\
+             ))",
+            ctx = FILE_WRITE_CONTEXTS,
+            window = collision_window_sql("events_v", "e"),
+        );
+        clauses.push(collision_sql);
+    }
+
+    Ok(clauses.join(" AND "))
+}
+
+/// Validate timestamp format: must start with YYYY-MM-DD.
+/// YYYY-MM-DD: positions [0-3]=year, [4]='-', [5-6]=month, [7]='-', [8-9]=day
+fn parse_timestamp(s: &str) -> Result<String, String> {
+    let b = s.as_bytes();
+    if b.len() >= 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && s[..4].parse::<u16>().is_ok()
+        && s[5..7].parse::<u8>().is_ok()
+        && s[8..10].parse::<u8>().is_ok()
+    {
+        Ok(s.to_string())
+    } else {
+        Err(format!(
+            "'{s}' is not a valid timestamp (expected YYYY-MM-DD[THH:MM:SS[Z]])"
+        ))
+    }
+}
+
+/// Clap-compatible filter args for events, listen, events sub.
+///
+/// Replaces `parse_event_flags` + `expand_shortcuts` when used with clap.
+/// Repeated flags use OR semantics (e.g., `--agent foo --agent bar`).
+#[derive(clap::Args, Debug, Default, Clone)]
+pub struct EventFilterArgs {
+    #[arg(long)]
+    pub agent: Vec<String>,
+    #[arg(long = "type", value_parser = clap::builder::PossibleValuesParser::new(["message", "status", "life"]))]
+    pub event_type: Vec<String>,
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["active", "listening", "blocked", "inactive", "launching", "error"]))]
+    pub status: Vec<String>,
+    #[arg(long)]
+    pub context: Vec<String>,
+    #[arg(long)]
+    pub file: Vec<String>,
+    #[arg(long)]
+    pub cmd: Vec<String>,
+    #[arg(long)]
+    pub from: Vec<String>,
+    /// Include messages sent by or delivered to this participant.
+    #[arg(long)]
+    pub participant: Vec<String>,
+    #[arg(long)]
+    pub mention: Vec<String>,
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["created", "started", "ready", "stopped", "batch_launched", "launch_failed", "launch_blocked"]))]
+    pub action: Vec<String>,
+    #[arg(long, value_parser = parse_timestamp)]
+    pub after: Vec<String>,
+    #[arg(long, value_parser = parse_timestamp)]
+    pub before: Vec<String>,
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["request", "inform", "ack"]))]
+    pub intent: Vec<String>,
+    #[arg(long)]
+    pub thread: Vec<String>,
+    #[arg(long = "reply-to")]
+    pub reply_to: Vec<String>,
+    #[arg(long)]
+    pub collision: bool,
+    /// Shortcut: --idle NAME → --agent NAME --status listening
+    #[arg(long)]
+    pub idle: Vec<String>,
+    /// Shortcut: --blocked NAME → --agent NAME --status blocked
+    #[arg(long)]
+    pub blocked: Vec<String>,
+}
+
+impl EventFilterArgs {
+    /// Convert to FilterMap (expanding shortcuts), ready for `build_sql_from_flags`.
+    pub fn to_filter_map(&self) -> FilterMap {
+        let mut map = FilterMap::new();
+
+        // Expand --idle/--blocked shortcuts into agent + status
+        let mut agents = self.agent.clone();
+        let mut statuses = self.status.clone();
+        for name in &self.idle {
+            agents.push(name.clone());
+            statuses.push(crate::shared::constants::ST_LISTENING.to_string());
+        }
+        for name in &self.blocked {
+            agents.push(name.clone());
+            statuses.push(crate::shared::constants::ST_BLOCKED.to_string());
+        }
+
+        macro_rules! insert_if_nonempty {
+            ($key:expr, $vec:expr) => {
+                if !$vec.is_empty() {
+                    map.insert($key.into(), $vec);
+                }
+            };
+        }
+
+        insert_if_nonempty!("instance", agents);
+        insert_if_nonempty!("type", self.event_type.clone());
+        insert_if_nonempty!("status", statuses);
+        insert_if_nonempty!("context", self.context.clone());
+        insert_if_nonempty!("file", self.file.clone());
+        insert_if_nonempty!("cmd", self.cmd.clone());
+        insert_if_nonempty!("from", self.from.clone());
+        insert_if_nonempty!("participant", self.participant.clone());
+        insert_if_nonempty!("mention", self.mention.clone());
+        insert_if_nonempty!("action", self.action.clone());
+        insert_if_nonempty!("after", self.after.clone());
+        insert_if_nonempty!("before", self.before.clone());
+        insert_if_nonempty!("intent", self.intent.clone());
+        insert_if_nonempty!("thread", self.thread.clone());
+        insert_if_nonempty!("reply_to", self.reply_to.clone());
+
+        if self.collision {
+            map.insert("collision".into(), vec!["true".into()]);
+        }
+
+        map
+    }
+
+    /// Returns true if any filter is set.
+    pub fn has_filters(&self) -> bool {
+        !self.agent.is_empty()
+            || !self.event_type.is_empty()
+            || !self.status.is_empty()
+            || !self.context.is_empty()
+            || !self.file.is_empty()
+            || !self.cmd.is_empty()
+            || !self.from.is_empty()
+            || !self.participant.is_empty()
+            || !self.mention.is_empty()
+            || !self.action.is_empty()
+            || !self.after.is_empty()
+            || !self.before.is_empty()
+            || !self.intent.is_empty()
+            || !self.thread.is_empty()
+            || !self.reply_to.is_empty()
+            || self.collision
+            || !self.idle.is_empty()
+            || !self.blocked.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    // ===== expand_shortcuts =====
+
+    #[test]
+    fn test_expand_idle() {
+        let result = expand_shortcuts(&s(&["--idle", "peso"]));
+        assert_eq!(result, s(&["--agent", "peso", "--status", "listening"]));
+    }
+
+    #[test]
+    fn test_expand_blocked() {
+        let result = expand_shortcuts(&s(&["--blocked", "peso"]));
+        assert_eq!(result, s(&["--agent", "peso", "--status", "blocked"]));
+    }
+
+    #[test]
+    fn test_expand_passthrough() {
+        let result = expand_shortcuts(&s(&["--last", "20", "--collision"]));
+        assert_eq!(result, s(&["--last", "20", "--collision"]));
+    }
+
+    // ===== parse_event_flags =====
+
+    #[test]
+    fn test_parse_agent_flag() {
+        let (filters, remaining) =
+            parse_event_flags(&s(&["--agent", "peso", "--last", "20"])).unwrap();
+        assert_eq!(filters["instance"], vec!["peso"]);
+        assert_eq!(remaining, s(&["--last", "20"]));
+    }
+
+    #[test]
+    fn test_parse_collision_boolean() {
+        let (filters, _) = parse_event_flags(&s(&["--collision"])).unwrap();
+        assert!(filters.contains_key("collision"));
+    }
+
+    #[test]
+    fn test_parse_missing_value() {
+        let result = parse_event_flags(&s(&["--agent"]));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires a value"));
+    }
+
+    #[test]
+    fn test_parse_multiple_same_flag() {
+        let (filters, _) = parse_event_flags(&s(&["--agent", "peso", "--agent", "luna"])).unwrap();
+        assert_eq!(filters["instance"], vec!["peso", "luna"]);
+    }
+
+    // ===== validate_type_constraints =====
+
+    #[test]
+    fn test_validate_no_conflict() {
+        let mut filters = FilterMap::new();
+        filters.insert("status".into(), vec!["listening".into()]);
+        filters.insert("context".into(), vec!["tool:Write".into()]);
+        assert!(validate_type_constraints(&filters).is_ok());
+    }
+
+    #[test]
+    fn test_validate_conflict() {
+        let mut filters = FilterMap::new();
+        filters.insert("status".into(), vec!["listening".into()]);
+        filters.insert("from".into(), vec!["bigboss".into()]);
+        let err = validate_type_constraints(&filters).unwrap_err();
+        assert!(err.contains("Cannot combine"));
+    }
+
+    // ===== build_sql_from_flags =====
+
+    #[test]
+    fn test_build_empty() {
+        assert_eq!(build_sql_from_flags(&FilterMap::new()).unwrap(), "");
+    }
+
+    #[test]
+    fn test_build_instance_status() {
+        let mut filters = FilterMap::new();
+        filters.insert("instance".into(), vec!["peso".into()]);
+        filters.insert("status".into(), vec!["listening".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("instance = 'peso'"));
+        assert!(sql.contains("type = 'status'"));
+        assert!(sql.contains("status_val = 'listening'"));
+    }
+
+    #[test]
+    fn test_build_multi_instance() {
+        let mut filters = FilterMap::new();
+        filters.insert("instance".into(), vec!["peso".into(), "luna".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("instance IN ('peso', 'luna')"));
+    }
+
+    #[test]
+    fn test_build_participant_matches_sender_and_recipient() {
+        let mut filters = FilterMap::new();
+        filters.insert("participant".into(), vec!["pita".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("type = 'message'"));
+        assert!(sql.contains("instance = 'pita'"));
+        assert!(sql.contains("json_each(msg_delivered_to) WHERE value = 'pita'"));
+    }
+
+    #[test]
+    fn test_build_cmd_exact() {
+        let mut filters = FilterMap::new();
+        filters.insert("cmd".into(), vec!["=git status".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("status_detail = 'git status'"));
+        assert!(sql.contains(SHELL_TOOL_CONTEXTS));
+    }
+
+    #[test]
+    fn test_build_cmd_starts_with() {
+        let mut filters = FilterMap::new();
+        filters.insert("cmd".into(), vec!["^git".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("status_detail LIKE 'git%'"));
+    }
+
+    #[test]
+    fn test_build_cmd_contains_dollar_literal() {
+        // $ is treated as literal in contains — no ends-with semantics
+        let mut filters = FilterMap::new();
+        filters.insert("cmd".into(), vec!["pattern$".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("status_detail LIKE '%pattern$%'"));
+    }
+
+    #[test]
+    fn test_build_cmd_contains_default() {
+        let mut filters = FilterMap::new();
+        filters.insert("cmd".into(), vec!["npm install".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("status_detail LIKE '%npm install%'"));
+    }
+
+    #[test]
+    fn test_build_file_glob() {
+        let mut filters = FilterMap::new();
+        filters.insert("file".into(), vec!["*.py".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("status_detail LIKE '%.py'"));
+        assert!(sql.contains(FILE_WRITE_CONTEXTS));
+    }
+
+    #[test]
+    fn test_build_context_glob() {
+        let mut filters = FilterMap::new();
+        filters.insert("context".into(), vec!["tool:*".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("status_context LIKE 'tool:%'"));
+    }
+
+    #[test]
+    fn test_build_time_range() {
+        let mut filters = FilterMap::new();
+        filters.insert("after".into(), vec!["2024-01-01T00:00:00Z".into()]);
+        filters.insert("before".into(), vec!["2024-12-31T23:59:59Z".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("timestamp >= '2024-01-01T00:00:00Z'"));
+        assert!(sql.contains("timestamp < '2024-12-31T23:59:59Z'"));
+    }
+
+    #[test]
+    fn test_build_collision() {
+        let mut filters = FilterMap::new();
+        filters.insert("collision".into(), vec!["true".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("EXISTS"));
+        assert!(sql.contains("ABS(strftime"));
+        assert!(sql.contains("+e.type = 'status'"));
+    }
+
+    #[test]
+    fn test_is_file_write_context() {
+        assert!(is_file_write_context("tool:Edit"));
+        assert!(is_file_write_context("tool:apply_patch"));
+        assert!(!is_file_write_context("tool:Bash"));
+        assert!(!is_file_write_context("tool:Edi"));
+        assert!(!is_file_write_context(""));
+    }
+
+    fn sql_context_list_contains(list: &str, operation: &str) -> bool {
+        list.contains(&format!("'tool:{operation}'"))
+    }
+
+    #[test]
+    fn test_activity_contexts_cover_integration_specs() {
+        for spec in crate::integration_spec::ALL {
+            for operation in spec.status_detail.file {
+                let context = format!("tool:{operation}");
+                assert!(
+                    sql_context_list_contains(FILE_WRITE_CONTEXTS, operation),
+                    "missing file-write context {context} for {}",
+                    spec.name
+                );
+                assert!(
+                    FILE_OP_CONTEXTS.contains(&context.as_str()),
+                    "missing file-op context {context} for {}",
+                    spec.name
+                );
+            }
+            for operation in spec.status_detail.bash {
+                assert!(
+                    sql_context_list_contains(SHELL_TOOL_CONTEXTS, operation),
+                    "missing shell context tool:{operation} for {}",
+                    spec.name
+                );
+            }
+        }
+
+        assert!(sql_context_list_contains(
+            FILE_WRITE_CONTEXTS,
+            "NotebookEdit"
+        ));
+        assert!(FILE_OP_CONTEXTS.contains(&"tool:NotebookEdit"));
+    }
+
+    #[test]
+    fn test_collision_filter_matches_real_writes_and_rejects_empty_details() {
+        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        db.init_db().unwrap();
+
+        let insert = |instance: &str, timestamp: &str, context: &str, detail: Option<&str>| {
+            let data = serde_json::json!({
+                "status": "active",
+                "context": context,
+                "detail": detail,
+            });
+            db.conn()
+                .execute(
+                    "INSERT INTO events (timestamp, type, instance, data) VALUES (?1, 'status', ?2, ?3)",
+                    rusqlite::params![timestamp, instance, data.to_string()],
+                )
+                .unwrap();
+        };
+
+        insert(
+            "luna",
+            "2026-06-07T12:00:00Z",
+            "tool:StrReplace",
+            Some("src/main.rs"),
+        );
+        insert(
+            "nova",
+            "2026-06-07T12:00:10Z",
+            "tool:create",
+            Some("src/main.rs"),
+        );
+        insert(
+            "solo",
+            "2026-06-07T12:00:15Z",
+            "tool:write_to_file",
+            Some("src/solo.rs"),
+        );
+        insert("empty-a", "2026-06-07T12:00:20Z", "tool:Write", Some(""));
+        insert("empty-b", "2026-06-07T12:00:21Z", "tool:Edit", Some(""));
+        insert("null-a", "2026-06-07T12:00:22Z", "tool:Write", None);
+        insert("null-b", "2026-06-07T12:00:23Z", "tool:Edit", None);
+
+        let mut filters = FilterMap::new();
+        filters.insert("collision".into(), vec!["true".into()]);
+        let where_sql = build_sql_from_flags(&filters).unwrap();
+        let query = format!("SELECT instance FROM events_v WHERE {where_sql} ORDER BY instance");
+        let mut stmt = db.conn().prepare(&query).unwrap();
+        let matches: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(matches, vec!["luna".to_string(), "nova".to_string()]);
+    }
+
+    #[test]
+    fn test_build_message_filters() {
+        let mut filters = FilterMap::new();
+        filters.insert("from".into(), vec!["bigboss".into()]);
+        filters.insert("intent".into(), vec!["request".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("msg_from = 'bigboss'"));
+        assert!(sql.contains("msg_intent = 'request'"));
+        assert!(sql.contains("type = 'message'"));
+    }
+
+    #[test]
+    fn test_build_mention_filter() {
+        let mut filters = FilterMap::new();
+        filters.insert("mention".into(), vec!["luna".into(), "nova".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("json_each(msg_mentions) WHERE value = 'luna'"));
+        assert!(sql.contains("json_each(msg_mentions) WHERE value = 'nova'"));
+        assert!(sql.contains(" OR "));
+    }
+
+    #[test]
+    fn test_sql_injection_prevention() {
+        let mut filters = FilterMap::new();
+        filters.insert("instance".into(), vec!["O'Reilly".into()]);
+        let sql = build_sql_from_flags(&filters).unwrap();
+        assert!(sql.contains("O''Reilly"));
+    }
+
+    // ===== resolve_filter_names =====
+
+    #[test]
+    fn test_resolve_filter_names_with_tag() {
+        // Create in-memory DB with an instance that has a tag
+        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        db.init_db().unwrap();
+
+        // Insert instance "luna" with tag "team"
+        db.conn()
+            .execute(
+                "INSERT INTO instances (name, status, tag, created_at) \
+                 VALUES ('luna', 'active', 'team', strftime('%s','now'))",
+                [],
+            )
+            .unwrap();
+
+        // Parse --agent team-luna
+        let (mut filters, _) = parse_event_flags(&s(&["--agent", "team-luna"])).unwrap();
+        assert_eq!(filters["instance"], vec!["team-luna"]);
+
+        // Resolve: "team-luna" should become "luna"
+        resolve_filter_names(&mut filters, &db);
+        assert_eq!(filters["instance"], vec!["luna"]);
+    }
+
+    #[test]
+    fn test_resolve_mention_filter_with_tag() {
+        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        db.init_db().unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO instances (name, status, tag, created_at) \
+                 VALUES ('luna', 'active', 'team', strftime('%s','now'))",
+                [],
+            )
+            .unwrap();
+
+        let (mut filters, _) = parse_event_flags(&s(&["--mention", "team-luna"])).unwrap();
+        resolve_filter_names(&mut filters, &db);
+        assert_eq!(filters["mention"], vec!["luna"]);
+    }
+
+    #[test]
+    fn test_resolve_filter_names_direct_match() {
+        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        db.init_db().unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO instances (name, status, created_at) \
+                 VALUES ('peso', 'active', strftime('%s','now'))",
+                [],
+            )
+            .unwrap();
+
+        let (mut filters, _) = parse_event_flags(&s(&["--agent", "peso"])).unwrap();
+        resolve_filter_names(&mut filters, &db);
+        // Should stay "peso" (direct match)
+        assert_eq!(filters["instance"], vec!["peso"]);
+    }
+
+    #[test]
+    fn test_resolve_filter_names_unknown_keeps_original() {
+        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        db.init_db().unwrap();
+
+        let (mut filters, _) = parse_event_flags(&s(&["--agent", "nonexistent"])).unwrap();
+        resolve_filter_names(&mut filters, &db);
+        // Unknown name stays as-is
+        assert_eq!(filters["instance"], vec!["nonexistent"]);
+    }
+
+    #[test]
+    fn test_resolve_filter_names_no_instance_key() {
+        let db = crate::db::HcomDb::open_raw(std::path::Path::new(":memory:")).unwrap();
+        db.init_db().unwrap();
+
+        let (mut filters, _) = parse_event_flags(&s(&["--status", "listening"])).unwrap();
+        // Should not panic when no "instance" key
+        resolve_filter_names(&mut filters, &db);
+        assert!(!filters.contains_key("instance"));
+    }
+
+    // ===== EventFilterArgs =====
+
+    #[test]
+    fn test_filter_args_to_map_basic() {
+        let args = EventFilterArgs {
+            agent: vec!["peso".into()],
+            event_type: vec!["message".into()],
+            from: vec!["bigboss".into()],
+            ..Default::default()
+        };
+        let map = args.to_filter_map();
+        assert_eq!(map["instance"], vec!["peso"]);
+        assert_eq!(map["type"], vec!["message"]);
+        assert_eq!(map["from"], vec!["bigboss"]);
+    }
+
+    #[test]
+    fn test_filter_args_idle_shortcut() {
+        let args = EventFilterArgs {
+            idle: vec!["peso".into()],
+            ..Default::default()
+        };
+        let map = args.to_filter_map();
+        assert_eq!(map["instance"], vec!["peso"]);
+        assert_eq!(map["status"], vec!["listening"]);
+    }
+
+    #[test]
+    fn test_filter_args_blocked_shortcut() {
+        let args = EventFilterArgs {
+            blocked: vec!["luna".into()],
+            ..Default::default()
+        };
+        let map = args.to_filter_map();
+        assert_eq!(map["instance"], vec!["luna"]);
+        assert_eq!(map["status"], vec!["blocked"]);
+    }
+
+    #[test]
+    fn test_filter_args_collision() {
+        let args = EventFilterArgs {
+            collision: true,
+            ..Default::default()
+        };
+        let map = args.to_filter_map();
+        assert!(map.contains_key("collision"));
+    }
+
+    #[test]
+    fn test_filter_args_empty() {
+        let args = EventFilterArgs::default();
+        assert!(!args.has_filters());
+        assert!(args.to_filter_map().is_empty());
+    }
+
+    #[test]
+    fn test_filter_args_has_filters() {
+        let args = EventFilterArgs {
+            agent: vec!["peso".into()],
+            ..Default::default()
+        };
+        assert!(args.has_filters());
+    }
+
+    #[test]
+    fn test_filter_args_repeated_agents() {
+        let args = EventFilterArgs {
+            agent: vec!["peso".into(), "luna".into()],
+            ..Default::default()
+        };
+        let map = args.to_filter_map();
+        assert_eq!(map["instance"], vec!["peso", "luna"]);
+    }
+}

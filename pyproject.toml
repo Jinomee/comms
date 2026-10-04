@@ -1,0 +1,36 @@
+[build-system]
+requires = ["maturin>=1.14.1,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "hcom"
+version = "0.7.27"
+description = "Let AI agents message, watch, and spawn each other across terminals. Claude Code, Gemini CLI, Codex, OpenCode, Kilo Code, Pi, Oh My Pi, Antigravity, Cursor, Kimi, Copilot."
+readme = "README.md"
+license = "MIT"
+authors = [{name = "aannoo"}]
+keywords = ["claude", "claude-code", "gemini", "codex", "opencode", "kilo", "kilocode", "pi", "omp", "oh-my-pi", "antigravity", "cursor", "kimi", "copilot", "hooks", "agents", "cli", "multi-agent", "orchestration", "terminal"]
+dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development",
+    "Topic :: System :: Monitoring",
+    "Topic :: Terminals",
+]
+
+[project.urls]
+Homepage = "https://github.com/aannoo/hcom"
+Repository = "https://github.com/aannoo/hcom"
+Issues = "https://github.com/aannoo/hcom/issues"
+Documentation = "https://github.com/aannoo/hcom#readme"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "Cargo.toml"
+strip = true

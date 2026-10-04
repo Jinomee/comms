@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PREFIX="${HCOM_MOCK_TOOLS_PREFIX:-$ROOT/target/mock-tools}"
+CACHE="${HCOM_MOCK_TOOLS_NPM_CACHE:-$ROOT/target/npm-cache}"
+
+mkdir -p "$PREFIX" "$CACHE"
+
+# Pinned `<package>@<version>` specs; comments and blank lines skipped.
+pins=()
+while IFS= read -r line; do
+  [[ -z "$line" || "$line" == \#* ]] || pins+=("$line")
+done < <(sed 's/[[:space:]]*$//' "$ROOT/scripts/mock-tools.pins")
+
+pin_for() {
+  local package="$1" pin
+  for pin in "${pins[@]}"; do
+    if [[ "$pin" == "$package@"* ]]; then
+      printf '%s\n' "$pin"
+      return
+    fi
+  done
+  printf 'no pin for %s in scripts/mock-tools.pins\n' "$package" >&2
+  exit 1
+}
+
+# No args installs every pin. An arg is a tool name (`codex`, `claude`) that
+# resolves to its pin, or an explicit npm spec used as given.
+packages=()
+if [[ "$#" -eq 0 ]]; then
+  packages=("${pins[@]}")
+fi
+for arg in "$@"; do
+  case "$arg" in
+    codex) packages+=("$(pin_for @openai/codex)") ;;
+    claude | @anthropic-ai/claude-code) packages+=("$(pin_for @anthropic-ai/claude-code)") ;;
+    *) packages+=("$arg") ;;
+  esac
+done
+
+claude_version=""
+has_claude_native=0
+codex_version=""
+has_codex_native=0
+for package in "${packages[@]}"; do
+  case "$package" in
+    @openai/codex-linux-* | @openai/codex-darwin-*)
+      has_codex_native=1
+      ;;
+    @openai/codex@*)
+      codex_version="${package##*@}"
+      ;;
+    @anthropic-ai/claude-code@*)
+      claude_version="${package##*@}"
+      ;;
+    @anthropic-ai/claude-code-*)
+      has_claude_native=1
+      ;;
+  esac
+done
+
+os="$(uname -s)"
+arch="$(uname -m)"
+
+if [[ -n "$codex_version" && "$has_codex_native" -eq 0 ]]; then
+  case "$os:$arch" in
+    Darwin:arm64) codex_platform="darwin-arm64" ;;
+    Darwin:x86_64) codex_platform="darwin-x64" ;;
+    Linux:x86_64) codex_platform="linux-x64" ;;
+    Linux:aarch64 | Linux:arm64) codex_platform="linux-arm64" ;;
+    *)
+      printf 'Unsupported Codex mock-test platform: %s %s\n' "$os" "$arch" >&2
+      exit 1
+      ;;
+  esac
+  packages+=(
+    "@openai/codex-$codex_platform@npm:@openai/codex@$codex_version-$codex_platform"
+  )
+fi
+
+if [[ -n "$claude_version" && "$has_claude_native" -eq 0 ]]; then
+  case "$os:$arch" in
+    Darwin:arm64) claude_platform="darwin-arm64" ;;
+    Darwin:x86_64) claude_platform="darwin-x64" ;;
+    Linux:x86_64) claude_platform="linux-x64" ;;
+    Linux:aarch64 | Linux:arm64) claude_platform="linux-arm64" ;;
+    *)
+      printf 'Unsupported Claude mock-test platform: %s %s\n' "$os" "$arch" >&2
+      exit 1
+      ;;
+  esac
+  packages+=("@anthropic-ai/claude-code-$claude_platform@$claude_version")
+fi
+
+# npm's cache retains downloaded tarballs, but `npm install --global` still
+# revalidates registry metadata and reifies the installed packages on every
+# invocation. The real-tool gate needs exact pins, so a successful version
+# check is enough to reuse an already-installed, platform-specific tool.
+#
+# A version is one whitespace-separated token of the output (`claude` prints
+# `2.1.283 (Claude Code)`, `codex` prints `codex-cli 0.157.1`), matched exactly
+# as the tests' pin check does, so 2.1.28 never passes for 2.1.283.
+installed_pin_matches() {
+  local tool="$1" wanted="$2" launcher="$PREFIX/bin/$1" reported token
+  [[ -x "$launcher" ]] || return 1
+  reported="$("$launcher" --version 2>&1)" || return 1
+  for token in $reported; do
+    [[ "${token#v}" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+# Build tool→version map from packages and check all of them.
+declare -A pin_map=()
+[[ -z "$codex_version" ]]  || pin_map[codex]="$codex_version"
+[[ -z "$claude_version" ]] || pin_map[claude]="$claude_version"
+
+if [[ ${#pin_map[@]} -gt 0 ]]; then
+  all_cached=true
+  for tool in "${!pin_map[@]}"; do
+    if ! installed_pin_matches "$tool" "${pin_map[$tool]}"; then
+      all_cached=false
+      break
+    fi
+  done
+  if $all_cached; then
+    for tool in "${!pin_map[@]}"; do
+      printf '%s %s verified at %s\n' "$tool" "${pin_map[$tool]}" "$PREFIX/bin/$tool" >&2
+    done
+    printf '%s\n' "$PREFIX/bin"
+    exit 0
+  fi
+fi
+
+npm_platform="$(node -p 'process.platform')"
+npm_platform_args=()
+if [[ "$npm_platform" == "android" ]]; then
+  npm_platform_args+=(--force)
+fi
+
+npm install \
+  --global \
+  --prefix "$PREFIX" \
+  --cache "$CACHE" \
+  --no-audit \
+  --no-fund \
+  --fetch-retries 5 \
+  --fetch-retry-mintimeout 20000 \
+  --fetch-retry-maxtimeout 120000 \
+  --fetch-timeout 600000 \
+  "${npm_platform_args[@]}" \
+  "${packages[@]}"
+
+if [[ -n "$claude_version" ]]; then
+  node "$PREFIX/lib/node_modules/@anthropic-ai/claude-code/install.cjs"
+fi
+
+if [[ "$npm_platform" == "android" && -n "$claude_version" ]]; then
+  claude_native="$PREFIX/lib/node_modules/@anthropic-ai/claude-code-$claude_platform/claude"
+  if [[ ! -x "$claude_native" ]]; then
+    printf 'Claude native binary is missing: %s\n' "$claude_native" >&2
+    exit 1
+  fi
+  claude_proot_distro="${HCOM_MOCK_TOOLS_CLAUDE_PROOT_DISTRO:-}"
+  if [[ -z "$claude_proot_distro" ]]; then
+    printf '%s\n' \
+      'Android real-Claude tests require a glibc proot distro.' \
+      'Set HCOM_MOCK_TOOLS_CLAUDE_PROOT_DISTRO to its proot-distro name.' >&2
+    exit 1
+  fi
+  if [[ ! "$claude_proot_distro" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    printf 'Invalid proot distro name: %s\n' "$claude_proot_distro" >&2
+    exit 1
+  fi
+  if ! command -v proot-distro >/dev/null; then
+    printf 'proot-distro is required for Android real-Claude tests\n' >&2
+    exit 1
+  fi
+  if ! proot-distro login "$claude_proot_distro" \
+    --user "$(id -u):$(id -g)" \
+    -- /bin/true >/dev/null 2>&1; then
+    printf '%s\n' \
+      "Cannot enter proot distro '$claude_proot_distro' as UID $(id -u)." \
+      'Configure that user with a valid login shell inside the distro.' >&2
+    exit 1
+  fi
+  rm -f "$PREFIX/bin/claude"
+  {
+    printf '#!%s\n' "$(command -v bash)"
+    printf 'env_args=()\n'
+    printf 'while IFS= read -r name; do\n'
+    printf '  case "$name" in\n'
+    printf '    HCOM_* | ANTHROPIC_* | CLAUDE_* | DISABLE_* | ENABLE_* | XDG_* | CODEX_HOME | DUMMY_KEY | PATH | TMPDIR | CI | LANG | LC_ALL | TERM | NO_COLOR | FORCE_COLOR)\n'
+    printf '      env_args+=(--env "$name=${!name}") ;;\n'
+    printf '  esac\n'
+    printf 'done < <(compgen -e)\n'
+    printf 'exec proot-distro login "%s" --user %s:%s --shared-tmp --work-dir "$PWD" "${env_args[@]}" -- /usr/bin/env "HOME=$HOME" "%s" "$@"\n' \
+      "$claude_proot_distro" \
+      "$(id -u)" \
+      "$(id -g)" \
+      "$claude_native"
+  } >"$PREFIX/bin/claude"
+  chmod +x "$PREFIX/bin/claude"
+fi
+
+if [[ "$npm_platform" == "android" && -n "$codex_version" ]]; then
+  codex_entry="$PREFIX/lib/node_modules/@openai/codex/bin/codex.js"
+  if [[ ! -f "$codex_entry" ]]; then
+    printf 'Codex entry point is missing: %s\n' "$codex_entry" >&2
+    exit 1
+  fi
+  rm -f "$PREFIX/bin/codex"
+  printf '#!%s\nexec "%s" "%s" "$@"\n' \
+    "$(command -v bash)" \
+    "$(command -v node)" \
+    "$codex_entry" \
+    >"$PREFIX/bin/codex"
+  chmod +x "$PREFIX/bin/codex"
+fi
+
+# Verify the pin here rather than letting a real-tool test discover it: this
+# script knows which version it asked for and can name the launcher that
+# answered, which a `found 2.1.185` panic 200 lines into a test cannot.
+verify_pin() {
+  local tool="$1" wanted="$2" launcher="$PREFIX/bin/$1" reported
+  [[ -n "$wanted" ]] || return 0
+  if [[ ! -x "$launcher" ]]; then
+    printf 'installed %s@%s but no executable at %s\n' "$tool" "$wanted" "$launcher" >&2
+    exit 1
+  fi
+  # `|| true`: under `set -e` a nonzero `--version` would abort the script here
+  # with no output, losing the very text that explains what went wrong.
+  reported="$("$launcher" --version 2>&1 || true)"
+  if [[ "$reported" != *"$wanted"* ]]; then
+    printf "pinned %s@%s, but '%s' reports '%s'\n" "$tool" "$wanted" "$launcher" "$reported" >&2
+    exit 1
+  fi
+  printf '%s %s verified at %s\n' "$tool" "$wanted" "$launcher" >&2
+}
+
+verify_pin claude "$claude_version"
+verify_pin codex "$codex_version"
+
+printf '%s\n' "$PREFIX/bin"

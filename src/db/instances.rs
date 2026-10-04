@@ -1,0 +1,1590 @@
+//! Instance table accessors and row conversion.
+
+use anyhow::Result;
+use rusqlite::{OptionalExtension, params};
+
+use super::{HcomDb, chrono_now_iso, subscriptions};
+use crate::shared::constants::{ST_INACTIVE, ST_LISTENING};
+use crate::shared::time::now_epoch_i64;
+
+/// Instance status info
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstanceStatus {
+    pub status: String,
+    pub detail: String,
+    pub last_event_id: i64,
+}
+
+/// Full instance row from the instances table.
+#[derive(Debug, Clone)]
+pub struct InstanceRow {
+    pub name: String,
+    pub session_id: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub parent_name: Option<String>,
+    pub agent_id: Option<String>,
+    pub tag: Option<String>,
+    pub last_event_id: i64,
+    pub last_stop: i64,
+    pub status: String,
+    pub status_time: i64,
+    pub last_seen: i64,
+    pub status_context: String,
+    pub status_detail: String,
+    pub directory: String,
+    pub created_at: f64,
+    pub transcript_path: String,
+    pub tool: String,
+    pub background: i64,
+    pub background_log_file: String,
+    pub tcp_mode: i64,
+    pub wait_timeout: Option<i64>,
+    pub subagent_timeout: Option<i64>,
+    pub hints: Option<String>,
+    pub origin_device_id: Option<String>,
+    pub pid: Option<i64>,
+    pub launch_args: Option<String>,
+    pub terminal_preset_requested: Option<String>,
+    pub terminal_preset_effective: Option<String>,
+    pub launch_context: Option<String>,
+    pub name_announced: i64,
+    pub idle_since: Option<String>,
+}
+
+impl InstanceRow {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            name: row.get("name")?,
+            session_id: row
+                .get::<_, Option<String>>("session_id")?
+                .filter(|s| !s.is_empty()),
+            parent_session_id: row
+                .get::<_, Option<String>>("parent_session_id")?
+                .filter(|s| !s.is_empty()),
+            parent_name: row
+                .get::<_, Option<String>>("parent_name")?
+                .filter(|s| !s.is_empty()),
+            agent_id: row
+                .get::<_, Option<String>>("agent_id")?
+                .filter(|s| !s.is_empty()),
+            tag: row
+                .get::<_, Option<String>>("tag")?
+                .filter(|s| !s.is_empty()),
+            last_event_id: row.get::<_, Option<i64>>("last_event_id")?.unwrap_or(0),
+            last_stop: row.get::<_, Option<i64>>("last_stop")?.unwrap_or(0),
+            status: row
+                .get::<_, Option<String>>("status")?
+                .unwrap_or_else(|| "inactive".into()),
+            status_time: row.get::<_, Option<i64>>("status_time")?.unwrap_or(0),
+            last_seen: row.get::<_, Option<i64>>("last_seen")?.unwrap_or(0),
+            status_context: row
+                .get::<_, Option<String>>("status_context")?
+                .unwrap_or_default(),
+            status_detail: row
+                .get::<_, Option<String>>("status_detail")?
+                .unwrap_or_default(),
+            directory: row
+                .get::<_, Option<String>>("directory")?
+                .unwrap_or_default(),
+            created_at: row.get::<_, Option<f64>>("created_at")?.unwrap_or(0.0),
+            transcript_path: row
+                .get::<_, Option<String>>("transcript_path")?
+                .unwrap_or_default(),
+            tool: row
+                .get::<_, Option<String>>("tool")?
+                .unwrap_or_else(|| "claude".into()),
+            background: row.get::<_, Option<i64>>("background")?.unwrap_or(0),
+            background_log_file: row
+                .get::<_, Option<String>>("background_log_file")?
+                .unwrap_or_default(),
+            tcp_mode: row.get::<_, Option<i64>>("tcp_mode")?.unwrap_or(0),
+            wait_timeout: row.get::<_, Option<i64>>("wait_timeout")?,
+            subagent_timeout: row.get::<_, Option<i64>>("subagent_timeout")?,
+            hints: row
+                .get::<_, Option<String>>("hints")?
+                .filter(|s| !s.is_empty()),
+            origin_device_id: row
+                .get::<_, Option<String>>("origin_device_id")?
+                .filter(|s| !s.is_empty()),
+            pid: row.get::<_, Option<i64>>("pid")?,
+            launch_args: row
+                .get::<_, Option<String>>("launch_args")?
+                .filter(|s| !s.is_empty()),
+            terminal_preset_requested: row
+                .get::<_, Option<String>>("terminal_preset_requested")?
+                .filter(|s| !s.is_empty()),
+            terminal_preset_effective: row
+                .get::<_, Option<String>>("terminal_preset_effective")?
+                .filter(|s| !s.is_empty()),
+            launch_context: row
+                .get::<_, Option<String>>("launch_context")?
+                .filter(|s| !s.is_empty()),
+            name_announced: row.get::<_, Option<i64>>("name_announced")?.unwrap_or(0),
+            idle_since: row
+                .get::<_, Option<String>>("idle_since")?
+                .filter(|s| !s.is_empty()),
+        })
+    }
+}
+
+/// Get instance by name. Returns full row as JSON or None.
+/// Column list for instance SELECT queries. Must match instance_row_to_json index order.
+pub(super) const INSTANCE_COLUMNS: &str =
+    "name, session_id, parent_session_id, parent_name, tag, last_event_id,
+     status, status_time, last_seen, status_context, status_detail, last_stop, directory,
+     created_at, transcript_path, tcp_mode, wait_timeout, background,
+     background_log_file, name_announced, agent_id,
+     origin_device_id, hints, subagent_timeout, tool, launch_args,
+     terminal_preset_requested, terminal_preset_effective,
+     idle_since, pid, launch_context";
+
+impl InstanceRow {
+    /// Process identity recorded with this snapshot's PID, if any.
+    pub fn pid_identity(&self) -> Option<String> {
+        let ctx: serde_json::Value = serde_json::from_str(self.launch_context.as_deref()?).ok()?;
+        ctx.get("pid_identity")?.as_str().map(str::to_string)
+    }
+
+    /// Whether a *different* live process now holds `pid` (the identity in
+    /// this snapshot no longer matches), so it must not be signalled on this
+    /// instance's behalf. Checked against the snapshot, not a fresh read, so
+    /// a concurrent delete of the row can't turn a reused PID into "unknown".
+    /// A PID that is simply gone is not "reused": its process group can
+    /// outlive the leader, and a PID isn't recycled while that group exists,
+    /// so group signals and pane cleanup stay safe there. Rows without a
+    /// stored identity can't tell and report `false`, as before identities.
+    pub fn pid_reused(&self, pid: u32) -> bool {
+        self.pid_identity().is_some_and(|expected| {
+            crate::sys::process::identity(pid).is_some_and(|current| current != expected)
+        })
+    }
+}
+
+/// Observe a live PID's process incarnation for storage.
+///
+/// Returns `Ok(None)` when the process is running but the platform can't report
+/// an identity (e.g. a sandbox hiding `/proc/sys/kernel/random/boot_id`): the
+/// PID is still tracked, just without PID-reuse protection, and cleanup falls
+/// back to plain liveness for that row. Only a PID that is already gone errors.
+pub fn observe_pid_identity(pid: u32) -> Result<Option<String>> {
+    // 0 and values that wrap negative as pid_t address process groups (or
+    // every process) in kill(), so liveness would be meaningless.
+    if pid == 0 || i32::try_from(pid).is_err() {
+        anyhow::bail!("invalid pid {pid}");
+    }
+    if let Some(identity) = crate::sys::process::identity(pid) {
+        return Ok(Some(identity));
+    }
+    if !crate::sys::process::is_alive(pid) {
+        anyhow::bail!("process {pid} is not running");
+    }
+    crate::log::log_warn(
+        "db",
+        "pid_identity.unavailable",
+        &format!("pid={pid} tracked without process identity"),
+    );
+    Ok(None)
+}
+
+impl HcomDb {
+    /// Get instance status by name
+    ///
+    /// Returns:
+    /// - Ok(Some(status)) if instance exists
+    /// - Ok(None) if instance not found
+    /// - Err if database error occurs
+    pub fn get_instance_status(&self, name: &str) -> Result<Option<InstanceStatus>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT name, status, status_detail, last_event_id
+             FROM instances WHERE name = ?",
+        )?;
+
+        match stmt.query_row(params![name], |row| {
+            Ok(InstanceStatus {
+                status: row
+                    .get::<_, String>(1)
+                    .unwrap_or_else(|_| "unknown".to_string()),
+                detail: row.get::<_, String>(2).unwrap_or_default(),
+                last_event_id: row.get::<_, i64>(3).unwrap_or(0),
+            })
+        }) {
+            Ok(status) => Ok(Some(status)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Set instance status in the live `instances` row.
+    pub fn set_status(&self, name: &str, status: &str, context: &str) -> Result<()> {
+        let now = now_epoch_i64();
+
+        // Update last_stop heartbeat when entering listening state
+        if status == ST_LISTENING {
+            self.conn.execute(
+                "UPDATE instances SET status = ?, status_context = ?, status_time = ?, last_stop = ? WHERE name = ?",
+                params![status, context, now, now, name],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE instances SET status = ?, status_context = ?, status_time = ? WHERE name = ?",
+                params![status, context, now, name],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Record an explicit kill before signalling the process.
+    ///
+    /// The PTY exit cleanup may finalize the stop before `hcom kill` does; it
+    /// reads `status_detail` back so the stopped event names the real initiator
+    /// instead of "pty".
+    pub fn mark_killed(&self, name: &str, initiator: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE instances SET status = ?, status_context = 'exit:killed', status_detail = ?, status_time = ?
+             WHERE name = ?",
+            params![ST_INACTIVE, initiator, now_epoch_i64(), name],
+        )?;
+        Ok(())
+    }
+
+    /// Update gate blocking status WITHOUT logging a status event.
+    ///
+    /// Used for transient PTY gate states (tui:*) that shouldn't pollute the events table.
+    /// Only updates the instance row; TUI reads this for display but no event is created.
+    ///
+    /// Args:
+    ///   context: Gate context like "tui:not-ready", "tui:user-active", etc.
+    ///   detail: Human-readable description like "user is typing"
+    /// Preserve status_detail when it's "cmd:listen" — gate diagnostics must not
+    /// overwrite the flag that blocks PTY injection during `hcom listen`.
+    pub fn set_gate_status(&self, name: &str, context: &str, detail: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE instances SET status_context = ?,
+                status_detail = CASE WHEN status_detail = 'cmd:listen' THEN status_detail ELSE ? END
+             WHERE name = ?",
+            params![context, detail, name],
+        )?;
+        Ok(())
+    }
+
+    /// Update instance PID after spawn, recording the exact process incarnation
+    /// when the platform can observe it (see [`observe_pid_identity`]).
+    pub fn update_instance_pid(&self, name: &str, pid: u32) -> Result<()> {
+        let pid_identity = observe_pid_identity(pid)?;
+        self.update_instance_pid_with_identity(name, pid, pid_identity.as_deref())
+    }
+
+    /// Update an instance PID with an already-observed process incarnation.
+    /// `None` stores the PID without reuse protection and drops any stale
+    /// identity so it can't be mistaken for this process.
+    pub fn update_instance_pid_with_identity(
+        &self,
+        name: &str,
+        pid: u32,
+        pid_identity: Option<&str>,
+    ) -> Result<()> {
+        match pid_identity {
+            Some(pid_identity) => self.conn.execute(
+                "UPDATE instances
+                 SET pid = ?,
+                     launch_context = json_set(
+                         CASE WHEN json_valid(launch_context) THEN launch_context ELSE '{}' END,
+                         '$.pid_identity', ?
+                     )
+                 WHERE name = ?",
+                params![pid as i64, pid_identity, name],
+            )?,
+            None => self.conn.execute(
+                "UPDATE instances
+                 SET pid = ?,
+                     launch_context = CASE
+                         WHEN json_valid(launch_context)
+                         THEN json_remove(launch_context, '$.pid_identity')
+                         ELSE launch_context
+                     END
+                 WHERE name = ?",
+                params![pid as i64, name],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// Atomically persist PID ownership together with related instance fields.
+    pub fn update_instance_pid_with_fields(
+        &self,
+        name: &str,
+        pid: u32,
+        updates: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        let pid_identity = observe_pid_identity(pid)?;
+        self.update_instance_pid_with_identity_and_fields(
+            name,
+            pid,
+            pid_identity.as_deref(),
+            updates,
+        )
+    }
+
+    /// Atomically persist an already-observed PID incarnation with related fields.
+    pub fn update_instance_pid_with_identity_and_fields(
+        &self,
+        name: &str,
+        pid: u32,
+        pid_identity: Option<&str>,
+        updates: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        self.with_write_scope(|| {
+            self.update_instance_fields(name, updates)?;
+            self.update_instance_pid_with_identity(name, pid, pid_identity)
+        })
+    }
+
+    /// Stored process incarnation for an instance PID.
+    pub fn get_instance_pid_identity(&self, name: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT CASE WHEN json_valid(launch_context)
+                        THEN json_extract(launch_context, '$.pid_identity') END
+                 FROM instances WHERE name = ?",
+                params![name],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Clear a PID and its stored process identity.
+    pub fn clear_instance_pid(&self, name: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE instances
+             SET pid = NULL,
+                 launch_context = CASE
+                     WHEN json_valid(launch_context)
+                     THEN json_remove(launch_context, '$.pid_identity')
+                     ELSE launch_context
+                 END
+             WHERE name = ?",
+            params![name],
+        )?;
+        Ok(())
+    }
+
+    /// Store launch_context JSON (terminal preset, pane_id, env snapshot).
+    /// Merges incoming keys into existing JSON, only filling fields that are
+    /// currently missing or empty so late-bound PTY metadata can be persisted
+    /// without clobbering richer hook-captured context.
+    pub fn store_launch_context(&self, name: &str, context_json: &str) -> Result<()> {
+        // A write scope rather than BEGIN IMMEDIATE so this also works inside a
+        // caller's transaction (e.g. placeholder migration during a tool bind).
+        self.with_write_scope(|| {
+            let existing_json: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT launch_context FROM instances WHERE name = ?",
+                    params![name],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
+            let existing_json = existing_json.unwrap_or_default();
+            if existing_json.is_empty() {
+                self.conn.execute(
+                    "UPDATE instances SET launch_context = ? WHERE name = ?",
+                    params![context_json, name],
+                )?;
+                return Ok(());
+            }
+
+            let mut existing = match serde_json::from_str::<
+                serde_json::Map<String, serde_json::Value>,
+            >(&existing_json)
+            {
+                Ok(map) => map,
+                Err(_) => return Ok(()),
+            };
+            let incoming = match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
+                context_json,
+            ) {
+                Ok(map) => map,
+                Err(_) => return Ok(()),
+            };
+
+            let mut changed = false;
+            for (key, value) in incoming {
+                let should_fill = existing.get(&key).is_none_or(|current| {
+                    current.is_null() || current.as_str().is_some_and(str::is_empty)
+                });
+                if should_fill {
+                    existing.insert(key, value);
+                    changed = true;
+                }
+            }
+
+            if changed {
+                self.conn.execute(
+                    "UPDATE instances SET launch_context = ? WHERE name = ?",
+                    params![
+                        serde_json::to_string(&existing).unwrap_or_else(|_| "{}".to_string()),
+                        name
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Get instance tag (for display name computation).
+    /// Returns Some(tag) if tag is non-empty, None otherwise.
+    pub fn get_instance_tag(&self, name: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT tag FROM instances WHERE name = ?",
+                params![name],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+            .filter(|t| !t.is_empty())
+    }
+
+    /// Get current status and context for gate blocking logic
+    ///
+    /// Returns:
+    /// - Ok(Some((status, context))) if instance exists
+    /// - Ok(None) if instance not found
+    /// - Err if database error occurs
+    pub fn get_status(&self, name: &str) -> Result<Option<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT status, status_context FROM instances WHERE name = ?")?;
+
+        match stmt.query_row(params![name], |row| {
+            Ok((
+                row.get::<_, String>(0)
+                    .unwrap_or_else(|_| "unknown".to_string()),
+                row.get::<_, String>(1).unwrap_or_default(),
+            ))
+        }) {
+            Ok(status) => Ok(Some(status)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get transcript path for an instance
+    ///
+    /// Returns:
+    /// - Ok(Some(path)) if instance exists and has non-empty transcript_path
+    /// - Ok(None) if instance not found or transcript_path is empty
+    /// - Err if database error occurs
+    pub fn get_transcript_path(&self, name: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT transcript_path FROM instances WHERE name = ?")?;
+
+        match stmt.query_row(params![name], |row| row.get::<_, String>(0)) {
+            Ok(path) if !path.is_empty() => Ok(Some(path)),
+            Ok(_) => Ok(None), // Empty path
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get instance snapshot for life event logging before deletion
+    ///
+    /// Returns:
+    /// - Ok(Some(snapshot)) if instance exists
+    /// - Ok(None) if instance not found
+    /// - Err if database error occurs
+    pub fn get_instance_snapshot(&self, name: &str) -> Result<Option<serde_json::Value>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT transcript_path, session_id, tool, directory, parent_name, tag,
+                    wait_timeout, subagent_timeout, hints, pid, created_at, background,
+                    agent_id, launch_args, origin_device_id, background_log_file, last_event_id
+             FROM instances WHERE name = ?",
+        )?;
+
+        match stmt.query_row(params![name], |row| {
+            Ok(serde_json::json!({
+                "transcript_path": row.get::<_, String>(0).unwrap_or_default(),
+                "session_id": row.get::<_, String>(1).unwrap_or_default(),
+                "tool": row.get::<_, String>(2).unwrap_or_default(),
+                "directory": row.get::<_, String>(3).unwrap_or_default(),
+                "parent_name": row.get::<_, String>(4).unwrap_or_default(),
+                "tag": row.get::<_, String>(5).unwrap_or_default(),
+                "wait_timeout": row.get::<_, Option<i64>>(6).unwrap_or(None),
+                "subagent_timeout": row.get::<_, Option<i64>>(7).unwrap_or(None),
+                "hints": row.get::<_, String>(8).unwrap_or_default(),
+                "pid": row.get::<_, Option<i64>>(9).unwrap_or(None),
+                "created_at": row.get::<_, f64>(10).unwrap_or(0.0),
+                "background": row.get::<_, i64>(11).unwrap_or(0),
+                "agent_id": row.get::<_, String>(12).unwrap_or_default(),
+                "launch_args": row.get::<_, String>(13).unwrap_or_default(),
+                "origin_device_id": row.get::<_, String>(14).unwrap_or_default(),
+                "background_log_file": row.get::<_, String>(15).unwrap_or_default(),
+                "last_event_id": row.get::<_, i64>(16).unwrap_or(0),
+            }))
+        }) {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Delete instance row from database
+    pub fn delete_instance(&self, name: &str) -> Result<bool> {
+        let rows = self
+            .conn
+            .execute("DELETE FROM instances WHERE name = ?", params![name])?;
+        Ok(rows > 0)
+    }
+
+    /// Atomically publish a stopped event and remove its live instance state.
+    ///
+    /// The instance delete is the ownership CAS. Cleanup and event insertion
+    /// share its transaction, so an error restores the row for a later retry.
+    pub fn finalize_instance_stop(
+        &self,
+        name: &str,
+        created_at: f64,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        event_data: &serde_json::Value,
+    ) -> Result<bool> {
+        self.finalize_instance_stop_inner(name, created_at, session_id, agent_id, None, event_data)
+    }
+
+    /// Finalize a stop only while the row still owns the inspected PID incarnation.
+    pub fn finalize_instance_stop_if_pid_identity(
+        &self,
+        name: &str,
+        created_at: f64,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        pid_guard: (u32, &str),
+        event_data: &serde_json::Value,
+    ) -> Result<bool> {
+        self.finalize_instance_stop_inner(
+            name,
+            created_at,
+            session_id,
+            agent_id,
+            Some(pid_guard),
+            event_data,
+        )
+    }
+
+    fn finalize_instance_stop_inner(
+        &self,
+        name: &str,
+        created_at: f64,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        pid_guard: Option<(u32, &str)>,
+        event_data: &serde_json::Value,
+    ) -> Result<bool> {
+        let data = serde_json::to_string(event_data)?;
+        let mut event_id = None;
+
+        let won = self.with_immediate_transaction(|tx| {
+            // Stamp after taking the write lock so timestamp order matches id order.
+            let timestamp = chrono_now_iso();
+            let deleted = if let Some((pid, pid_identity)) = pid_guard {
+                tx.execute(
+                    "DELETE FROM instances
+                     WHERE name = ? AND created_at = ?
+                       AND session_id IS ? AND agent_id IS ?
+                       AND pid = ?
+                       AND json_valid(launch_context)
+                       AND json_extract(launch_context, '$.pid_identity') = ?",
+                    params![
+                        name,
+                        created_at,
+                        session_id,
+                        agent_id,
+                        pid as i64,
+                        pid_identity
+                    ],
+                )?
+            } else {
+                tx.execute(
+                    "DELETE FROM instances
+                     WHERE name = ? AND created_at = ?
+                       AND session_id IS ? AND agent_id IS ?",
+                    params![name, created_at, session_id, agent_id],
+                )?
+            };
+            if deleted == 0 {
+                return Ok(false);
+            }
+
+            if let Some(session_id) = session_id {
+                tx.execute(
+                    "DELETE FROM session_bindings WHERE session_id = ?",
+                    params![session_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM process_bindings WHERE session_id = ?",
+                    params![session_id],
+                )?;
+            }
+            tx.execute(
+                "DELETE FROM notify_endpoints WHERE instance = ?",
+                params![name],
+            )?;
+            tx.execute(
+                "DELETE FROM process_bindings WHERE instance_name = ?",
+                params![name],
+            )?;
+            tx.execute(
+                "DELETE FROM kv
+                 WHERE key LIKE 'events_sub:%'
+                   AND json_extract(value, '$.caller') = ?
+                   AND COALESCE(json_extract(value, '$.delivery_only'), 0) != 1",
+                params![name],
+            )?;
+            tx.execute(
+                "INSERT INTO events (timestamp, type, instance, data)
+                 VALUES (?, 'life', ?, ?)",
+                params![timestamp, name, data],
+            )?;
+            event_id = Some(tx.last_insert_rowid());
+            Ok(true)
+        })?;
+
+        // Subscription notifications are best-effort external effects. Run
+        // them only after the stopped event and deletion are durable.
+        if let Some(event_id) = event_id {
+            subscriptions::process_logged_event(self, event_id, "life", name, event_data);
+        }
+        Ok(won)
+    }
+
+    /// Check whether `name`'s *current* identity is a subagent slot.
+    ///
+    /// Classification rules, in order:
+    /// 1. If a live instance row exists, it defines the current identity:
+    ///    non-empty `parent_name` → true (subagent); empty → false
+    ///    (top-level, regardless of any historical subagent events).
+    /// 2. Otherwise, consult the *most recent* `life.stopped` event: true
+    ///    iff its snapshot has a non-empty `agent_id`.
+    ///
+    /// Older subagent history does not poison a name that has since been
+    /// reused top-level (either live or via a more recent top-level stop).
+    pub fn was_subagent_name(&self, name: &str) -> bool {
+        if let Ok(Some(data)) = self.get_instance(name) {
+            return data
+                .get("parent_name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty());
+        }
+
+        self.conn
+            .query_row(
+                "SELECT COALESCE(json_extract(data, '$.snapshot.agent_id'), '') != ''
+                 FROM events
+                 WHERE type = 'life'
+                   AND instance = ?
+                   AND json_extract(data, '$.action') = 'stopped'
+                 ORDER BY id DESC LIMIT 1",
+                params![name],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    }
+
+    /// Find the most recent stopped instance whose snapshot carries the given
+    /// session_id. life.stopped events are the source of truth: they persist
+    /// across the `session_bindings` cascade, so they're the right thing to
+    /// consult when reclaiming hcom identity by UUID after stop/kill.
+    pub fn find_stopped_instance_by_session_id(&self, session_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT instance FROM events
+                 WHERE type = 'life'
+                   AND json_extract(data, '$.action') = 'stopped'
+                   AND json_extract(data, '$.snapshot.session_id') = ?
+                 ORDER BY id DESC LIMIT 1",
+                params![session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Convert a row from INSTANCE_COLUMNS SELECT to JSON.
+    fn instance_row_to_json(row: &rusqlite::Row) -> rusqlite::Result<serde_json::Value> {
+        Ok(serde_json::json!({
+            "name": row.get::<_, String>(0).unwrap_or_default(),
+            "session_id": row.get::<_, Option<String>>(1).unwrap_or(None),
+            "parent_session_id": row.get::<_, Option<String>>(2).unwrap_or(None),
+            "parent_name": row.get::<_, Option<String>>(3).unwrap_or(None),
+            "tag": row.get::<_, Option<String>>(4).unwrap_or(None),
+            "last_event_id": row.get::<_, i64>(5).unwrap_or(0),
+            "status": row.get::<_, String>(6).unwrap_or_default(),
+            "status_time": row.get::<_, i64>(7).unwrap_or(0),
+            "last_seen": row.get::<_, i64>(8).unwrap_or(0),
+            "status_context": row.get::<_, String>(9).unwrap_or_default(),
+            "status_detail": row.get::<_, String>(10).unwrap_or_default(),
+            "last_stop": row.get::<_, i64>(11).unwrap_or(0),
+            "directory": row.get::<_, Option<String>>(12).unwrap_or(None),
+            "created_at": row.get::<_, f64>(13).unwrap_or(0.0),
+            "transcript_path": row.get::<_, String>(14).unwrap_or_default(),
+            "tcp_mode": row.get::<_, i64>(15).unwrap_or(0),
+            "wait_timeout": row.get::<_, i64>(16).unwrap_or(86400),
+            "background": row.get::<_, i64>(17).unwrap_or(0),
+            "background_log_file": row.get::<_, String>(18).unwrap_or_default(),
+            "name_announced": row.get::<_, i64>(19).unwrap_or(0),
+            "agent_id": row.get::<_, Option<String>>(20).unwrap_or(None),
+            "origin_device_id": row.get::<_, String>(21).unwrap_or_default(),
+            "hints": row.get::<_, String>(22).unwrap_or_default(),
+            "subagent_timeout": row.get::<_, Option<i64>>(23).unwrap_or(None),
+            "tool": row.get::<_, String>(24).unwrap_or_default(),
+            "launch_args": row.get::<_, String>(25).unwrap_or_default(),
+            "terminal_preset_requested": row.get::<_, String>(26).unwrap_or_default(),
+            "terminal_preset_effective": row.get::<_, String>(27).unwrap_or_default(),
+            "idle_since": row.get::<_, String>(28).unwrap_or_default(),
+            "pid": row.get::<_, Option<i64>>(29).unwrap_or(None),
+            "launch_context": row.get::<_, String>(30).unwrap_or_default(),
+        }))
+    }
+
+    pub fn get_instance(&self, name: &str) -> Result<Option<serde_json::Value>> {
+        let sql = format!("SELECT {} FROM instances WHERE name = ?", INSTANCE_COLUMNS);
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+
+        match stmt.query_row(params![name], Self::instance_row_to_json) {
+            Ok(inst) => Ok(Some(inst)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Look up instance name by agent_id (Claude Code sends short IDs like 'a6d9caf').
+    pub fn get_instance_by_agent_id(&self, agent_id: &str) -> Result<Option<String>> {
+        match self.conn.query_row(
+            "SELECT name FROM instances WHERE agent_id = ?",
+            params![agent_id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(name) => Ok(Some(name)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Save (upsert) instance from a map of field names to values.
+    pub fn save_instance(
+        &self,
+        data: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<bool> {
+        if data.is_empty() {
+            return Ok(false);
+        }
+
+        let columns: Vec<&str> = data.keys().map(|k| k.as_str()).collect();
+        for col in &columns {
+            Self::validate_column(col)?;
+        }
+        let placeholders = vec!["?"; columns.len()].join(", ");
+        let update_clause: String = columns
+            .iter()
+            .filter(|&&k| k != "name")
+            .map(|k| format!("{} = excluded.{}", k, k))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            "INSERT INTO instances ({}) VALUES ({}) ON CONFLICT(name) DO UPDATE SET {}",
+            columns.join(", "),
+            placeholders,
+            update_clause
+        );
+
+        let values: Vec<Box<dyn rusqlite::types::ToSql>> = columns
+            .iter()
+            .map(|&col| -> Box<dyn rusqlite::types::ToSql> {
+                let val = &data[col];
+                match val {
+                    serde_json::Value::String(s) => Box::new(s.clone()),
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            Box::new(i)
+                        } else if let Some(f) = n.as_f64() {
+                            Box::new(f)
+                        } else {
+                            Box::new(val.to_string())
+                        }
+                    }
+                    serde_json::Value::Bool(b) => Box::new(*b as i32),
+                    serde_json::Value::Null => Box::new(rusqlite::types::Null),
+                    _ => Box::new(val.to_string()),
+                }
+            })
+            .collect();
+
+        let refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        self.conn.execute(&sql, refs.as_slice())?;
+        Ok(true)
+    }
+
+    /// Update specific instance fields.
+    pub fn update_instance(
+        &self,
+        name: &str,
+        updates: &std::collections::HashMap<String, serde_json::Value>,
+    ) -> Result<bool> {
+        if updates.is_empty() {
+            return Ok(true);
+        }
+
+        let entries: Vec<(&String, &serde_json::Value)> = updates.iter().collect();
+        for (k, _) in &entries {
+            Self::validate_column(k)?;
+        }
+
+        let set_clause: String = entries
+            .iter()
+            .map(|(k, _)| format!("{} = ?", k))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!("UPDATE instances SET {} WHERE name = ?", set_clause);
+
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = entries
+            .iter()
+            .map(|(_, val)| -> Box<dyn rusqlite::types::ToSql> {
+                match val {
+                    serde_json::Value::String(s) => Box::new(s.clone()),
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            Box::new(i)
+                        } else if let Some(f) = n.as_f64() {
+                            Box::new(f)
+                        } else {
+                            Box::new(val.to_string())
+                        }
+                    }
+                    serde_json::Value::Bool(b) => Box::new(*b as i32),
+                    serde_json::Value::Null => Box::new(rusqlite::types::Null),
+                    _ => Box::new(val.to_string()),
+                }
+            })
+            .collect();
+        values.push(Box::new(name.to_string()));
+
+        let refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        self.conn.execute(&sql, refs.as_slice())?;
+        Ok(true)
+    }
+
+    /// Iterate all instances, returning Vec of JSON objects.
+    pub fn iter_instances(&self) -> Result<Vec<serde_json::Value>> {
+        let sql = format!(
+            "SELECT {} FROM instances ORDER BY created_at DESC",
+            INSTANCE_COLUMNS
+        );
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+
+        let rows: Vec<serde_json::Value> = stmt
+            .query_map([], Self::instance_row_to_json)?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(rows)
+    }
+
+    /// Get full instance row by name.
+    pub fn get_instance_full(&self, name: &str) -> Result<Option<InstanceRow>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT * FROM instances WHERE name = ?")?;
+        match stmt.query_row(params![name], InstanceRow::from_row) {
+            Ok(row) => Ok(Some(row)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get all instance rows.
+    pub fn iter_instances_full(&self) -> Result<Vec<InstanceRow>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT * FROM instances ORDER BY created_at DESC")?;
+        let rows = stmt
+            .query_map([], InstanceRow::from_row)?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Save (INSERT OR REPLACE) an instance row.
+    /// Uses a JSON Value map for flexible field specification.
+    pub fn save_instance_named(
+        &self,
+        name: &str,
+        data: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<bool> {
+        // Build column list and values dynamically
+        let mut cols = vec!["name"];
+        let mut placeholders = vec!["?"];
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(name.to_string())];
+
+        for (key, val) in data {
+            if key == "name" {
+                continue;
+            }
+            cols.push(Self::validate_column(key)?);
+            placeholders.push("?");
+            values.push(Self::json_value_to_sql(val));
+        }
+
+        let sql = format!(
+            "INSERT OR REPLACE INTO instances ({}) VALUES ({})",
+            cols.join(", "),
+            placeholders.join(", ")
+        );
+
+        let refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|b| b.as_ref()).collect();
+        let rows = self.conn.execute(&sql, refs.as_slice())?;
+        Ok(rows > 0)
+    }
+
+    /// Insert a reservation row for a generated instance name.
+    /// Unlike save_instance_named, this never replaces an existing row.
+    pub fn save_instance_reservation(
+        &self,
+        name: &str,
+        data: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<bool> {
+        let mut cols = vec!["name"];
+        let mut placeholders = vec!["?"];
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(name.to_string())];
+
+        for (key, val) in data {
+            if key == "name" {
+                continue;
+            }
+            cols.push(Self::validate_column(key)?);
+            placeholders.push("?");
+            values.push(Self::json_value_to_sql(val));
+        }
+
+        let sql = format!(
+            "INSERT INTO instances ({}) VALUES ({})",
+            cols.join(", "),
+            placeholders.join(", ")
+        );
+
+        let refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|b| b.as_ref()).collect();
+        let rows = self.conn.execute(&sql, refs.as_slice())?;
+        Ok(rows > 0)
+    }
+
+    /// Acknowledge an emitted batch without rewinding a concurrent delivery.
+    /// The comparison and update are one SQLite operation, not a read/modify/write.
+    pub fn advance_instance_cursor(&self, name: &str, event_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE instances SET last_event_id = MAX(COALESCE(last_event_id, 0), ?) WHERE name = ?",
+            params![event_id, name],
+        )?;
+        Ok(())
+    }
+
+    /// Forward-only cursor advance, optionally marking the name announced, in
+    /// one statement.
+    pub fn ack_hook_delivery(&self, name: &str, event_id: i64, announce: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE instances SET last_event_id = MAX(COALESCE(last_event_id, 0), ?),
+             name_announced = CASE WHEN ? THEN 1 ELSE name_announced END
+             WHERE name = ?",
+            params![event_id, announce, name],
+        )?;
+        Ok(())
+    }
+
+    /// Update specific fields on an instance row.
+    /// Uses a JSON Value map for flexible field specification.
+    pub fn update_instance_fields(
+        &self,
+        name: &str,
+        updates: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let mut set_parts = Vec::new();
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        for (key, val) in updates {
+            set_parts.push(format!("{} = ?", Self::validate_column(key)?));
+            values.push(Self::json_value_to_sql(val));
+        }
+
+        values.push(Box::new(name.to_string()));
+
+        let sql = format!(
+            "UPDATE instances SET {} WHERE name = ?",
+            set_parts.join(", ")
+        );
+
+        let refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|b| b.as_ref()).collect();
+        self.conn.execute(&sql, refs.as_slice())?;
+        Ok(())
+    }
+
+    /// Validate column name against SQL injection (whitelist of known columns).
+    fn validate_column(key: &str) -> Result<&str> {
+        const VALID_COLUMNS: &[&str] = &[
+            "name",
+            "session_id",
+            "parent_session_id",
+            "parent_name",
+            "agent_id",
+            "tag",
+            "last_event_id",
+            "last_stop",
+            "status",
+            "status_time",
+            "last_seen",
+            "status_context",
+            "status_detail",
+            "directory",
+            "created_at",
+            "transcript_path",
+            "tool",
+            "background",
+            "background_log_file",
+            "tcp_mode",
+            "wait_timeout",
+            "subagent_timeout",
+            "hints",
+            "origin_device_id",
+            "pid",
+            "launch_args",
+            "launch_context",
+            "name_announced",
+            "idle_since",
+            "terminal_preset_requested",
+            "terminal_preset_effective",
+        ];
+        if VALID_COLUMNS.contains(&key) {
+            Ok(key)
+        } else {
+            Err(anyhow::anyhow!("Invalid column name: {}", key))
+        }
+    }
+
+    /// Convert a serde_json::Value to a boxed ToSql for dynamic SQL binding.
+    fn json_value_to_sql(val: &serde_json::Value) -> Box<dyn rusqlite::types::ToSql> {
+        match val {
+            serde_json::Value::Null => Box::new(rusqlite::types::Null),
+            serde_json::Value::Bool(b) => Box::new(if *b { 1i64 } else { 0i64 }),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Box::new(i)
+                } else if let Some(f) = n.as_f64() {
+                    Box::new(f)
+                } else {
+                    Box::new(rusqlite::types::Null)
+                }
+            }
+            serde_json::Value::String(s) => Box::new(s.clone()),
+            _ => Box::new(val.to_string()),
+        }
+    }
+
+    /// Check if instance is idle (safe for PTY injection).
+    /// Returns true only when status is "listening" AND detail is not "cmd:listen".
+    /// The "cmd:listen" detail is set by `hcom listen` as its first operation,
+    /// ensuring the gate blocks before any async setup (endpoint registration, etc.).
+    pub fn is_idle(&self, name: &str) -> bool {
+        match self.get_instance_status(name) {
+            Ok(Some(s)) => s.status == ST_LISTENING && s.detail != "cmd:listen",
+            _ => false,
+        }
+    }
+
+    /// Update heartbeat timestamp and re-assert tcp_mode to prove instance is alive.
+    ///
+    /// Sets both last_stop (heartbeat) and tcp_mode=true atomically.
+    /// Re-asserting tcp_mode on every heartbeat self-heals after DB resets,
+    /// instance re-creation, or any state loss — the delivery thread is the
+    /// source of truth for whether TCP delivery is active.
+    pub fn update_heartbeat(&self, name: &str) -> Result<()> {
+        let now = now_epoch_i64();
+
+        self.conn.execute(
+            "UPDATE instances SET last_stop = ?, tcp_mode = 1 WHERE name = ?",
+            params![now, name],
+        )?;
+        Ok(())
+    }
+
+    /// Update instance position with tcp_mode flag
+    pub fn update_tcp_mode(&self, name: &str, tcp_mode: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE instances SET tcp_mode = ? WHERE name = ?",
+            params![tcp_mode as i32, name],
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::HcomDb;
+    use super::super::tests::{cleanup_test_db, setup_full_test_db};
+    use rusqlite::params;
+
+    fn reopen_broken_schema(db_path: &std::path::Path) -> HcomDb {
+        // Use open_raw here: open_at would repair the table we deliberately dropped.
+        HcomDb::open_raw(db_path).unwrap()
+    }
+
+    #[test]
+    fn test_get_instance_status_propagates_prepare_error() {
+        // Verify that SQL errors are propagated as Err (not silently converted to None)
+        let (db, db_path) = setup_full_test_db();
+
+        // Drop the instances table to cause SQL error
+        db.conn().execute("DROP TABLE instances", []).unwrap();
+        drop(db);
+
+        // Now HcomDb will fail when trying to query
+        let db = reopen_broken_schema(&db_path);
+
+        let result = db.get_instance_status("test");
+
+        // SQL error should be propagated as Err, not None
+        let err = result.expect_err("SQL error should propagate as Err, not None");
+        assert!(
+            err.to_string().contains("instances"),
+            "expected missing instances table error, got: {err:#}"
+        );
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_get_instance_status_returns_ok_none_when_not_found() {
+        // Verify that "not found" is distinguished from "error" via Ok(None)
+
+        let (db, db_path) = setup_full_test_db();
+
+        // Query non-existent instance
+        let result = db.get_instance_status("nonexistent");
+
+        // Should be Ok(None) - not found is not an error
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_get_status_propagates_prepare_error() {
+        let (db, db_path) = setup_full_test_db();
+        db.conn().execute("DROP TABLE instances", []).unwrap();
+        drop(db);
+
+        let db = reopen_broken_schema(&db_path);
+        let result = db.get_status("test");
+
+        let err = result.expect_err("SQL error should propagate as Err");
+        assert!(
+            err.to_string().contains("instances"),
+            "expected missing instances table error, got: {err:#}"
+        );
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_get_transcript_path_propagates_prepare_error() {
+        let (db, db_path) = setup_full_test_db();
+        db.conn().execute("DROP TABLE instances", []).unwrap();
+        drop(db);
+
+        let db = reopen_broken_schema(&db_path);
+        let result = db.get_transcript_path("test");
+
+        let err = result.expect_err("SQL error should propagate as Err");
+        assert!(
+            err.to_string().contains("instances"),
+            "expected missing instances table error, got: {err:#}"
+        );
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_get_instance_snapshot_propagates_prepare_error() {
+        let (db, db_path) = setup_full_test_db();
+        db.conn().execute("DROP TABLE instances", []).unwrap();
+        drop(db);
+
+        let db = reopen_broken_schema(&db_path);
+        let result = db.get_instance_snapshot("test");
+
+        let err = result.expect_err("SQL error should propagate as Err");
+        assert!(
+            err.to_string().contains("instances"),
+            "expected missing instances table error, got: {err:#}"
+        );
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_set_status_does_not_emit_launch_ready() {
+        let (db, db_path) = setup_full_test_db();
+
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, tool, created_at, status, status_context) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params!["luna", "codex", 1.0f64, "inactive", "new"],
+            )
+            .unwrap();
+
+        db.set_status("luna", "listening", "start").unwrap();
+
+        let (status, context) = db.get_status("luna").unwrap().unwrap();
+        assert_eq!(status, "listening");
+        assert_eq!(context, "start");
+
+        let ready_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'life' AND json_extract(data, '$.action') = 'ready'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ready_count, 0);
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_pid_identity_lives_in_launch_context_and_clears_with_pid() {
+        let (db, db_path) = setup_full_test_db();
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, created_at, launch_context)
+                 VALUES ('luna', 1.0, '{\"pane_id\":\"42\"}')",
+                [],
+            )
+            .unwrap();
+
+        let pid = std::process::id();
+        let expected = crate::sys::process::identity(pid).expect("current process has identity");
+        db.update_instance_pid("luna", pid).unwrap();
+
+        assert_eq!(
+            db.get_instance_pid_identity("luna").unwrap().as_deref(),
+            Some(expected.as_str())
+        );
+        let launch_context: String = db
+            .conn
+            .query_row(
+                "SELECT launch_context FROM instances WHERE name = 'luna'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let launch_context: serde_json::Value = serde_json::from_str(&launch_context).unwrap();
+        assert_eq!(launch_context["pane_id"], "42");
+        assert_eq!(launch_context["pid_identity"], expected);
+
+        db.clear_instance_pid("luna").unwrap();
+        let (pid, launch_context): (Option<i64>, String) = db
+            .conn
+            .query_row(
+                "SELECT pid, launch_context FROM instances WHERE name = 'luna'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pid, None);
+        let launch_context: serde_json::Value = serde_json::from_str(&launch_context).unwrap();
+        assert_eq!(launch_context["pane_id"], "42");
+        assert!(launch_context.get("pid_identity").is_none());
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_update_instance_pid_rejects_process_that_is_gone() {
+        let (db, db_path) = setup_full_test_db();
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, created_at) VALUES ('luna', 1.0)",
+                [],
+            )
+            .unwrap();
+
+        assert!(db.update_instance_pid("luna", u32::MAX).is_err());
+        let pid: Option<i64> = db
+            .conn
+            .query_row("SELECT pid FROM instances WHERE name = 'luna'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(pid, None);
+        assert_eq!(db.get_instance_pid_identity("luna").unwrap(), None);
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_pid_without_observable_identity_is_tracked_and_drops_stale_identity() {
+        let (db, db_path) = setup_full_test_db();
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, created_at, launch_context)
+                 VALUES ('luna', 1.0, '{\"pane_id\":\"42\",\"pid_identity\":\"old\"}')",
+                [],
+            )
+            .unwrap();
+
+        // Platforms that can't report an identity must still record the PID
+        // (so launches don't fail), and must not keep a previous identity.
+        db.update_instance_pid_with_identity("luna", 4242, None)
+            .unwrap();
+
+        let (pid, launch_context): (Option<i64>, String) = db
+            .conn
+            .query_row(
+                "SELECT pid, launch_context FROM instances WHERE name = 'luna'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pid, Some(4242));
+        assert_eq!(db.get_instance_pid_identity("luna").unwrap(), None);
+        let launch_context: serde_json::Value = serde_json::from_str(&launch_context).unwrap();
+        assert_eq!(launch_context["pane_id"], "42");
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_update_instance_pid_with_fields_can_join_outer_transaction() {
+        let (db, db_path) = setup_full_test_db();
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, created_at) VALUES ('luna', 1.0)",
+                [],
+            )
+            .unwrap();
+
+        let pid = std::process::id();
+        let mut updates = serde_json::Map::new();
+        updates.insert(
+            "background_log_file".into(),
+            serde_json::json!("runner.log"),
+        );
+
+        let outer = db.conn.unchecked_transaction().unwrap();
+        db.update_instance_pid_with_fields("luna", pid, &updates)
+            .unwrap();
+        outer.commit().unwrap();
+
+        let (stored_pid, log_file): (Option<i64>, String) = db
+            .conn
+            .query_row(
+                "SELECT pid, background_log_file FROM instances WHERE name = 'luna'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored_pid, Some(pid as i64));
+        assert_eq!(log_file, "runner.log");
+        assert!(db.get_instance_pid_identity("luna").unwrap().is_some());
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_update_instance_pid_with_fields_is_atomic_on_identity_failure() {
+        let (db, db_path) = setup_full_test_db();
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, created_at, background_log_file)
+                 VALUES ('luna', 1.0, 'before.log')",
+                [],
+            )
+            .unwrap();
+
+        let mut updates = serde_json::Map::new();
+        updates.insert("background_log_file".into(), serde_json::json!("after.log"));
+        assert!(
+            db.update_instance_pid_with_fields("luna", u32::MAX, &updates)
+                .is_err()
+        );
+
+        let (pid, log_file): (Option<i64>, String) = db
+            .conn
+            .query_row(
+                "SELECT pid, background_log_file FROM instances WHERE name = 'luna'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pid, None);
+        assert_eq!(log_file, "before.log");
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_finalize_instance_stop_pid_identity_guard_rejects_rebind() {
+        let (db, db_path) = setup_full_test_db();
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, created_at) VALUES ('luna', 1.0)",
+                [],
+            )
+            .unwrap();
+        let pid = std::process::id();
+        db.update_instance_pid("luna", pid).unwrap();
+        let original_identity = db
+            .get_instance_pid_identity("luna")
+            .unwrap()
+            .expect("current process identity");
+
+        db.update_instance_pid_with_identity("luna", pid, Some("replacement-incarnation"))
+            .unwrap();
+        let event = serde_json::json!({"action": "stopped", "reason": "process_exit"});
+        assert!(
+            !db.finalize_instance_stop_if_pid_identity(
+                "luna",
+                1.0,
+                None,
+                None,
+                (pid, &original_identity),
+                &event,
+            )
+            .unwrap()
+        );
+        assert!(db.get_instance_full("luna").unwrap().is_some());
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_store_launch_context_merges_late_pty_metadata() {
+        let (db, db_path) = setup_full_test_db();
+
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, tool, created_at, launch_context) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "luna",
+                    "codex",
+                    1.0f64,
+                    r#"{"process_id":"proc-1","terminal_preset_effective":"kitty-split","terminal_preset":"kitty-split"}"#
+                ],
+            )
+            .unwrap();
+
+        db.store_launch_context(
+            "luna",
+            r#"{"process_id":"proc-2","kitty_listen_on":"unix:/tmp/kitty","terminal_id":"11","pane_id":"11"}"#,
+        )
+        .unwrap();
+
+        let launch_context: String = db
+            .conn
+            .query_row(
+                "SELECT launch_context FROM instances WHERE name = ?",
+                params!["luna"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let launch_context: serde_json::Value = serde_json::from_str(&launch_context).unwrap();
+
+        assert_eq!(launch_context["process_id"], "proc-1");
+        assert_eq!(launch_context["terminal_preset_effective"], "kitty-split");
+        assert_eq!(launch_context["terminal_preset"], "kitty-split");
+        assert_eq!(launch_context["kitty_listen_on"], "unix:/tmp/kitty");
+        assert_eq!(launch_context["terminal_id"], "11");
+        assert_eq!(launch_context["pane_id"], "11");
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_save_and_get_instance() {
+        let (db, db_path) = setup_full_test_db();
+
+        let mut data = std::collections::HashMap::new();
+        data.insert("name".to_string(), serde_json::json!("luna"));
+        data.insert("tool".to_string(), serde_json::json!("claude"));
+        data.insert("created_at".to_string(), serde_json::json!(1000.0));
+        data.insert("status".to_string(), serde_json::json!("active"));
+
+        db.save_instance(&data).unwrap();
+
+        let inst = db.get_instance("luna").unwrap().unwrap();
+        assert_eq!(inst["name"], "luna");
+        assert_eq!(inst["tool"], "claude");
+        assert_eq!(inst["status"], "active");
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_update_instance() {
+        let (db, db_path) = setup_full_test_db();
+
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, status, created_at) VALUES ('luna', 'active', 1000.0)",
+                [],
+            )
+            .unwrap();
+
+        let mut updates = std::collections::HashMap::new();
+        updates.insert("status".to_string(), serde_json::json!("listening"));
+        updates.insert("tag".to_string(), serde_json::json!("api"));
+
+        db.update_instance("luna", &updates).unwrap();
+
+        let inst = db.get_instance("luna").unwrap().unwrap();
+        assert_eq!(inst["status"], "listening");
+        assert_eq!(inst["tag"], "api");
+
+        cleanup_test_db(db_path);
+    }
+
+    #[test]
+    fn test_iter_instances() {
+        let (db, db_path) = setup_full_test_db();
+
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, created_at) VALUES ('luna', 2000.0)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO instances (name, created_at) VALUES ('nova', 1000.0)",
+                [],
+            )
+            .unwrap();
+
+        let instances = db.iter_instances().unwrap();
+        assert_eq!(instances.len(), 2);
+        // Should be ordered by created_at DESC
+        assert_eq!(instances[0]["name"], "luna");
+        assert_eq!(instances[1]["name"], "nova");
+
+        cleanup_test_db(db_path);
+    }
+}

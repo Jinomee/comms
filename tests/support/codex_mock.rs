@@ -1,0 +1,346 @@
+//! Minimal mock of the OpenAI Responses API for the real Codex CLI test.
+//!
+//! Codex has no built-in fake-response mode, so the only way to drive a real,
+//! pinned `codex` binary deterministically and for free is to point it at a
+//! localhost HTTP provider and script the `text/event-stream` turns ourselves.
+//! The external oracle lives outside the repo (the real codex binary parsing a
+//! real Responses SSE stream), so the test cannot be gamed by editing hcom to
+//! match the test.
+//!
+//! Transport lives in [`super::mock_http`]; this module is the OpenAI Responses
+//! codec (SSE builders + body-addressed scripting). Codex only needs each turn's
+//! events terminated by `response.completed`; streaming deltas are not required.
+
+use serde_json::Value;
+
+use super::Hcom;
+pub use super::mock_http::Reply;
+use super::mock_http::{MockHttp, RecordedRequest};
+use super::real_tool::{
+    FORK_PROOF, INBOUND_PROOF, INITIAL_PROOF, RESUME_PROOF, ScenarioIds, ToolCase, ToolMeta,
+};
+
+const CODEX_META: ToolMeta = ToolMeta {
+    tool: "codex",
+    binary: "codex",
+    package: "@openai/codex",
+};
+
+/// Codex adapter for the shared real-tool lifecycle. Codex has no fake-response
+/// mode, so it runs against a localhost OpenAI Responses mock; every turn is
+/// scripted as `text/event-stream`. The Responses input carries the full
+/// history in each request, so turns are matched freshest-signal-first.
+#[derive(Clone)]
+pub struct CodexCase;
+
+impl ToolCase for CodexCase {
+    fn meta(&self) -> &ToolMeta {
+        &CODEX_META
+    }
+
+    fn file_context(&self) -> &'static str {
+        "tool:apply_patch"
+    }
+
+    fn file_detail(&self, ids: &ScenarioIds) -> String {
+        ids.file_rel.clone()
+    }
+
+    fn provider_base_url(&self, port: u16) -> String {
+        format!("http://127.0.0.1:{port}/v1")
+    }
+
+    fn prepare(&self, h: &Hcom, base_url: &str) {
+        h.prepare_codex_config(base_url);
+        // A conflicting default makes every lifecycle turn check that saved
+        // launch overrides survive resume/fork (issue #147).
+        let path = h.codex_home.join("config.toml");
+        let config = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(path, format!("model_reasoning_effort = \"high\"\n{config}")).unwrap();
+    }
+
+    fn launch_args(&self, _h: &Hcom) -> Vec<String> {
+        vec![
+            "--yolo".to_string(),
+            "-c".to_string(),
+            "model_reasoning_effort=\"low\"".to_string(),
+        ]
+    }
+
+    fn is_followup_turn(&self, body: &str) -> bool {
+        body.contains("function_call_output") || body.contains("custom_tool_call_output")
+    }
+
+    fn is_turn_request(&self, req: &RecordedRequest) -> bool {
+        // One Responses route for everything; only title generation shares it
+        // without being a turn of the conversation under test.
+        !is_title_request(&req.body)
+    }
+
+    fn delivery_envelope_markers(&self) -> &'static [&'static str] {
+        &["<hcom>", "request"]
+    }
+
+    fn respond(&self, req: &RecordedRequest, ids: &ScenarioIds) -> Reply {
+        let body = &req.body;
+        if is_title_request(body) {
+            return title_reply();
+        }
+        let request: Value = serde_json::from_str(body).expect("Responses request JSON");
+        if request["reasoning"]["effort"] != "low" {
+            return Reply::Status(500);
+        }
+        let has_output =
+            |call_id: &str| body.contains("function_call_output") && body.contains(call_id);
+        let has_custom =
+            |call_id: &str| body.contains("custom_tool_call_output") && body.contains(call_id);
+        let write_cmd = if cfg!(windows) {
+            format!(
+                "node -e \"require('fs').writeFileSync('{}', '{}')\"",
+                ids.shell_rel.replace('\\', "\\\\").replace('\'', "\\'"),
+                ids.initial.replace('\\', "\\\\").replace('\'', "\\'")
+            )
+        } else {
+            format!("echo {} > {}", ids.initial, ids.shell_rel)
+        };
+        let patch = format!(
+            "*** Begin Patch\n*** Add File: {}\n+{}\n*** End Patch\n",
+            ids.file_rel, ids.initial
+        );
+        if body.contains(&ids.resume) {
+            Reply::Sse(sse(&[
+                created("RESP_R"),
+                message("ITEM_R", &format!("{RESUME_PROOF} {}", ids.resume)),
+                completed("RESP_R"),
+            ]))
+        } else if body.contains(&ids.fork) {
+            Reply::Sse(sse(&[
+                created("RESP_F"),
+                message("ITEM_F", &format!("{FORK_PROOF} {}", ids.fork)),
+                completed("RESP_F"),
+            ]))
+        } else if body.contains(&ids.inbound) {
+            Reply::Sse(sse(&[
+                created("RESP_D"),
+                message("ITEM_D", &format!("{INBOUND_PROOF} {}", ids.inbound)),
+                completed("RESP_D"),
+            ]))
+        } else if has_output("CALL2") {
+            Reply::Sse(sse(&[
+                created("RESP3"),
+                message("ITEM3", &format!("{INITIAL_PROOF} {}", ids.initial)),
+                completed("RESP3"),
+            ]))
+        } else if has_output("CALL1") {
+            Reply::Sse(sse(&[
+                created("RESP2"),
+                shell_call("CALL2", &ids.send_cmd),
+                completed("RESP2"),
+            ]))
+        } else if has_custom("PATCH1") {
+            Reply::Sse(sse(&[
+                created("RESP1B"),
+                shell_call("CALL1", &write_cmd),
+                completed("RESP1B"),
+            ]))
+        } else if body.contains(&ids.initial) {
+            Reply::Sse(sse(&[
+                created("RESP1"),
+                custom_tool_call("PATCH1", "apply_patch", &patch),
+                completed("RESP1"),
+            ]))
+        } else {
+            Reply::Status(500)
+        }
+    }
+}
+
+/// A scripted localhost Responses provider — a thin Codex-flavored wrapper over
+/// the shared [`MockHttp`] transport that keeps the body-only responder the
+/// Codex test scripts against (the Responses input carries full history, so the
+/// freshest signal is matched first; path/headers are irrelevant for Codex).
+pub struct MockResponses {
+    inner: MockHttp,
+}
+
+impl MockResponses {
+    /// Start serving on an ephemeral localhost port. `responder` maps each
+    /// request body to a [`Reply`]; it runs on worker threads so it must be
+    /// `Send + Sync`.
+    pub fn start<F>(responder: F) -> std::io::Result<Self>
+    where
+        F: Fn(&str) -> Reply + Send + Sync + 'static,
+    {
+        let inner = MockHttp::start(move |request: &RecordedRequest| {
+            if is_title_request(&request.body) {
+                title_reply()
+            } else {
+                responder(&request.body)
+            }
+        })?;
+        Ok(Self { inner })
+    }
+
+    /// Base URL for a Codex `model_providers` entry (`.../v1`).
+    pub fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}/v1", self.inner.port())
+    }
+
+    /// Every request body observed so far, in arrival order.
+    pub fn requests(&self) -> Vec<String> {
+        self.inner.request_bodies()
+    }
+
+    /// Request bodies the responder rejected with [`Reply::Status`].
+    pub fn unexpected(&self) -> Vec<String> {
+        self.inner
+            .unexpected()
+            .into_iter()
+            .map(|request| request.body)
+            .collect()
+    }
+
+    /// Transport-level errors observed by the shared HTTP server.
+    pub fn transport_errors(&self) -> Vec<String> {
+        self.inner.transport_errors()
+    }
+}
+
+/// Frame a list of `(event_type, json)` pairs into a Responses SSE body.
+/// Codex (>= 0.157) asks the model for a thread title after each user message
+/// while the thread is unnamed, as a separate hidden Responses request. It
+/// embeds the user's prompt, so without this check it would be scripted as
+/// whichever turn that prompt's token selects, or rejected when none matches.
+pub fn is_title_request(body: &str) -> bool {
+    body.contains("Generate a concise, single-line task title")
+}
+
+/// Answer a title request with the structured `{"title": ...}` Codex expects.
+pub fn title_reply() -> Reply {
+    Reply::Sse(sse(&[
+        created("RESP_TITLE"),
+        message("ITEM_TITLE", r#"{"title":"Real tool lifecycle"}"#),
+        completed("RESP_TITLE"),
+    ]))
+}
+
+pub fn sse(events: &[(&str, Value)]) -> Vec<u8> {
+    let mut out = String::new();
+    for (typ, obj) in events {
+        out.push_str("event: ");
+        out.push_str(typ);
+        out.push_str("\ndata: ");
+        out.push_str(&serde_json::to_string(obj).expect("serialize SSE event"));
+        out.push_str("\n\n");
+    }
+    out.into_bytes()
+}
+
+/// `response.created` event for `id`.
+pub fn created(id: &str) -> (&'static str, Value) {
+    (
+        "response.created",
+        serde_json::json!({"type": "response.created", "response": {"id": id}}),
+    )
+}
+
+/// A completed assistant text message output item.
+pub fn message(id: &str, text: &str) -> (&'static str, Value) {
+    (
+        "response.output_item.done",
+        serde_json::json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "id": id,
+                "content": [{"type": "output_text", "text": text}]
+            }
+        }),
+    )
+}
+
+/// A function-call output item. Codex 0.139 exposes its shell tool as the
+/// `exec_command` function (no `local_shell_call`); `arguments` is a JSON
+/// string, e.g. `{"cmd": "echo hi"}`.
+pub fn function_call(call_id: &str, name: &str, arguments: &str) -> (&'static str, Value) {
+    (
+        "response.output_item.done",
+        serde_json::json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments
+            }
+        }),
+    )
+}
+
+/// The shell function pinned Codex advertises. Since 0.152 that is
+/// `exec_command` on every platform (openai/codex#39772); Windows no longer
+/// accepts `shell_command` ("unsupported call").
+pub fn shell_call(call_id: &str, command: &str) -> (&'static str, Value) {
+    function_call(
+        call_id,
+        "exec_command",
+        &serde_json::json!({ "cmd": command }).to_string(),
+    )
+}
+
+/// A shell call that asks to run outside the sandbox. Under Codex's default
+/// `on-request` policy that request is what makes
+/// Codex stop for the user's approval.
+pub fn escalated_shell_call(
+    call_id: &str,
+    command: &str,
+    justification: &str,
+) -> (&'static str, Value) {
+    function_call(
+        call_id,
+        "exec_command",
+        &serde_json::json!({
+            "cmd": command,
+            "sandbox_permissions": "require_escalated",
+            "justification": justification,
+        })
+        .to_string(),
+    )
+}
+
+/// A freeform custom-tool call, used by Codex for `apply_patch`.
+pub fn custom_tool_call(call_id: &str, name: &str, input: &str) -> (&'static str, Value) {
+    (
+        "response.output_item.done",
+        serde_json::json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "custom_tool_call",
+                "call_id": call_id,
+                "name": name,
+                "input": input
+            }
+        }),
+    )
+}
+
+/// `response.completed` with the zeroed usage object Codex requires.
+pub fn completed(id: &str) -> (&'static str, Value) {
+    (
+        "response.completed",
+        serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": id,
+                "usage": {
+                    "input_tokens": 0,
+                    "input_tokens_details": null,
+                    "output_tokens": 0,
+                    "output_tokens_details": null,
+                    "total_tokens": 0
+                }
+            }
+        }),
+    )
+}

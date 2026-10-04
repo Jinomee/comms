@@ -1,0 +1,226 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  # Hunting an intermittent real-tool failure needs repetition, not another
+  # single run: the Windows Claude launch has failed roughly once in ten CI
+  # runs, so a normal re-run is as likely to hide it as to reproduce it.
+  # `gh workflow run CI --ref <branch> -f repeat=10` reruns the real-tool test
+  # in-place that many times and stops at the first failure, with the failing
+  # iteration's diagnostics dump attached to it.
+  workflow_dispatch:
+    inputs:
+      repeat:
+        description: "Times to repeat each real-tool test (stops at first failure)"
+        required: false
+        default: "1"
+
+permissions:
+  contents: read
+
+# A new push to a branch supersedes its in-flight run; main keeps every run so
+# each commit there gets a verdict. Dispatched repeat hunts get their own group
+# so a push never cancels one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  rust-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # Keep lint behavior reproducible across fresh runners and local installs.
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # 1.97.1
+        with:
+          toolchain: "1.97.1"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # 1.88
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo check --locked --all-targets
+
+  # Native Windows test gate. Release artifacts are built by cargo-dist on tags;
+  # the pinned real-tool lifecycle has its own matrix below.
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # Keep lint behavior reproducible across fresh runners and local installs.
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # 1.97.1
+        with:
+          toolchain: "1.97.1"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --all-targets --locked
+
+  typecheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22.23.3
+          cache: npm
+      - run: bash ./scripts/typecheck.sh
+
+  # Fails if the checked-in release.yml has drifted from what the pinned
+  # cargo-dist would generate. Version must match cargo-dist-version in
+  # dist-workspace.toml so the check tracks the exact installer used on tags.
+  dist-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install pinned cargo-dist
+        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh"
+      - run: dist generate --check
+
+  real-tool-tests:
+    name: Real tool (${{ matrix.tool }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # One pass fits well inside 25 minutes. A `repeat` hunt takes as long as the
+    # count asks for, so it gets the platform maximum instead — the loop stops at
+    # the first failure anyway, and expressions have no arithmetic to scale this
+    # by the count.
+    timeout-minutes: ${{ inputs.repeat && 350 || 25 }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # `install` is the tool name install-mock-tools resolves against
+        # scripts/mock-tools.pins; the relay test drives a real claude.
+        include:
+          - { os: ubuntu-24.04, tool: codex, install: codex, test: real_tool_codex }
+          - { os: ubuntu-latest, tool: claude, install: claude, test: real_tool_claude }
+          - { os: ubuntu-latest, tool: relay, install: claude, test: test_relay_roundtrip }
+          - { os: windows-latest, tool: codex, install: codex, test: real_tool_codex }
+          - { os: windows-latest, tool: claude, install: claude, test: real_tool_claude }
+          - { os: windows-latest, tool: relay, install: claude, test: test_relay_roundtrip }
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # 1.97.1
+        with:
+          toolchain: "1.97.1"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22.23.3
+      - name: Configure Codex Linux sandbox
+        if: runner.os == 'Linux' && matrix.tool == 'codex'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap apparmor-profiles apparmor-utils
+          sudo install -m 0644 \
+            /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+            /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            target/mock-tools
+            target/npm-cache
+          key: ${{ runner.os }}-mock-tools-${{ matrix.tool }}-${{ hashFiles('scripts/mock-tools.pins') }}
+      - name: Install pinned tool (Unix)
+        if: runner.os != 'Windows'
+        run: ./scripts/install-mock-tools.sh '${{ matrix.install }}'
+      - name: Add pinned tool to PATH (Unix)
+        if: runner.os != 'Windows'
+        run: echo "$PWD/target/mock-tools/bin" >> "$GITHUB_PATH"
+      - name: Verify Codex Linux sandbox
+        if: runner.os == 'Linux' && matrix.tool == 'codex'
+        run: codex sandbox -- /bin/true
+      - name: Install pinned tool (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/install-mock-tools.ps1 '${{ matrix.install }}'
+      - name: Add pinned tool to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: (Resolve-Path target/mock-tools).Path | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      # Record exit code and elapsed time per attempt, and close the log group
+      # before failing. A cargo run that dies producing no output at all is
+      # otherwise indistinguishable from one that never started — a repeat hunt
+      # hit exactly that (instant exit 1, empty group, no annotation), and the
+      # per-attempt line is what separates "the test failed" from "something
+      # took the runner out from under it".
+      - shell: bash
+        if: runner.os != 'Windows'
+        env:
+          HCOM_TEST_KEEP_DIR: ${{ runner.temp }}/hcom-real-tool
+        run: |
+          for i in $(seq 1 "${{ inputs.repeat || 1 }}"); do
+            echo "::group::${{ matrix.test }} attempt $i"
+            start=$SECONDS
+            if cargo test --locked --test '${{ matrix.test }}' -- --ignored --nocapture --test-threads=1; then
+              code=0
+            else
+              code=$?
+            fi
+            elapsed=$((SECONDS - start))
+            echo "attempt $i: exit=$code elapsed=${elapsed}s"
+            echo "::endgroup::"
+            if [ "$code" -ne 0 ]; then
+              echo "::error::${{ matrix.test }} failed on attempt $i (exit $code after ${elapsed}s)"
+              exit "$code"
+            fi
+          done
+      - shell: pwsh
+        if: runner.os == 'Windows'
+        env:
+          HCOM_TEST_KEEP_DIR: ${{ runner.temp }}/hcom-real-tool
+        run: |
+          foreach ($i in 1..${{ inputs.repeat || 1 }}) {
+            Write-Host "::group::${{ matrix.test }} attempt $i"
+            $started = Get-Date
+            cargo test --locked --test '${{ matrix.test }}' -- --ignored --nocapture --test-threads=1
+            $code = $LASTEXITCODE
+            $elapsed = [int]((Get-Date) - $started).TotalSeconds
+            Write-Host "attempt ${i}: exit=$code elapsed=${elapsed}s"
+            Write-Host "::endgroup::"
+            if ($code -ne 0) {
+              Write-Host "::error::${{ matrix.test }} failed on attempt $i (exit $code after ${elapsed}s)"
+              exit $code
+            }
+          }
+      # Only failed tests leave a directory behind (hcom state + logs, Claude
+      # debug log, workspace, launch scripts). The log dump alone could not
+      # tell a slow Windows Bash tool from a hung one.
+      - name: Upload failed test directories
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: failed-${{ matrix.test }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/hcom-real-tool
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14

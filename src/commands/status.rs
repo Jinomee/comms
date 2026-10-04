@@ -1,0 +1,749 @@
+//! `hcom status` command — system health overview.
+//!
+//!
+//! Shows: version, directory, config, tools, terminal, agents, relay, logs.
+
+use std::path::Path;
+
+use serde_json::json;
+
+use crate::db::HcomDb;
+use crate::hooks::runtime::HookMode;
+use crate::shared::CommandContext;
+
+/// Parsed arguments for `hcom status`.
+#[derive(clap::Parser, Debug)]
+#[command(name = "status", about = "System health overview")]
+pub struct StatusArgs {
+    /// JSON output
+    #[arg(long)]
+    pub json: bool,
+    /// Show recent log entries
+    #[arg(long)]
+    pub logs: bool,
+}
+
+// ── Tool Detection ───────────────────────────────────────────────────────
+
+/// Check if a binary is available in PATH.
+fn path_exists_or_symlink(path: &Path) -> bool {
+    path.exists() || std::fs::symlink_metadata(path).is_ok()
+}
+
+/// Cross-platform PATH scan tolerant of dangling symlinks — status display
+/// wants "is this installed" even for a symlink whose target is momentarily
+/// missing (e.g. mid-upgrade via nvm/homebrew), unlike `which_bin`, whose
+/// results get executed and so require the target to actually resolve.
+fn is_in_path(name: &str) -> bool {
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path_var).any(|dir| {
+        crate::terminal::which_candidates(&dir, name)
+            .iter()
+            .any(|candidate| path_exists_or_symlink(candidate))
+    })
+}
+
+fn is_antigravity_installed() -> bool {
+    crate::terminal::which_bin("agy").is_some()
+        || is_in_path("antigravity")
+        || std::env::var_os("HOME").is_some_and(|home| {
+            let bin_dir = Path::new(&home).join(".antigravity/antigravity/bin");
+            path_exists_or_symlink(&bin_dir.join("agy"))
+                || path_exists_or_symlink(&bin_dir.join("antigravity"))
+        })
+}
+
+// Hook-installation checks delegate to the canonical tool adapter so status
+// stays aligned with `hcom hooks status` as integrations are added.
+
+fn is_tool_installed(tool: crate::tool::Tool) -> bool {
+    match tool {
+        crate::tool::Tool::Antigravity => is_antigravity_installed(),
+        crate::tool::Tool::Adhoc => false,
+        // Same lookup the launcher uses (PATH, then per-user install dirs).
+        _ => crate::terminal::which_bin(tool.spec().cli_binary).is_some(),
+    }
+}
+
+// ── Status Collection ────────────────────────────────────────────────────
+
+struct ToolStatus {
+    key: &'static str,
+    name: &'static str,
+    installed: bool,
+    /// hcom launches get hooks with no further setup: always for per-run
+    /// tools, when the global install is present for persistent ones.
+    hooks: bool,
+    hook_mode: HookMode,
+    settings_path: String,
+}
+
+impl ToolStatus {
+    fn symbol(&self) -> &'static str {
+        if self.installed && self.hooks {
+            "✓"
+        } else if self.installed {
+            "~"
+        } else {
+            "✗"
+        }
+    }
+}
+
+fn get_tool_statuses() -> Vec<ToolStatus> {
+    crate::integration_spec::ALL
+        .iter()
+        .filter(|spec| spec.released)
+        .map(|spec| {
+            let hook_mode = HookMode::of(spec.tool);
+            let persistent = hook_mode == HookMode::Persistent;
+            ToolStatus {
+                key: spec.name,
+                name: spec.label,
+                installed: is_tool_installed(spec.tool),
+                hooks: !persistent || spec.tool.verify_hooks_installed(false),
+                hook_mode,
+                settings_path: if persistent {
+                    spec.tool.hooks_settings_path()
+                } else {
+                    String::new()
+                },
+            }
+        })
+        .collect()
+}
+
+fn tool_statuses_json(tools: &[ToolStatus]) -> serde_json::Value {
+    let entries = tools.iter().map(|tool| {
+        let mut status = serde_json::Map::from_iter([
+            ("installed".to_string(), json!(tool.installed)),
+            ("hooks".to_string(), json!(tool.hooks)),
+            ("hook_mode".to_string(), json!(tool.hook_mode.as_str())),
+        ]);
+        if !tool.settings_path.is_empty() {
+            status.insert("settings_path".to_string(), json!(tool.settings_path));
+        }
+        (tool.key.to_string(), serde_json::Value::Object(status))
+    });
+    serde_json::Value::Object(entries.collect())
+}
+
+struct AgentCounts {
+    active: i64,
+    listening: i64,
+    blocked: i64,
+    error: i64,
+    launching: i64,
+    inactive: i64,
+    total: i64,
+}
+
+fn recent_launch_failures(db: &HcomDb, limit: usize) -> Vec<(String, String)> {
+    let Ok(mut stmt) = db.conn().prepare(
+        "SELECT name, status_detail
+         FROM instances
+         WHERE status_context = 'launch_failed'
+         ORDER BY status_time DESC
+         LIMIT ?1",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([limit as i64], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
+}
+
+fn finalize_timed_out_launches(db: &HcomDb) {
+    if let Ok(instances) = db.iter_instances_full() {
+        for instance in instances {
+            if crate::instances::is_launching_placeholder(&instance) {
+                let _ =
+                    crate::instance_lifecycle::get_or_finalize_launch_failure_detail(db, &instance);
+            }
+        }
+    }
+}
+
+fn get_agent_counts(db: &HcomDb) -> AgentCounts {
+    let mut c = AgentCounts {
+        active: 0,
+        listening: 0,
+        blocked: 0,
+        error: 0,
+        launching: 0,
+        inactive: 0,
+        total: 0,
+    };
+
+    if let Ok(mut stmt) = db
+        .conn()
+        .prepare("SELECT status, COUNT(*) FROM instances GROUP BY status")
+        && let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+    {
+        for row in rows.flatten() {
+            match row.0.as_str() {
+                s if s.starts_with("active") => c.active += row.1,
+                "listening" => c.listening += row.1,
+                s if s.starts_with("blocked") => c.blocked += row.1,
+                "error" => c.error += row.1,
+                "launching" => c.launching += row.1,
+                "inactive" => c.inactive += row.1,
+                _ => c.inactive += row.1,
+            }
+        }
+    }
+
+    c.total = c.active + c.listening + c.blocked + c.error + c.launching + c.inactive;
+    c
+}
+
+// ── Main Entry Point ─────────────────────────────────────────────────────
+
+/// Main entry point for `hcom status` command.
+pub fn cmd_status(db: &HcomDb, args: &StatusArgs, _ctx: Option<&CommandContext>) -> i32 {
+    let json_mode = args.json;
+    let show_logs = args.logs;
+
+    let hcom_dir = crate::paths::hcom_dir();
+    let dir_exists = hcom_dir.exists();
+    let dir_writable = if dir_exists {
+        let test_file = hcom_dir.join(".write_test");
+        let writable = std::fs::write(&test_file, "").is_ok();
+        let _ = std::fs::remove_file(&test_file);
+        writable
+    } else {
+        false
+    };
+
+    finalize_timed_out_launches(db);
+    let tools = get_tool_statuses();
+    let counts = get_agent_counts(db);
+    let launch_failures = recent_launch_failures(db, 5);
+    let dev_root = crate::router::resolve_effective_dev_root(db.path());
+
+    // Check config validity
+    let mut config_errors: Vec<String> = Vec::new();
+    let config_valid = match std::fs::read_to_string(hcom_dir.join("config.toml")) {
+        Ok(c) => match c.parse::<toml::Table>() {
+            Ok(_) => true,
+            Err(e) => {
+                config_errors.push(e.to_string());
+                false
+            }
+        },
+        Err(_) => true, // No config file = valid (defaults)
+    };
+
+    // Terminal — read from config
+    let config = crate::config::load_config_snapshot().core;
+    let terminal_config = config.terminal.clone();
+    let terminal_available = if terminal_config == "default"
+        || terminal_config == "custom"
+        || terminal_config == "print"
+        || terminal_config.contains("{script}")
+    {
+        true
+    } else {
+        let platform = crate::shared::platform::platform_name();
+        (crate::config::is_known_terminal_preset_pub(&terminal_config)
+            && crate::config::terminal_preset_supported_on(&terminal_config, platform))
+            || crate::config::is_user_defined_preset(&terminal_config)
+    };
+
+    // Relay — use proper status from relay module
+    let relay = crate::relay::get_relay_status(&config, db);
+
+    // Paths
+    let hcom_dir_override = std::env::var("HCOM_DIR").is_ok();
+
+    if json_mode {
+        let log_summary = crate::log::get_log_summary(1.0);
+        // Call get_update_info once to avoid inconsistent state (it has side effects)
+        let update_info = crate::update::get_update_info();
+        let mut result = json!({
+            "version": {
+                "current": env!("CARGO_PKG_VERSION"),
+                "latest": update_info.as_ref().map(|(v, _)| v.clone()),
+                "update_available": update_info.is_some(),
+                "update_cmd": update_info.as_ref().map(|(_, c)| *c),
+            },
+            "hcom_dir": hcom_dir.to_string_lossy(),
+            "hcom_dir_override": hcom_dir_override,
+            "hcom_exists": dir_exists,
+            "hcom_writable": dir_writable,
+            "config_valid": config_valid,
+            "config_errors": config_errors,
+            "tools": tool_statuses_json(&tools),
+            "terminal": {
+                "config": terminal_config,
+                "available": terminal_available,
+            },
+            "instances": {
+                "active": counts.active,
+                "listening": counts.listening,
+                "blocked": counts.blocked,
+                "error": counts.error,
+                "launching": counts.launching,
+                "inactive": counts.inactive,
+                "total": counts.total,
+                "launch_failures": launch_failures.iter().map(|(name, detail)| json!({
+                    "name": name,
+                    "detail": detail,
+                })).collect::<Vec<_>>(),
+            },
+            "relay": {
+                "configured": relay.configured,
+                "enabled": relay.enabled,
+                "broker": relay.broker,
+                "last_push": relay.last_push,
+                // Canonical effective state — switch on `health.kind`. New consumers
+                // should prefer this over `raw` for display decisions.
+                "health": serde_json::to_value(&relay.health).unwrap_or(serde_json::Value::Null),
+                // Raw underlying signals for forensics ("why does kind=stale?").
+                // Not for display logic — that's what `health` is for.
+                "raw": {
+                    "status": relay.status,
+                    "error": relay.error,
+                    "heartbeat_age_s": relay.heartbeat_age,
+                    "pid": relay.pidfile_pid,
+                },
+            },
+            "delivery": {},
+            "logs": {
+                "error_count": log_summary.get("error_count").and_then(|v| v.as_i64()).unwrap_or(0),
+                "warn_count": log_summary.get("warn_count").and_then(|v| v.as_i64()).unwrap_or(0),
+                "last_error": log_summary.get("last_error").cloned(),
+                "entries": [],
+            },
+        });
+        if let Some((path, source)) = &dev_root {
+            result["dev_root"] = json!({
+                "path": path.to_string_lossy(),
+                "source": source,
+                "binary": crate::shared::dev_root_binary(path)
+                    .map(|p| p.to_string_lossy().into_owned()),
+            });
+        }
+        println!("{}", serde_json::to_string(&result).unwrap_or_default());
+        return 0;
+    }
+
+    // Pretty output
+    println!("hcom {}", env!("CARGO_PKG_VERSION"));
+    println!();
+
+    // Directory
+    let dir_status = if dir_exists && dir_writable {
+        "ok"
+    } else if dir_exists {
+        "read-only"
+    } else {
+        "missing"
+    };
+    println!("dir:       {} ({dir_status})", hcom_dir.display());
+    if std::env::var("HCOM_DIR").is_ok() {
+        println!(
+            "           HCOM_DIR={}",
+            std::env::var("HCOM_DIR").unwrap_or_default()
+        );
+    }
+
+    // Config
+    let config_symbol = if config_valid { "✓" } else { "✗" };
+    let config_desc = if config_valid { "valid" } else { "invalid" };
+    println!("config:    {config_symbol} {config_desc}");
+
+    // Tools
+    let tools_str: String = tools
+        .iter()
+        .map(|t| format!("{} {}", t.name, t.symbol()))
+        .collect::<Vec<_>>()
+        .join("  ");
+    println!("tools:     {tools_str}");
+
+    // Terminal — show preset name with availability
+    if terminal_config == "default" {
+        let detected = crate::terminal::detect_terminal_from_env();
+        if let Some(ref name) = detected {
+            println!("terminal:  default (auto: {name})");
+        } else {
+            let fallback = crate::terminal::get_default_fallback_terminal_name();
+            println!("terminal:  default (fallback: {fallback})");
+        }
+    } else if terminal_config == "custom"
+        || terminal_config == "print"
+        || terminal_config.contains("{script}")
+    {
+        println!("terminal:  {terminal_config}");
+    } else {
+        let platform = crate::shared::platform::platform_name();
+        let available = (crate::config::is_known_terminal_preset_pub(&terminal_config)
+            && crate::config::terminal_preset_supported_on(&terminal_config, platform))
+            || crate::config::is_user_defined_preset(&terminal_config);
+        let sym = if available { "✓" } else { "✗" };
+        println!("terminal:  {terminal_config} {sym}");
+    }
+    if let Some((path, source)) = &dev_root {
+        println!("dev-root:  {} [{source}]", path.display());
+    }
+
+    println!(); // Blank line before instance section
+
+    // Agents
+    if counts.total == 0 {
+        println!("agents:    none");
+    } else {
+        let mut parts = Vec::new();
+        if counts.active > 0 {
+            parts.push(format!("{} active", counts.active));
+        }
+        if counts.listening > 0 {
+            parts.push(format!("{} listening", counts.listening));
+        }
+        if counts.blocked > 0 {
+            parts.push(format!("{} blocked", counts.blocked));
+        }
+        if counts.inactive > 0 {
+            parts.push(format!("{} inactive", counts.inactive));
+        }
+        println!("agents:    {}", parts.join(", "));
+    }
+    for (name, detail) in &launch_failures {
+        let first_line = detail.lines().next().unwrap_or(detail);
+        println!("failure:   {name}: {first_line}");
+    }
+
+    // Relay summary + worker process line both branch on the canonical
+    // RelayHealth derivation. Single source of truth — see relay/mod.rs for
+    // the precedence rules and unit tests.
+    use crate::relay::{RelayErrorReason, RelayHealth};
+    match &relay.health {
+        RelayHealth::NotConfigured => println!("relay:     not configured"),
+        RelayHealth::Disabled => println!("relay:     disabled"),
+        RelayHealth::Waiting => println!("relay:     enabled (not synced)"),
+        RelayHealth::Starting { pid } => {
+            println!("relay:     starting (PID {pid})");
+        }
+        RelayHealth::Connected => println!("relay:     connected"),
+        RelayHealth::Stale { age_s, pid } => {
+            println!("relay:     stale ({:.0}s, PID {pid})", age_s);
+        }
+        RelayHealth::Error {
+            reason,
+            detail,
+            pid,
+        } => {
+            println!(
+                "relay:     error ({})",
+                reason.clone().label(detail.as_deref(), *pid)
+            );
+        }
+    }
+
+    // Worker process line: only meaningful when relay is enabled. The worker
+    // line is independent of the "relay:" line — relay can be in Error state
+    // while the worker process is still alive in backoff (Reported error with
+    // pid present), and we want to surface that distinction here so this line
+    // doesn't contradict reality.
+    match &relay.health {
+        RelayHealth::NotConfigured | RelayHealth::Disabled => {
+            // No worker line for these — the "relay:" line above is enough.
+        }
+        RelayHealth::Waiting => println!("relay-worker: not running"),
+        RelayHealth::Connected | RelayHealth::Starting { .. } => {
+            let pid = crate::relay::worker::observe_pid_file().map(|(p, _)| p);
+            let pid_str = pid.map(|p| format!(" (PID {p})")).unwrap_or_default();
+            println!("relay-worker: running{pid_str}");
+        }
+        RelayHealth::Stale { .. } => {
+            // Relay summary line above already prints "stale (Ns, PID p)" —
+            // duplicating that as a worker line buys nothing, just clutters.
+        }
+        RelayHealth::Error {
+            reason,
+            detail,
+            pid,
+        } => match reason {
+            RelayErrorReason::StalePidfile => {
+                let pid_str = pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into());
+                println!("relay-worker: not running (stale pidfile, PID {pid_str})");
+            }
+            // Reported error with a live pid means the worker is up and retrying
+            // — usually MQTT backoff after disconnect/auth failure. Show it as
+            // running so this line matches reality and doesn't contradict the
+            // user's `ps` output.
+            RelayErrorReason::Reported => match pid {
+                Some(p) => {
+                    let why = detail
+                        .as_deref()
+                        .map(|d| format!(": {d}"))
+                        .unwrap_or_default();
+                    println!("relay-worker: running (PID {p}, retrying after error{why})");
+                }
+                None => println!("relay-worker: not running"),
+            },
+            RelayErrorReason::Ghost => println!("relay-worker: not running"),
+        },
+    }
+
+    // Logs — always show summary; show recent entries when issues exist
+    let log_summary = crate::log::get_log_summary(1.0);
+    let error_count = log_summary
+        .get("error_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let warn_count = log_summary
+        .get("warn_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let log_path = hcom_dir.join(".tmp/logs/hcom.log");
+    if error_count == 0 && warn_count == 0 {
+        println!("logs:      \u{2713} ok");
+    } else {
+        let mut parts = Vec::new();
+        if error_count > 0 {
+            parts.push(format!(
+                "{error_count} error{}",
+                if error_count != 1 { "s" } else { "" }
+            ));
+        }
+        if warn_count > 0 {
+            parts.push(format!(
+                "{warn_count} warn{}",
+                if warn_count != 1 { "s" } else { "" }
+            ));
+        }
+        if show_logs {
+            println!("logs:      {} (1h)", parts.join(", "));
+        } else {
+            println!("logs:      {} (1h)  (hcom status --logs)", parts.join(", "));
+        }
+    }
+    println!("           {}", log_path.display());
+    if show_logs {
+        let entries = crate::log::get_recent_logs(1.0, &["ERROR", "WARN"], 20);
+        for entry in &entries {
+            let ts = entry.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+            let level = entry
+                .get("level")
+                .and_then(|v| v.as_str())
+                .unwrap_or("INFO");
+            let subsystem = entry
+                .get("subsystem")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let event = entry.get("event").and_then(|v| v.as_str()).unwrap_or("");
+            if level == "ERROR" || level == "WARN" {
+                let ts_short = if ts.len() > 8 {
+                    &ts[ts.len() - 8..]
+                } else {
+                    ts
+                };
+                println!("           {ts_short} [{level:<5}] {subsystem}.{event}");
+            }
+        }
+    }
+
+    0
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::DEV_ROOT_KV_KEY;
+    use serial_test::serial;
+
+    #[test]
+    fn test_tool_symbol() {
+        let t = ToolStatus {
+            key: "claude",
+            name: "Claude",
+            installed: true,
+            hooks: true,
+            hook_mode: HookMode::Persistent,
+            settings_path: String::new(),
+        };
+        assert_eq!(t.symbol(), "✓");
+
+        let t = ToolStatus {
+            key: "claude",
+            name: "Claude",
+            installed: true,
+            hooks: false,
+            hook_mode: HookMode::Persistent,
+            settings_path: String::new(),
+        };
+        assert_eq!(t.symbol(), "~");
+
+        let t = ToolStatus {
+            key: "claude",
+            name: "Claude",
+            installed: false,
+            hooks: false,
+            hook_mode: HookMode::Persistent,
+            settings_path: String::new(),
+        };
+        assert_eq!(t.symbol(), "✗");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_path_exists_or_symlink_accepts_broken_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("shim");
+        std::os::unix::fs::symlink(dir.path().join("missing-target"), &link).unwrap();
+        assert!(path_exists_or_symlink(&link));
+    }
+
+    // Unix-only: relies on `:`-separated PATH and a real symlink.
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn test_is_in_path_tolerates_broken_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("definitely_not_a_real_binary_xyz123");
+        std::os::unix::fs::symlink(dir.path().join("missing-target"), &link).unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", dir.path());
+        }
+        assert!(is_in_path("definitely_not_a_real_binary_xyz123"));
+        assert!(!is_in_path("also_not_a_real_binary_abc456"));
+        unsafe {
+            match &original_path {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_tool_statuses_cover_released_specs_including_kimi() {
+        let tools = get_tool_statuses();
+        let keys: Vec<_> = tools.iter().map(|tool| tool.key).collect();
+        let expected: Vec<_> = crate::integration_spec::ALL
+            .iter()
+            .filter(|spec| spec.released)
+            .map(|spec| spec.name)
+            .collect();
+        assert_eq!(keys, expected);
+        assert!(keys.contains(&"kimi"));
+    }
+
+    #[test]
+    fn test_tool_status_json_is_keyed_by_canonical_name() {
+        let tools = vec![
+            ToolStatus {
+                key: "kimi",
+                name: "Kimi",
+                installed: true,
+                hooks: false,
+                hook_mode: HookMode::Persistent,
+                settings_path: "/tmp/kimi.json".to_string(),
+            },
+            ToolStatus {
+                key: "claude",
+                name: "Claude",
+                installed: false,
+                hooks: true,
+                hook_mode: HookMode::PerRun,
+                settings_path: String::new(),
+            },
+        ];
+        let value = tool_statuses_json(&tools);
+        assert_eq!(value["kimi"]["installed"], true);
+        assert_eq!(value["kimi"]["settings_path"], "/tmp/kimi.json");
+        assert_eq!(value["claude"]["installed"], false);
+        assert_eq!(value["kimi"]["hook_mode"], "persistent");
+        assert_eq!(value["claude"]["hook_mode"], "per_run");
+        assert_eq!(value["claude"]["hooks"], true);
+        assert!(value["claude"].get("settings_path").is_none());
+        assert!(value.get("0").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn test_antigravity_install_fallback_checks_home_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join(".antigravity/antigravity/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(bin_dir.join("agy"), "").unwrap();
+
+        let old_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+        }
+        assert!(is_antigravity_installed());
+        unsafe {
+            if let Some(home) = old_home {
+                std::env::set_var("HOME", home);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+    }
+
+    // B-2: preset availability must match the validate/launch platform gate —
+    // a wrong-platform built-in is NOT available, and a user-defined preset IS.
+    #[test]
+    #[serial]
+    fn terminal_availability_matches_platform_gate() {
+        use crate::hooks::test_helpers::isolated_test_env;
+
+        // Mirrors the `available` expression at both status sites.
+        let available = |name: &str| {
+            let platform = crate::shared::platform::platform_name();
+            (crate::config::is_known_terminal_preset_pub(name)
+                && crate::config::terminal_preset_supported_on(name, platform))
+                || crate::config::is_user_defined_preset(name)
+        };
+
+        let (_dir, hcom_dir, _home, _guard) = isolated_test_env();
+        let platform = crate::shared::platform::platform_name();
+        let builtin = match platform {
+            "Darwin" | "Linux" => "windows-terminal",
+            _ => "iterm",
+        };
+
+        // Wrong-platform built-in with no user override: not available.
+        assert!(
+            !available(builtin),
+            "{builtin} must show unavailable on {platform}"
+        );
+
+        // A user-defined preset of the same name: available.
+        std::fs::write(
+            hcom_dir.join("config.toml"),
+            format!("[terminal.presets.{builtin}]\nopen = \"{builtin} {{script}}\"\n"),
+        )
+        .unwrap();
+        assert!(
+            available(builtin),
+            "user-defined {builtin} must show available on {platform}"
+        );
+    }
+
+    #[test]
+    fn test_status_json_includes_dev_root_only_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::HcomDb::open_at(&dir.path().join("hcom.db")).unwrap();
+
+        assert_eq!(db.kv_get(DEV_ROOT_KV_KEY).unwrap(), None);
+
+        db.kv_set(DEV_ROOT_KV_KEY, Some("/tmp/dev-root")).unwrap();
+        assert_eq!(
+            crate::router::resolve_effective_dev_root(&dir.path().join("hcom.db")),
+            Some((std::path::PathBuf::from("/tmp/dev-root"), "kv"))
+        );
+    }
+}
