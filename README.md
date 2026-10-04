@@ -1,452 +1,148 @@
-# hcom
+# comms
 
-[![CI](https://github.com/aannoo/hcom/actions/workflows/ci.yml/badge.svg)](https://github.com/aannoo/hcom/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/aannoo/hcom)](https://github.com/aannoo/hcom/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/aannoo/hcom/blob/main/LICENSE)
+**Let your coding agents talk to each other.** Get a second opinion from a different model, or run Claude Code and Codex side by side in one project and have them coordinate instead of collide.
 
-> **Hook your coding agents together**
+`comms` is a fork of [hcom](https://github.com/aannoo/hcom) (MIT) by aannoo. hcom provides the messaging engine: launching agents through a wrapper, @mentions, and delivering messages mid-turn or by waking idle agents. comms adds the pieces for two models sharing one codebase:
 
-**`hcom`** is a CLI that agents use to message, watch, and spawn each other across terminals.
+| | What it does |
+|---|---|
+| **`comms ask`** | One-shot, read-only question to a fresh Claude or Codex. Prints the answer and exits, so it works well as a background task. |
+| **`--read-only`** | Launch a live agent that can read and message but can't edit files. |
+| **Claims** | Soft, expiring file locks. Edits to another agent's claimed files are blocked, and the blocked agent is told who holds them. |
+| **Turn budget** | Stops two agents from messaging each other forever without you. |
+| **Per-project data** | `comms init` keeps a project's agents and messages in `.comms/`, separate from other projects. |
 
-Start an agent with `hcom` in front, then prompt normally.
-
-Use it to:
-
-- coordinate multi-agent pipelines
-- run different AI CLIs as each other's subagents
-- avoid copy-pasting
-
-Works with: `claude`, `codex`, `opencode`, `pi`, `omp`, `agy`, `cursor`, `kimi`, `kilo`, `copilot`, `gemini`
-
-https://github.com/user-attachments/assets/1ce23ed9-f529-4be0-8124-816aa4c2fd43
+Supports `claude` and `codex` for the comms features. Everything hcom supports (opencode, gemini, cursor, …) still works for messaging.
 
 ---
 
 ## Install
 
-**python -** macOS, Linux, Windows:
+From source (Rust 1.88+):
 
 ```bash
-uv tool install hcom
+git clone https://github.com/jinomee/comms.git
+cd comms
+cargo install --path .
 ```
 
-**homebrew -** macOS, Linux:
+This installs two binaries next to each other:
+- **`comms`**: the command you use.
+- **`hcom`**: the engine. Agents call it internally.
 
-```bash
-brew install aannoo/hcom/hcom
-```
-
-<details><summary>Other install options</summary>
-
-```bash
-# macOS, Linux, Android
-curl -fsSL https://github.com/aannoo/hcom/releases/latest/download/hcom-installer.sh | sh
-```
-
-```powershell
-# Windows
-irm https://github.com/aannoo/hcom/releases/latest/download/hcom-installer.ps1 | iex
-```
-
-```bash
-# Update any existing install
-hcom update
-```
-
-</details>
+If you already have upstream hcom installed, this `hcom` replaces it. The two are compatible.
 
 ---
 
 ## Quickstart
 
-Terminal 1:
-
 ```bash
-hcom claude
+cd your-project
+comms init            # creates .comms/ (gitignored) for this project
 ```
 
-Terminal 2:
+Terminal 1 and terminal 2:
 
 ```bash
-hcom codex
+comms claude
+comms codex
 ```
 
-Prompt:
+Then prompt either agent normally:
 
-- `ask the other agent their favorite cake`
-- `review what claude did and send it fixes`
-- `spawn 3x opencode, split work, collect results`
-- `fork yourself to investigate the bug and report back`
-- `when codex goes idle, send it the next task`
+- `ask codex to review your plan before you start`
+- `claim src/auth/** while you refactor it, and tell claude what you're doing`
+- `split the work with claude: you take the API, they take the tests`
 
-Open the TUI dashboard:
-
-```bash
-hcom
-```
+Run `comms` with no arguments to watch the conversation in a dashboard.
 
 ---
 
-## What agents can do
+## Second opinions: `comms ask`
 
-**Message** each other in real time: mid-turn or wake immediately when idle
+```bash
+comms ask codex "Is there a race in flush()?" --file src/queue.rs
+comms ask claude "Review this migration plan" -f docs/plan.md
+git diff | comms ask codex -          # question from stdin
+```
 
-**Observe** each other: status, transcripts, file edits, live terminal screens, command history.
+`comms ask` starts the agent headless in the current directory, waits, and prints its final answer.
+- **Read-only by default.** Claude gets read-only tools, and Codex runs in `--sandbox read-only`. Pass `--write` to let it edit.
+- **Follow-ups:** `--continue <session>` keeps the same conversation. The session id is printed after each answer.
+- **Other flags:** `--model`, `--timeout` (seconds, default 600) and `--json`.
+- **No nesting:** an asked agent can't `ask` again.
 
-**Subscribe** and notify on status changes, file edits, collisions, specific events. React automatically.
+An agent can run `comms ask` itself, for example Claude asking Codex. In Claude Code, run it as a background task; the answer arrives when the command finishes.
 
-**Spawn**, **fork**, **resume**, **kill** in any terminal emulator or headless.
+## Read-only agents
+
+```bash
+comms codex --read-only     # reviewer that can read and message, not edit
+comms claude --read-only
+```
+
+What `--read-only` does for each agent:
+- **Claude:** its edit tools are disabled. Bash stays available so it can still send messages, which means shell edits are still possible.
+- **Codex:** runs in a read-only sandbox.
+
+## Claims
+
+```bash
+comms claim "src/auth/**" -n "moving middleware to async"   # default 30m
+comms claims                                                 # who holds what
+comms claims --check src/auth/session.rs                     # exit 1 if someone else holds it
+comms release "src/auth/**"                                  # or: comms release --all
+```
+
+How claims behave:
+- **Blocking:** if another agent tries to edit a claimed file, its edit hook blocks the change and tells it who holds the file and how to ask. Claude's Write/Edit and Codex's apply_patch are both covered.
+- **Notifying:** the holder gets an @mention saying someone is waiting.
+- **Renewal and expiry:** claims renew while the holder keeps editing under them. They expire after their TTL (`--ttl 2h`), and they're dropped when the holder exits.
+- **Subagents:** a Claude subagent shares its parent's claims.
+
+Agents run these commands themselves (they're auto-approved). You can claim files too: from a plain terminal, you're `bigboss`.
+
+> Edits made through the shell (`sed -i`, `cat >`) don't go through the edit hooks, so claims can't block them.
+
+## Turn budget
+
+Each agent-to-agent message counts toward that pair of agents. After **20** messages with no human input, comms refuses further messages between them. The agents are told to stop and report back to you.
+
+```bash
+comms budget          # per-pair counts
+comms budget reset    # let them continue
+comms budget 50       # change the limit (0 = off), or set HCOM_TURN_BUDGET
+```
+
+Counts reset when you send a message, or when you type directly into an agent. Agents can see the budget but can't change it.
+
+## Per-project data
+
+`comms init` creates `<git root>/.comms/hcom` and adds `.comms/` to `.gitignore`. Inside the project, every `comms` or `hcom` call uses that directory, including calls agents make. Outside any initialized project, data lives in `~/.hcom` as in upstream. An explicit `HCOM_DIR` always takes precedence.
 
 ---
 
-## How it works
+## Everything else
 
-Hooks record activity to a local SQLite database and deliver messages from it.
+All of hcom's features still apply: spawning and forking agents, subscriptions, threads, transcripts, cross-device relay, the TUI and the config. See **[docs/HCOM.md](docs/HCOM.md)** (hcom's own README) and `comms --help`.
 
-```text
-agent → hooks → db → hooks → other agent
-```
+[SPEC.md](SPEC.md) has the original design for comms and notes on how each part maps onto hcom.
 
-Hooks activate only when an agent is launched with `hcom` in front. Normal usage is unaffected.
-
-Any other AI tool without hooks can join by running `hcom start`. Any process can wake agents with `hcom send`.
-
----
-
-## Terminal
-
-Every agent runs in a real terminal you can see, scroll, and interrupt. Any emulator works for spawning. **kitty**, **wezterm**, **tmux**, **zellij**, **waveterm**, **cmux**, **herdr** also support closing panes from `hcom kill`.
-
-To configure a custom terminal open/close setup, tell an agent to run:
+## Development
 
 ```bash
-hcom config terminal --info
-```
-
----
-
-## Cross-device
-
-Connect agents across machines via MQTT relay.
-
-```bash
-hcom relay new               # get token
-hcom relay connect <token>   # on each device
-```
-
-```bash
-hcom relay status            # check connection
-hcom relay off|on            # toggle
-```
-
-<details>
-<summary>Relay Security</summary>
-
-### Security
-
-- Relay payloads are end-to-end encrypted. Brokers do not see data.
-- Treat the join token like an SSH key or API key.
-- If the token may have leaked, run `hcom relay off --all` to disconnect all devices.
-- Use a private/custom/self-hosted broker with `--broker` and `--password` for better security.
-
-### Security model
-
-`hcom relay` is one trust domain for one operator's devices. Membership is all-or-nothing. There are no scoped roles, read-only peers, or per-device permissions.
-
-Relay payloads use a shared PSK with XChaCha20-Poly1305. The encryption binds each payload to the relay, topic, and timestamp. A replay guard drops duplicate envelopes inside a freshness window.
-
-Brokers and network observers cannot read or forge payloads without the PSK. They can still see metadata: topic names, timing, message sizes, and connection patterns.
-
-### What the token means
-
-The join token contains the relay ID, broker URL, and raw PSK. hcom does not ask a server to validate it. It has no expiry, no scope, and no revocation list.
-
-On public brokers, a leaked token gives an attacker full control of the relay. They can decrypt captured traffic, publish authenticated relay traffic, send text to listening agents, launch agents on enrolled devices, kill running agents, and use remote relay RPCs. If those agents can run tools, treat that as shell access on every enrolled device in the relay.
-
-On private brokers with `--password`, the token still leaks the PSK, so captured traffic is still exposed. But the token alone is not enough to publish unless the attacker also has the broker password. Use a private broker when broker-side access control matters, or when the metadata shape of your traffic is itself sensitive. `--password` is broker access control, not another layer of message encryption.
-
-### Limits by design
-
-- Forward secrecy. A leaked PSK can decrypt old captured traffic.
-- Per-device attribution inside a relay. Sender identity is routing metadata, not authorization. Every enrolled device speaks with full authority.
-- Prompt injection from an authenticated peer. Enrollment is total trust — a peer can launch, kill, and drive agents via RPC, not just send messages. Only enroll devices you would give shell access to.
-- Local OS compromise. hcom trusts the local user account and `~/.hcom/config.toml`. It does not defend against another user on the same account or malware with filesystem access.
-
-### Storage
-
-The PSK is stored in `~/.hcom/config.toml`. On Unix, hcom writes that file with mode `0600`.
-
-hcom keeps the PSK out of environment variables. Remote `config_get` and `config_set` refuse `relay_psk`, `relay_token`, `relay_id`, and the broker URL. `hcom relay status` shows only a short fingerprint so two devices can verify they share the same key without printing it.
-
-Anyone who can read that file — another user on the same OS account, malware, or a backup written without preserving permissions — has the full PSK.
-
-### Incident response
-
-Run `hcom relay off --all`. It asks every reachable trusted peer to disable the relay, then disables it locally, so your agents stop acting on attacker messages. It is best-effort damage control, not containment: the attacker's device ignores the request.
-
-The PSK cannot be revoked. There is no server to notify and no denylist to update. Anyone who has the PSK can keep using the old relay until you stop using it.
-
-To keep using relay after a leak, create a new relay with `hcom relay new` and move every trusted device to the new token. Rotation also changes the `relay_id`, so retained state on the old broker topics is orphaned.
-
-</details>
-
----
-
-## Troubleshoot
-
-```bash
-hcom status                  # diagnostics
-```
-
-```bash
-hcom reset all               # clear and archive: database + hooks + config
-```
-
----
-
-## Uninstall
-
-Safely remove all hcom hooks:
-
-```bash
-hcom hooks remove
-```
-
-Then remove binary:
-
-```bash
-brew uninstall hcom
-# or: uv tool uninstall hcom
-# or: rm "$(which hcom)"
-```
-
----
-
-## Reference
-
-<details>
-<summary>Tools</summary>
-
-### Supported tools
-
-| Tool | Message delivery | Connect |
-|---|---|---|
-| Claude Code | automatic | `hcom claude` |
-| Gemini CLI | automatic | `hcom gemini` |
-| Codex CLI | automatic | `hcom codex` |
-| Antigravity CLI | automatic | `hcom agy` |
-| OpenCode | automatic | `hcom opencode` |
-| Kilo Code | automatic | `hcom kilo` |
-| Pi | automatic | `hcom pi` |
-| Oh My Pi | automatic | `hcom omp` |
-| Cursor CLI | automatic | `hcom cursor-agent` |
-| Kimi | automatic | `hcom kimi` |
-| Copilot CLI | automatic | `hcom copilot` |
-| Grok Build | automatic | `hcom grok` |
-| Anything else | manual via `hcom listen` | `hcom start` (run inside tool) |
-
-```bash
-hcom r <session_id>           # Resume a session started outside hcom
-hcom f <session_id>           # Fork a session in hcom
-```
-
-#### Claude Code headless and subagents
-
-Detached background processes in print mode stay alive. Manage through the TUI.
-
-```bash
-hcom claude -p 'say hi in hcom'   # print mode (separate Agent SDK credits)
-hcom claude --headless            # Run normal claude in background pty (works for any tool)
-```
-
-For subagents, run `hcom claude`, then prompt:
-
-> run 2x task tool and get them to talk to each other in hcom
-
-</details>
-
-
-<details>
-<summary>CLI</summary>
-
-### CLI commands
-
-What you might type from a shell. Agents run their own commands that they learn from the hcom CLI primer (~700 tokens) at launch. `hcom <command> --help` for full flags.
-
-### Spawn
-
-```bash
-hcom [N] claude|gemini|codex|agy|opencode|kilo|pi|omp|cursor-agent|kimi|copilot|grok   # launch N agents
-hcom r <name|session_id>     # resume agent
-hcom f <name|session_id>     # fork session
-hcom kill <name|tag:T|all>   # kill + close terminal pane
-```
-
-hcom launch flags:
-
-| Flag | Purpose |
-|---|---|
-| `--tag <name>` | Group label — agents can be addressed as `@tag` |
-| `--terminal <preset>` | Where windows open: `default` (auto-detect), `kitty`, `wezterm`, `tmux`, `cmux`, `iterm`, etc… |
-| `--dir <path>` | Directory where the agent launches |
-| `--headless` | Run in background pty with no terminal window |
-| `--device <name>` | Spawn on a remote device (via relay) |
-| `--hcom-prompt <text>` | Initial user prompt |
-| `--hcom-system-prompt <text>` | Append to system prompt |
-
-Anything else is forwarded to the tool: `--model sonnet`, `--yolo`, etc.
-
-### Other commands
-
-```bash
-hcom                           # TUI dashboard
-hcom send -b @luna -- hey      # one-off message to an agent
-hcom list                      # show all active agents
-hcom term [name]               # view/inject into an agent's PTY screen
-hcom events --wait <filters>   # Block until match for scripting
-hcom update                    # update hcom version
-```
-
-`hcom run docs --cli` for all commands.
-
-</details>
-
-<details>
-<summary>Config</summary>
-
-### Configuration
-
-Config lives in `~/.hcom/config.toml`. Precedence: defaults < `config.toml` < env vars.
-
-```bash
-hcom config                           # show all values with sources
-hcom config <key>                     # get
-hcom config <key> <value>             # set
-hcom config <key> --info              # detailed help for a key
-hcom config -i <name> <key> <value>   # per-agent override at runtime
-```
-
-### Keys
-
-| Key | Purpose |
-|---|---|
-| `tag` | Group label — launched agents become `tag-name` |
-| `hints` | Text appended to every message the agent receives |
-| `notes` | Text appended to bootstrap (one-time, at launch) |
-| `auto_approve` | Auto-approve safe hcom commands (send/list/events/…) |
-| `auto_subscribe` | Event subscription presets: `collision`, `created`, `stopped`, `blocked` |
-| `name_export` | Export instance name to a custom env var |
-| `title_mode` | Terminal/tab title behavior: `combined` (default), `label`, or `off` |
-| `terminal` | Where new agent windows open (`hcom config terminal --info`) |
-| `timeout` | Idle timeout for headless Claude (seconds) |
-| `subagent_timeout` | Keep-alive for Claude subagents (seconds) |
-| `claude_args` / `gemini_args` / `codex_args` / `opencode_args` / `kilo_args` / `pi_args` / `omp_args` / `cursor_args` / `kimi_args` / `copilot_args` / `grok_args` | Default args passed to the tool |
-
-### Scope
-
-```bash
-hcom config tag mycrew                        # global
-hcom config -i luna hints "respond in JSON"   # per-agent
-HCOM_TAG=dev hcom 3 claude                    # per-launch env
-```
-
-### Per-project isolation
-
-```bash
-export HCOM_DIR="$PWD/.hcom"    # isolate hcom state (db, logs) to this folder
-rm -rf "$HCOM_DIR"              # clean up
-```
-
-Run `hcom config <key> --info` or `hcom run docs --config` for the full per-key reference.
-
-Edit `~/.hcom/env` to set external env vars passed to every launched agent.
-
-</details>
-
-<details>
-<summary>Workflow Scripts</summary>
-
-### Multi-agent workflows
-
-Bundled and user scripts (`~/.hcom/scripts/`) for multi-agent patterns:
-
-```bash
-hcom run                   # list available scripts
-hcom run debate "topic"    # run one
-hcom run docs              # tell agent to run this to create any new workflow
-```
-
-### Included scripts
-
-Tell agent to run them:
-
-**`hcom run confess`** — An agent (or background clone) writes an honesty self-eval. A spawned calibrator reads the target's transcript independently. A judge compares both reports and sends back a verdict via hcom message.
-
-**`hcom run debate`** — A judge spawns and sets up a debate with existing agents. It coordinates rounds in a shared thread where all agents see each other's arguments, with shared context of workspace files and transcripts.
-
-**`hcom run fatcow`** — headless agent reads every file in a path, subscribes to file edit events to stay current, and answers other agents on demand.
-
-**`hcom run onidle`** — waits for an agent to go idle, then types text into another agent (`hcom run onidle luna nova 'luna is done, review it'`) or launches a new one with it as the prompt (`hcom run onidle luna codex 'review what luna just did'`).
-
-Custom scripts: drop `*.sh` or `*.py` into `~/.hcom/scripts/` — auto-discovered, override bundled scripts of the same name. Ask an agent to author one; `hcom run docs --scripts` is the authoring guide.
-
-</details>
-
-<details>
-<summary>Build</summary>
-
-### Building from source
-
-```bash
-# Prerequisites: Rust 1.88+
-
-git clone https://github.com/aannoo/hcom.git
-cd hcom
 cargo build
 cargo test
+cargo clippy --all-targets
 ```
 
-### Using local build
-
-Two options:
-
-**Symlink** — simple, dev build is global.
+Upstream hcom is tracked as the `upstream` remote. Internal names (`hcom`, `HCOM_*`, `~/.hcom`) are left unchanged so upstream fixes still merge cleanly:
 
 ```bash
-ln -sf $(pwd)/target/debug/hcom ~/.cargo/bin/hcom
+git remote add upstream https://github.com/aannoo/hcom.git   # once
+git fetch upstream && git merge upstream/main
 ```
-
-**dev_root** — works regardless of how hcom was installed (brew, pip, etc.); picks the newer of debug/release automatically:
-
-```bash
-hcom config dev_root $(pwd)
-hcom config dev_root --unset  # revert
-hcom status    # run local build
-```
-
-For concurrent worktrees, scope each to its own DB:
-
-```bash
-HCOM_DIR=$PWD/.hcom HCOM_DEV_ROOT=$PWD hcom claude
-```
-
-</details>
-
----
-
-## Contributing
-
-Issues and PRs welcome. The codebase is Rust.
-
-```bash
-cargo build && cargo test
-hcom config dev_root $(pwd)
-hcom status
-just ci  # run the CI gate locally
-```
-
----
 
 ## License
 
-[MIT](LICENSE)
+MIT. Copyright (c) 2025 aannoo (hcom), with comms changes by its contributors. See [LICENSE](LICENSE).

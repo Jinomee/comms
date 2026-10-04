@@ -1,11 +1,28 @@
-# comms — spec (v1 draft)
+# comms: design
 
-A command-line tool that lets AI coding agents (Claude Code, Codex, …) working on the
-same project talk to each other: quick one-off questions to get a second opinion, and an
-ongoing chatroom where they coordinate parallel work and trade ideas.
+A command-line tool that lets AI coding agents (Claude Code, Codex, and others) working on the same project talk to each other. They can ask quick one-off questions to get a second opinion, or use an ongoing chatroom to coordinate parallel work and trade ideas.
 
-Status: **design draft, nothing built yet.** Decisions below came out of a design
-interview; anything marked *Open* is still undecided.
+## Status: built as a fork of hcom
+
+After the design interview below, we found [hcom](https://github.com/aannoo/hcom), which already implements most of the messaging layer, and forked it instead of writing a Go tool from scratch. This file keeps the original design as the record of *what* we wanted. The table maps each part onto the fork.
+
+| Spec section | Where it ended up |
+|---|---|
+| §2 Rooms | hcom has one stream per data dir, plus `--thread` with members. Per-project separation comes from `comms init` (§3). Named rooms are **not built**; threads cover most of it. |
+| §3 Storage in `.comms/` | `comms init` creates `<git root>/.comms/hcom`. The engine finds it from any subdirectory (`paths::find_project_hcom_dir`). Storage is hcom's SQLite, not JSONL. |
+| §4 Identity | hcom's launch wrapper (`comms claude`, `comms codex`) and per-instance env. Names are generated (`luna`, `nova`) or set with `--name`. |
+| §5 Delivery and waking | hcom does this: hooks deliver messages mid-turn, the Stop hook delivers idle-time messages, and **typing into the agent's terminal wakes idle agents, Codex included**. That closes the open question about waking an idle Codex. |
+| §5.2 Wake only on @mention | hcom: a message with @mentions goes only to those agents, and one without goes to everyone. |
+| §5.4 Turn budget | **Built:** `src/turn_budget.rs`, `comms budget`. Counted per agent pair rather than per room. |
+| §6 Claims | **Built:** `src/claims.rs`, `src/commands/claim.rs`, with enforcement in the Claude and Codex PreToolUse hooks. Stored in hcom's kv table. |
+| §7 Mode A `ask` | **Built:** `src/commands/ask.rs`. |
+| Read-only live agents | **Built:** `--read-only` launch flag (`src/commands/read_only.rs`). |
+| §8 Adapters | hcom's integration specs, covering about 13 tools. |
+| §11 Go implementation | Replaced by hcom's Rust codebase. `comms` is a thin wrapper binary (`src/bin/comms.rs`) around the `hcom` engine. |
+
+Still open: named rooms; non-file claims (e.g. "the dev server"); attachments for large content; shell-edit detection for claims (a git pre-commit check).
+
+The original design follows, unchanged.
 
 ---
 
