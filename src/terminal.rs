@@ -598,13 +598,15 @@ pub fn resolve_windows_tool_launcher(tool: &str, resolved: &str) -> Option<(Stri
 ///   `<proj>\node_modules\@openai\codex\bin\codex.js`
 #[cfg_attr(not(windows), allow(dead_code))]
 fn codex_entrypoint_for_shim(shim: &Path) -> Option<std::path::PathBuf> {
+    const PACKAGE_BIN: &str = "@openai/codex/bin/codex.js";
     let shim_dir = shim.parent()?;
-    let package_bin = ["@openai", "codex", "bin", "codex.js"];
-    let global = shim_dir.join("node_modules");
-    let local = shim_dir.parent()?.to_path_buf(); // `.bin`'s parent is `node_modules`
-    [global, local]
-        .into_iter()
-        .map(|base| package_bin.iter().fold(base, |p, c| p.join(c)))
+    let global = shim_dir.join("node_modules/@openai/codex/bin/codex.js");
+    // `.bin`'s parent is the project's `node_modules`.
+    let local = shim_dir
+        .parent()
+        .map(|node_modules| node_modules.join(PACKAGE_BIN));
+    std::iter::once(global)
+        .chain(local)
         .find(|candidate| candidate.is_file())
 }
 
