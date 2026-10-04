@@ -5,13 +5,18 @@ edition = "2024"
 authors = ["hcom"]
 description = "Connect Claude Code, Gemini CLI, Codex, OpenCode, Kilo Code, Pi, Oh My Pi, Antigravity, Cursor, Kimi, and Copilot so agents can message, watch, and spawn each other across terminals"
 license = "MIT"
-homepage = "https://github.com/aannoo/hcom"
-repository = "https://github.com/aannoo/hcom"
+homepage = "https://github.com/jinomee/comms"
+repository = "https://github.com/jinomee/comms"
 rust-version = "1.88"
 
 [[bin]]
 name = "hcom"
 path = "src/main.rs"
+
+# User-facing entry point; forwards to the hcom engine (see src/bin/comms.rs).
+[[bin]]
+name = "comms"
+path = "src/bin/comms.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
