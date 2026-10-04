@@ -27,6 +27,8 @@ const FLAG_MAP: &[(&str, &str)] = &[
     ("--before", "before"),
     ("--intent", "intent"),
     ("--thread", "thread"),
+    // A room is a thread with explicit members (see crate::rooms).
+    ("--room", "thread"),
     ("--reply-to", "reply_to"),
     ("--collision", "collision"),
 ];
@@ -523,7 +525,7 @@ pub struct EventFilterArgs {
     pub before: Vec<String>,
     #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["request", "inform", "ack"]))]
     pub intent: Vec<String>,
-    #[arg(long)]
+    #[arg(long, alias = "room")]
     pub thread: Vec<String>,
     #[arg(long = "reply-to")]
     pub reply_to: Vec<String>,

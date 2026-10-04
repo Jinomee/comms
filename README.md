@@ -124,6 +124,7 @@ comms claude --room auth            # launch an agent straight into a room
 comms room add auth luna nova       # or put running agents in one
 comms room                          # list rooms and members
 comms room show auth                # the room's recent messages
+comms events --room auth --wait     # watch for the next room message
 comms send -b --room auth -- "agree on the interface first"   # you, posting to a room
 ```
 
@@ -131,7 +132,7 @@ What changes for an agent in a room:
 - **A plain message goes to the room.** `comms send -- <text>` with no @mention reaches only the room's members, not every agent.
 - **Nothing else changes.** `@name` still reaches any agent, and `comms send --all -- <text>` still reaches every agent.
 
-Agents can manage their own rooms with `comms room join <room>` and `comms room leave`. An agent in several rooms sends plain messages to the one it joined last.
+Agents can manage their own rooms with `comms room join <room>` and `comms room leave`. If someone else adds an agent to a room, removes it, or deletes its room, the agent gets a message saying where its plain messages go now. An agent in several rooms sends plain messages to the one it joined last.
 
 Rooms are built on threads: `--room` and `--thread` are interchangeable on `send`, and a room's history is its thread's history. Agents not in any room, and messages with `--thread` or @mentions, behave exactly as before.
 

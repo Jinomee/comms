@@ -38,6 +38,7 @@ const FILTER_HELP: &[HelpEntry] = &[
     ("  --mention NAME", "@mention target"),
     ("  --intent VAL", "request | inform | ack"),
     ("  --thread NAME", "Thread name"),
+    ("  --room NAME", "Room name (same as --thread)"),
     ("  --after TIME", "After timestamp (ISO-8601)"),
     ("  --before TIME", "Before timestamp (ISO-8601)"),
 ];

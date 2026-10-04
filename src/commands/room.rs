@@ -67,6 +67,26 @@ fn require_caller(ctx: Option<&CommandContext>, what: &str) -> Result<String, St
     })
 }
 
+/// Tell an agent its room membership changed (unless it made the change).
+/// Its plain messages now go somewhere else, so it must know.
+fn notify(db: &CommsDb, agent: &str, by: Option<&str>, what: &str) {
+    if by == Some(agent) {
+        return;
+    }
+    let by = by.unwrap_or(crate::shared::constants::SENDER);
+    let route = match rooms::current(db, agent) {
+        Some(room) => format!("Your plain messages now go to room '{room}'."),
+        None => "Your plain messages now go to all agents.".to_string(),
+    };
+    let comms = crate::runtime_env::build_comms_command();
+    let _ = db.send_system_message(
+        "rooms",
+        &format!(
+            "@{agent} {by} {what}. {route} Use @name for one agent, `{comms} send --all` for everyone; `{comms} room` shows your rooms."
+        ),
+    );
+}
+
 fn known_agent(db: &CommsDb, name: &str) -> bool {
     matches!(db.get_instance_full(name), Ok(Some(_)))
 }
@@ -162,14 +182,39 @@ fn run(db: &CommsDb, args: &RoomArgs, ctx: Option<&CommandContext>) -> Result<()
                 ));
             }
             for agent in agents {
+                let already = rooms::is_member(db, room, agent);
                 rooms::join(db, room, agent).map_err(|e| e.to_string())?;
+                if !already {
+                    let others: Vec<String> = rooms::members(db, room)
+                        .into_iter()
+                        .filter(|m| m != agent)
+                        .collect();
+                    let with = if others.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" with {}", others.join(", "))
+                    };
+                    notify(
+                        db,
+                        agent,
+                        me.as_deref(),
+                        &format!("added you to room '{room}'{with}"),
+                    );
+                }
             }
             println!("Room '{room}': {}", rooms::members(db, room).join(", "));
         }
         RoomAction::Remove { room, agents } => {
             exists_or_err(db, room)?;
             for agent in agents {
-                rooms::leave(db, room, agent).map_err(|e| e.to_string())?;
+                if rooms::leave(db, room, agent).map_err(|e| e.to_string())? {
+                    notify(
+                        db,
+                        agent,
+                        me.as_deref(),
+                        &format!("removed you from room '{room}'"),
+                    );
+                }
             }
             let left = rooms::members(db, room);
             if left.is_empty() {
@@ -211,7 +256,11 @@ fn run(db: &CommsDb, args: &RoomArgs, ctx: Option<&CommandContext>) -> Result<()
         }
         RoomAction::Delete { room } => {
             exists_or_err(db, room)?;
+            let former = rooms::members(db, room);
             let n = rooms::delete(db, room).map_err(|e| e.to_string())?;
+            for agent in &former {
+                notify(db, agent, me.as_deref(), &format!("deleted room '{room}'"));
+            }
             println!("Deleted room '{room}' ({n} member(s) removed; messages kept)");
         }
     }
@@ -249,6 +298,136 @@ fn room_messages(
 mod tests {
     use super::*;
     use crate::shared::identity::SenderIdentity;
+
+    fn test_db_with(names: &[&str]) -> CommsDb {
+        let dir = tempfile::tempdir().unwrap();
+        let db = CommsDb::open_raw(&dir.path().join("t.db")).unwrap();
+        db.init_db().unwrap();
+        std::mem::forget(dir);
+        for n in names {
+            db.conn()
+                .execute(
+                    "INSERT INTO instances (name, tool, status, status_context, created_at) \
+                     VALUES (?, 'claude', 'active', '', 0)",
+                    [n],
+                )
+                .unwrap();
+        }
+        db
+    }
+
+    /// (delivered_to, text) of room notices, oldest first.
+    fn notices(db: &CommsDb) -> Vec<(String, String)> {
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT json_extract(data, '$.delivered_to'), json_extract(data, '$.text') \
+                 FROM events WHERE type = 'message' AND instance = 'sys_rooms' ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    }
+
+    fn room(action: RoomAction) -> RoomArgs {
+        RoomArgs {
+            action: Some(action),
+            json: false,
+        }
+    }
+
+    #[test]
+    fn agents_are_told_when_others_change_their_rooms() {
+        let db = test_db_with(&["luna", "nova"]);
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+
+        // Human adds both: each is told, and who else is there.
+        let add = room(RoomAction::Add {
+            room: "auth".into(),
+            agents: s(&["luna", "nova"]),
+        });
+        assert_eq!(cmd_room(&db, &add, None), 0);
+        let n = notices(&db);
+        assert_eq!(n.len(), 2);
+        assert_eq!(n[0].0, r#"["luna"]"#);
+        assert!(
+            n[0].1.contains("bigboss added you to room 'auth'"),
+            "{}",
+            n[0].1
+        );
+        assert!(n[0].1.contains("now go to room 'auth'"));
+        assert!(n[1].1.contains("room 'auth' with luna"), "{}", n[1].1);
+
+        // Re-adding an existing member is silent.
+        assert_eq!(cmd_room(&db, &add, None), 0);
+        assert_eq!(notices(&db).len(), 2);
+
+        let remove = room(RoomAction::Remove {
+            room: "auth".into(),
+            agents: s(&["nova"]),
+        });
+        assert_eq!(cmd_room(&db, &remove, None), 0);
+        let last = notices(&db).pop().unwrap();
+        assert_eq!(last.0, r#"["nova"]"#);
+        assert!(last.1.contains("removed you from room 'auth'"));
+        assert!(last.1.contains("now go to all agents"));
+
+        assert_eq!(
+            cmd_room(
+                &db,
+                &room(RoomAction::Delete {
+                    room: "auth".into()
+                }),
+                None
+            ),
+            0
+        );
+        let last = notices(&db).pop().unwrap();
+        assert_eq!(last.0, r#"["luna"]"#);
+        assert!(last.1.contains("deleted room 'auth'"));
+    }
+
+    #[test]
+    fn agents_changing_their_own_rooms_get_no_notice() {
+        let db = test_db_with(&["luna"]);
+        let ctx = CommandContext {
+            explicit_name: None,
+            identity: Some(SenderIdentity {
+                kind: SenderKind::Instance,
+                name: "luna".into(),
+                instance_data: Some(serde_json::json!({"name": "luna"})),
+                session_id: None,
+            }),
+            go: false,
+            identity_warning: None,
+        };
+        let join = room(RoomAction::Join {
+            room: "auth".into(),
+        });
+        assert_eq!(cmd_room(&db, &join, Some(&ctx)), 0);
+        assert_eq!(
+            cmd_room(&db, &room(RoomAction::Leave { room: None }), Some(&ctx)),
+            0
+        );
+        assert!(notices(&db).is_empty());
+        // A human can't "join": only agents receive messages.
+        assert_eq!(cmd_room(&db, &join, None), 1);
+    }
+
+    #[test]
+    fn events_room_filter_is_the_thread_filter() {
+        use clap::Parser;
+        let args =
+            crate::commands::events::EventsArgs::try_parse_from(["events", "--room", "auth"]);
+        assert!(args.is_ok(), "{:?}", args.err());
+        let (filters, rest) =
+            crate::core::filters::parse_event_flags(&["--room".to_string(), "auth".to_string()])
+                .unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(filters.get("thread"), Some(&vec!["auth".to_string()]));
+    }
 
     #[test]
     fn show_lists_only_room_messages_oldest_first() {
