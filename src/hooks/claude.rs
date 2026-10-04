@@ -1392,6 +1392,23 @@ fn tool_use_id(payload: &HookPayload) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+/// Deny reason when a file-edit tool targets a path another agent claimed.
+fn claim_denial(db: &HcomDb, payload: &HookPayload, instance_name: &str) -> Option<String> {
+    if !matches!(
+        payload.tool_name.as_str(),
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit"
+    ) {
+        return None;
+    }
+    let path = payload
+        .tool_input
+        .get("file_path")
+        .or_else(|| payload.tool_input.get("notebook_path"))
+        .and_then(|v| v.as_str())?;
+    let cwd = common::hook_cwd(db, payload, instance_name);
+    crate::claims::check_edit(db, instance_name, &[path], &cwd)
+}
+
 /// PreToolUse: status tracking plus a verified actor capability for shell tools.
 fn handle_pretooluse(
     db: &HcomDb,
@@ -1402,6 +1419,17 @@ fn handle_pretooluse(
 ) -> (i32, String) {
     let tool_name = payload.tool_name.as_str();
     let tool_input = &payload.tool_input;
+
+    if let Some(reason) = claim_denial(db, payload, instance_name) {
+        let output = serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        });
+        return (0, output.to_string());
+    }
 
     // Skip status update for Claude's internal memory operations.
     if tool_name == "Edit" || tool_name == "Write" {
@@ -2598,7 +2626,7 @@ const CLAUDE_HOOK_CONFIGS: &[(&str, &str, &str, Option<u64>)] = &[
     ("UserPromptSubmit", "", "userpromptsubmit", None),
     (
         "PreToolUse",
-        "Bash|PowerShell|Agent|Task|Write|Edit",
+        "Bash|PowerShell|Agent|Task|Write|Edit|MultiEdit|NotebookEdit",
         "pre",
         None,
     ),
@@ -4458,6 +4486,52 @@ mod tests {
         db.set_session_binding(session_id, instance_name).unwrap();
         db.mark_claude_session_validated(session_id, instance_name)
             .unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_edit_under_foreign_claim_is_denied() {
+        crate::config::Config::init();
+        let (_dir, _guard, db) = make_isolated_test_db();
+        for name in ["luna", "nova"] {
+            db.conn()
+                .execute(
+                    "INSERT INTO instances (name, tool, status, status_time, last_seen, created_at)
+                     VALUES (?, 'claude', 'active', 0, 0, 0)",
+                    [name],
+                )
+                .unwrap();
+        }
+        let now = crate::shared::time::now_epoch_i64();
+        crate::claims::claim(&db, "luna", &["/r/src/**".to_string()], "auth", 600, now).unwrap();
+
+        let edit = |tool: &str, path: &str| {
+            HookPayload::from_claude(serde_json::json!({
+                "session_id": "sess-1",
+                "cwd": "/r",
+                "tool_name": tool,
+                "tool_input": {"file_path": path, "old_string": "a", "new_string": "b"},
+            }))
+        };
+        for tool in ["Edit", "Write", "MultiEdit"] {
+            let (code, stdout) =
+                handle_pretooluse(&db, &edit(tool, "/r/src/a.rs"), "nova", "sess-1", None);
+            assert_eq!(code, 0);
+            let out: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+            assert!(
+                out["hookSpecificOutput"]["permissionDecisionReason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("claimed by luna")
+            );
+        }
+        let (_, stdout) =
+            handle_pretooluse(&db, &edit("Edit", "/r/docs/a.md"), "nova", "sess-1", None);
+        assert!(stdout.is_empty());
+        let (_, stdout) =
+            handle_pretooluse(&db, &edit("Edit", "/r/src/a.rs"), "luna", "sess-1", None);
+        assert!(stdout.is_empty());
     }
 
     #[test]

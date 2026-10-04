@@ -51,6 +51,9 @@ pub(crate) fn dispatch_with_panic_guard<R>(
 /// admin-level and require explicit user approval.
 pub(crate) const SAFE_HCOM_COMMANDS: &[&str] = &[
     "send",
+    "claim",
+    "release",
+    "claims",
     "start",
     "help",
     "--help",
@@ -108,6 +111,31 @@ pub(crate) fn is_safe_hcom_command(command: &str) -> bool {
     };
     rest.first()
         .is_none_or(|command| SAFE_HCOM_COMMANDS.contains(&command.as_str()))
+}
+
+/// Working directory a hook's relative paths resolve against: the payload's
+/// `cwd`, else the instance's directory, else this process's cwd.
+pub(crate) fn hook_cwd(
+    db: &HcomDb,
+    payload: &crate::hooks::HookPayload,
+    instance_name: &str,
+) -> std::path::PathBuf {
+    payload
+        .raw
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            db.get_instance_full(instance_name)
+                .ok()
+                .flatten()
+                .map(|row| row.directory)
+                .filter(|d| !d.is_empty())
+                .map(std::path::PathBuf::from)
+        })
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default()
 }
 
 /// Pre-gate check: should hooks proceed?

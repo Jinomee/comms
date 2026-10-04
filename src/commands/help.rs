@@ -515,6 +515,35 @@ const ASK_HELP: &[HelpEntry] = &[
     ),
 ];
 
+const CLAIM_HELP: &[HelpEntry] = &[
+    (
+        "claim <path|dir|glob>...",
+        "Claim files so other agents' edits to them are blocked",
+    ),
+    (
+        "  --note, -n TEXT",
+        "What you're doing (shown to anyone blocked)",
+    ),
+    (
+        "  --ttl 30m",
+        "Expiry if you stop editing (90s, 30m, 2h; default 30m)",
+    ),
+    (
+        "release <pattern>...",
+        "Release your claims (--all for every one)",
+    ),
+    ("claims", "List live claims"),
+    (
+        "claims --check <path>...",
+        "Exit 1 if a path is claimed by someone else",
+    ),
+    ("", ""),
+    (
+        "",
+        "Claims renew while you edit under them, and lapse when you stop.",
+    ),
+];
+
 const KILL_HELP: &[HelpEntry] = &[
     (
         "kill <name>...",
@@ -1114,6 +1143,9 @@ fn format_entries(entries: &[HelpEntry]) -> Vec<String> {
 /// The `command_names_covers_released_tools` test guards against drift.
 pub const COMMAND_NAMES: &[&str] = &[
     "ask",
+    "claim",
+    "release",
+    "claims",
     "send",
     "list",
     "events",
@@ -1186,6 +1218,8 @@ Launch:\n\
 \n\
 Commands:\n\
 \x20 ask          One-shot read-only question to claude or codex\n\
+\x20 claim        Claim files so other agents don't edit them\n\
+\x20 claims       List claims (release to give them up)\n\
 \x20 send         Send message to your buddies\n\
 \x20 listen       Block until message or event arrives\n\
 \x20 list         Show agents, status, unread counts\n\
@@ -1328,6 +1362,7 @@ fn command_help_raw(name: &str) -> String {
         "start" => Some(&[START_HELP]),
         "kill" => Some(&[KILL_HELP]),
         "ask" => Some(&[ASK_HELP]),
+        "claim" | "release" | "claims" => Some(&[CLAIM_HELP]),
         "listen" => Some(&[LISTEN_HELP]),
         "reset" => Some(&[RESET_HELP]),
         "relay" => Some(RELAY_PAGE),
@@ -1421,6 +1456,9 @@ mod tests {
     fn all_commands_have_help() {
         let commands = [
             "ask",
+            "claim",
+            "release",
+            "claims",
             "send",
             "list",
             "events",

@@ -22,6 +22,9 @@ fn is_hook(name: &str) -> bool {
 
 const COMMANDS: &[&str] = &[
     "ask",
+    "claim",
+    "release",
+    "claims",
     "send",
     "list",
     "events",
@@ -675,6 +678,9 @@ pub fn dispatch() -> anyhow::Result<()> {
             if matches!(
                 cmd.as_str(),
                 "send"
+                    | "claim"
+                    | "release"
+                    | "claims"
                     | "list"
                     | "stop"
                     | "listen"
@@ -916,6 +922,19 @@ fn dispatch_native_command(cmd: &str, args: &[String]) -> i32 {
                 if e.use_stderr() { 1 } else { 0 }
             }
         },
+        // Claims
+        "claim" => clap_dispatch!(crate::commands::claim::ClaimArgs, cmd, &cmd_argv, |args| {
+            crate::commands::claim::cmd_claim(&db, &args, Some(&ctx))
+        }),
+        "release" => clap_dispatch!(
+            crate::commands::claim::ReleaseArgs,
+            cmd,
+            &cmd_argv,
+            |args| crate::commands::claim::cmd_release(&db, &args, Some(&ctx))
+        ),
+        "claims" => clap_dispatch!(crate::commands::claim::ClaimsArgs, cmd, &cmd_argv, |args| {
+            crate::commands::claim::cmd_claims(&db, &args, Some(&ctx))
+        }),
         "list" => clap_dispatch!(crate::commands::list::ListArgs, cmd, &cmd_argv, |args| {
             crate::commands::list::cmd_list(&db, &args, Some(&ctx))
         }),

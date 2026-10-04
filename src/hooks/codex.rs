@@ -830,11 +830,28 @@ fn handle_userpromptsubmit(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload
     }
 }
 
+/// Block an `apply_patch` that touches a path another agent claimed.
+fn claim_block(db: &HcomDb, payload: &HookPayload, instance_name: &str) -> Option<HookResult> {
+    if payload.tool_name != "apply_patch" {
+        return None;
+    }
+    let files = family::patch_files(&payload.tool_input);
+    let cwd = common::hook_cwd(db, payload, instance_name);
+    crate::claims::check_edit(db, instance_name, &files, &cwd).map(|reason| HookResult::Block {
+        reason,
+        delivery_ack: None,
+    })
+}
+
 fn handle_pretooluse(db: &HcomDb, ctx: &HcomContext, payload: &HookPayload) -> HookResult {
     let instance = match resolve_and_update_codex_instance(db, ctx, payload) {
         Some(instance) => instance,
         None => return hook_noop(),
     };
+
+    if let Some(blocked) = claim_block(db, payload, &instance.name) {
+        return blocked;
+    }
 
     common::update_tool_status(
         db,
@@ -1865,6 +1882,44 @@ mod tests {
         assert!(is_hcom_codex_command("uvx hcom codex-stop"));
         assert!(!is_hcom_codex_command("/usr/local/bin/codex-stop"));
         assert!(!is_hcom_codex_command("hcom codex-stop --extra"));
+    }
+
+    #[test]
+    fn test_apply_patch_under_foreign_claim_is_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = HcomDb::open_raw(&dir.path().join("t.db")).unwrap();
+        db.init_db().unwrap();
+        for name in ["luna", "nova"] {
+            db.conn()
+                .execute(
+                    "INSERT INTO instances (name, tool, status, created_at) VALUES (?, 'codex', 'active', 0)",
+                    [name],
+                )
+                .unwrap();
+        }
+        let now = crate::shared::time::now_epoch_i64();
+        crate::claims::claim(&db, "luna", &["/r/src/**".to_string()], "", 600, now).unwrap();
+
+        let patch = |file: &str| {
+            HookPayload::from_codex_native(
+                "PreToolUse",
+                serde_json::json!({
+                    "cwd": "/r",
+                    "tool_name": "apply_patch",
+                    "tool_input": {"command": format!(
+                        "*** Begin Patch\n*** Update File: docs/a.md\n*** Update File: {file}\n*** End Patch"
+                    )},
+                }),
+            )
+        };
+        match claim_block(&db, &patch("src/lib.rs"), "nova") {
+            Some(HookResult::Block { reason, .. }) => {
+                assert!(reason.contains("src/lib.rs is claimed by luna"), "{reason}")
+            }
+            other => panic!("expected block, got {other:?}"),
+        }
+        assert!(claim_block(&db, &patch("tests/x.rs"), "nova").is_none());
+        assert!(claim_block(&db, &patch("src/lib.rs"), "luna").is_none());
     }
 
     #[test]
