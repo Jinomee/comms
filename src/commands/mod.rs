@@ -11,6 +11,7 @@ pub mod daemon;
 pub mod fork;
 pub mod kill;
 pub mod launch;
+pub mod read_only;
 pub mod resume;
 pub mod start;
 pub mod stop;

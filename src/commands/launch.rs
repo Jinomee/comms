@@ -491,7 +491,11 @@ fn parse_launch_argv(argv: &[String]) -> Result<(usize, String, HcomLaunchFlags,
     let tool = argv[idx].to_string();
     idx += 1;
 
-    let (flags, tool_args) = extract_launch_flags(&argv[idx..]);
+    let (read_only, rest) = crate::commands::read_only::take_flag(&argv[idx..]);
+    let (flags, mut tool_args) = extract_launch_flags(&rest);
+    if read_only {
+        tool_args = crate::commands::read_only::apply(&tool, tool_args)?;
+    }
 
     Ok((count, tool, flags, tool_args))
 }

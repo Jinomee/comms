@@ -973,6 +973,16 @@ fn generate_tool_help(spec: &crate::integration_spec::IntegrationSpec) -> String
         "    {:<29}{}",
         "--device <name>", "Launch on a remote relay device"
     ));
+    if matches!(
+        spec.tool,
+        crate::tool::Tool::Claude | crate::tool::Tool::Codex
+    ) {
+        lines.push(format!(
+            "    {:<29}{}",
+            crate::commands::read_only::FLAG,
+            "Can read and message, but not edit files"
+        ));
+    }
 
     // Environment
     lines.push(String::new());
