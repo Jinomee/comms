@@ -5,6 +5,7 @@
 pub mod budget;
 pub mod claim;
 pub mod listen;
+pub mod room;
 pub mod send;
 
 // Lifecycle

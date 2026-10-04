@@ -287,6 +287,11 @@ const SEND_HELP: &[HelpEntry] = &[
         "Threaded routing: seed recipients once, then reuse thread members",
     ),
     (
+        "  --room <name>",
+        "Send to a room's members (same as --thread)",
+    ),
+    ("  --all", "Send to every agent even when you're in a room"),
+    (
         "",
         "  broadcast + --thread reuses prior thread members; seed with @mentions first",
     ),
@@ -577,6 +582,32 @@ const INIT_HELP: &[HelpEntry] = &[
     (
         "",
         "Run at the project root; applies to every directory below it.",
+    ),
+];
+
+const ROOM_HELP: &[HelpEntry] = &[
+    ("room", "List rooms and their members"),
+    (
+        "room join <room>",
+        "Join (creating it); your plain messages now go to this room",
+    ),
+    (
+        "room leave [<room>]",
+        "Leave a room (default: your current one)",
+    ),
+    ("room add <room> <agent>...", "Put agents into a room"),
+    ("room remove <room> <agent>...", "Take agents out of a room"),
+    ("room members <room>", "Who is in a room"),
+    ("room show <room> [--last N]", "Recent messages in a room"),
+    ("room delete <room>", "Remove a room (messages are kept)"),
+    ("", ""),
+    (
+        "",
+        "Rooms are opt-in. In a room, a plain `send` goes to the room; @name still",
+    ),
+    (
+        "",
+        "reaches anyone, and `send --all` reaches every agent. Launch into one with --room.",
     ),
 ];
 
@@ -1041,6 +1072,10 @@ fn generate_tool_help(spec: &crate::integration_spec::IntegrationSpec) -> String
         "    {:<29}{}",
         "--device <name>", "Launch on a remote relay device"
     ));
+    lines.push(format!(
+        "    {:<29}{}",
+        "--room <name>", "Put the agent in a room (see `comms room`)"
+    ));
     if matches!(
         spec.tool,
         crate::tool::Tool::Claude | crate::tool::Tool::Codex
@@ -1190,6 +1225,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "release",
     "claims",
     "budget",
+    "room",
     "send",
     "list",
     "events",
@@ -1266,6 +1302,7 @@ Commands:\n\
 \x20 claim        Claim files so other agents don't edit them\n\
 \x20 claims       List claims (release to give them up)\n\
 \x20 budget       Agent-to-agent turn budget (stops runaway loops)\n\
+\x20 room         Named chatrooms for groups of agents\n\
 \x20 send         Send message to your buddies\n\
 \x20 listen       Block until message or event arrives\n\
 \x20 list         Show agents, status, unread counts\n\
@@ -1411,6 +1448,7 @@ fn command_help_raw(name: &str) -> String {
         "init" => Some(&[INIT_HELP]),
         "claim" | "release" | "claims" => Some(&[CLAIM_HELP]),
         "budget" => Some(&[BUDGET_HELP]),
+        "room" => Some(&[ROOM_HELP]),
         "listen" => Some(&[LISTEN_HELP]),
         "reset" => Some(&[RESET_HELP]),
         "relay" => Some(RELAY_PAGE),
@@ -1509,6 +1547,7 @@ mod tests {
             "release",
             "claims",
             "budget",
+            "room",
             "send",
             "list",
             "events",

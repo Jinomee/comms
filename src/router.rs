@@ -27,6 +27,7 @@ const COMMANDS: &[&str] = &[
     "release",
     "claims",
     "budget",
+    "room",
     "send",
     "list",
     "events",
@@ -685,6 +686,7 @@ pub fn dispatch() -> anyhow::Result<()> {
                     | "release"
                     | "claims"
                     | "budget"
+                    | "room"
                     | "list"
                     | "stop"
                     | "listen"
@@ -938,6 +940,9 @@ fn dispatch_native_command(cmd: &str, args: &[String]) -> i32 {
         ),
         "claims" => clap_dispatch!(crate::commands::claim::ClaimsArgs, cmd, &cmd_argv, |args| {
             crate::commands::claim::cmd_claims(&db, &args, Some(&ctx))
+        }),
+        "room" => clap_dispatch!(crate::commands::room::RoomArgs, cmd, &cmd_argv, |args| {
+            crate::commands::room::cmd_room(&db, &args, Some(&ctx))
         }),
         "budget" => clap_dispatch!(
             crate::commands::budget::BudgetArgs,

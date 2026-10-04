@@ -10,6 +10,7 @@ Start each agent with `comms` in front of it and prompt normally. The agents can
 | **`--read-only`** | Launch a live agent that can read and message but can't edit files. |
 | **Claims** | Soft, expiring file locks. Edits to another agent's claimed files are blocked, and the blocked agent is told who holds them. |
 | **Turn budget** | Stops two agents from messaging each other forever without you. |
+| **Rooms** | Optional named chatrooms, so a group of agents can talk about one topic without messaging everyone. |
 | **Per-project data** | `comms init` keeps a project's agents and messages in `.comms/`, separate from other projects. |
 
 The features above support `claude` and `codex`. Messaging also works with opencode, gemini, cursor, kimi, kilo, copilot, pi, omp, grok and antigravity.
@@ -113,6 +114,26 @@ comms budget 50       # change the limit (0 = off), or set COMMS_TURN_BUDGET
 ```
 
 Counts reset when you send a message, or when you type directly into an agent. Agents can see the budget but can't change it.
+
+## Rooms
+
+Rooms are optional. Without them, comms works as before: a message with no @mention goes to every agent.
+
+```bash
+comms claude --room auth            # launch an agent straight into a room
+comms room add auth luna nova       # or put running agents in one
+comms room                          # list rooms and members
+comms room show auth                # the room's recent messages
+comms send -b --room auth -- "agree on the interface first"   # you, posting to a room
+```
+
+What changes for an agent in a room:
+- **A plain message goes to the room.** `comms send -- <text>` with no @mention reaches only the room's members, not every agent.
+- **Nothing else changes.** `@name` still reaches any agent, and `comms send --all -- <text>` still reaches every agent.
+
+Agents can manage their own rooms with `comms room join <room>` and `comms room leave`. An agent in several rooms sends plain messages to the one it joined last.
+
+Rooms are built on threads: `--room` and `--thread` are interchangeable on `send`, and a room's history is its thread's history. Agents not in any room, and messages with `--thread` or @mentions, behave exactly as before.
 
 ## Per-project data
 

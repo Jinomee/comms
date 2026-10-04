@@ -8,7 +8,7 @@ After the design interview below, we found [hcom](https://github.com/aannoo/hcom
 
 | Spec section | Where it ended up |
 |---|---|
-| §2 Rooms | hcom has one stream per data dir, plus `--thread` with members. Per-project separation comes from `comms init` (§3). Named rooms are **not built**; threads cover most of it. |
+| §2 Rooms | **Built, as an addition:** `src/rooms.rs`, `src/commands/room.rs`, `comms <tool> --room`. A room is a registered thread with explicit members. An agent in a room sends plain messages to that room (`send --all` broadcasts). Agents outside rooms are unchanged. Per-project separation is `comms init` (§3). |
 | §3 Storage in `.comms/` | `comms init` creates `<git root>/.comms/data`. comms finds it from any subdirectory (`paths::find_project_comms_dir`). Storage is hcom's SQLite, not JSONL. |
 | §4 Identity | hcom's launch wrapper (`comms claude`, `comms codex`) and per-instance env. Names are generated (`luna`, `nova`) or set with `--name`. |
 | §5 Delivery and waking | hcom does this: hooks deliver messages mid-turn, the Stop hook delivers idle-time messages, and **typing into the agent's terminal wakes idle agents, Codex included**. That closes the open question about waking an idle Codex. |
@@ -20,7 +20,7 @@ After the design interview below, we found [hcom](https://github.com/aannoo/hcom
 | §8 Adapters | hcom's integration specs, covering about 13 tools. |
 | §11 Go implementation | Replaced by hcom's Rust codebase, fully renamed to comms (binary, `COMMS_*` env vars, `~/.comms`). This is a hard fork: upstream hcom changes no longer merge cleanly. |
 
-Still open: named rooms; non-file claims (e.g. "the dev server"); attachments for large content; shell-edit detection for claims (a git pre-commit check).
+Still open: non-file claims (e.g. "the dev server"); attachments for large content; shell-edit detection for claims (a git pre-commit check).
 
 The original design follows, unchanged.
 

@@ -54,6 +54,7 @@ pub(crate) const SAFE_COMMS_COMMANDS: &[&str] = &[
     "claim",
     "release",
     "claims",
+    "room",
     "start",
     "help",
     "--help",

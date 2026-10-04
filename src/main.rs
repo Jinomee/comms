@@ -28,6 +28,7 @@ mod paths;
 mod pidtrack;
 mod pty;
 pub mod relay;
+pub mod rooms;
 pub mod router;
 mod runtime_env;
 pub mod scripts;

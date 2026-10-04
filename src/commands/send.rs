@@ -88,9 +88,14 @@ pub struct SendArgs {
     #[arg(long)]
     pub reply_to: Option<String>,
 
-    /// Threaded routing: seed recipients once, then reuse thread members
-    #[arg(long)]
+    /// Threaded routing: seed recipients once, then reuse thread members.
+    /// `--room` is an alias: a room is a thread with explicit members.
+    #[arg(long, alias = "room")]
     pub thread: Option<String>,
+
+    /// Send to every agent even if you're in a room (rooms route plain messages to the room)
+    #[arg(long)]
+    pub all: bool,
 
     // ── Sender ──
     /// External sender identity
@@ -394,6 +399,11 @@ pub fn send_message(
     explicit_targets: Option<&[String]>,
 ) -> Result<(i64, Vec<String>), String> {
     validate_message(message)?;
+
+    // Plain messages from an agent in a room go to that room (opt-in rooms).
+    let room_envelope =
+        crate::rooms::default_envelope(db, identity, message, envelope, explicit_targets);
+    let envelope = room_envelope.as_ref().or(envelope);
 
     let delivery = resolve_delivery(db, identity, message, envelope, explicit_targets)?;
     let scope_str = delivery.effective_scope.as_str();
@@ -825,6 +835,7 @@ pub fn cmd_send(db: &CommsDb, args: &SendArgs, ctx: Option<&CommandContext>) -> 
     }
 
     envelope.reply_to = args.reply_to.clone();
+    envelope.skip_room = args.all;
 
     if let Some(ref val) = args.thread {
         if val.len() > 64 {
@@ -991,15 +1002,24 @@ pub fn cmd_send(db: &CommsDb, args: &SendArgs, ctx: Option<&CommandContext>) -> 
 
     let preview_has_envelope =
         envelope.intent.is_some() || envelope.reply_to.is_some() || envelope.thread.is_some();
+    // Preview with the same room routing send_message applies, so a room
+    // member's plain message isn't mistaken for a broadcast.
+    let preview_room_envelope = crate::rooms::default_envelope(
+        db,
+        &sender_identity,
+        &message,
+        Some(&envelope),
+        targets_to_pass,
+    );
     let preview_delivery = match resolve_delivery(
         db,
         &sender_identity,
         &message,
-        if preview_has_envelope {
+        preview_room_envelope.as_ref().or(if preview_has_envelope {
             Some(&envelope)
         } else {
             None
-        },
+        }),
         targets_to_pass,
     ) {
         Ok(delivery) => delivery,
@@ -1123,7 +1143,8 @@ pub fn cmd_send(db: &CommsDb, args: &SendArgs, ctx: Option<&CommandContext>) -> 
     let has_envelope = envelope.intent.is_some()
         || envelope.reply_to.is_some()
         || envelope.thread.is_some()
-        || envelope.bundle_id.is_some();
+        || envelope.bundle_id.is_some()
+        || envelope.skip_room;
 
     let (event_id, delivered_to) = match send_message(
         db,
@@ -2029,6 +2050,82 @@ mod tests {
         // Multiple rows with origin=42 and short=BOXE must fail closed
         assert_eq!(resolve_reply_to_local(&db, "42:BOXE"), None);
 
+        cleanup_test_db(path);
+    }
+
+    #[test]
+    #[serial]
+    fn test_cmd_send_room_routing_all_flag_and_preview() {
+        let (db, path, _env) = setup_test_db();
+        for name in ["luna", "nova", "kira", "remi", "toby"] {
+            db.conn()
+                .execute(
+                    "INSERT INTO instances (name, status, status_context, created_at) VALUES (?, 'active', '', 1000.0)",
+                    [name],
+                )
+                .unwrap();
+        }
+        crate::rooms::join(&db, "auth", "luna").unwrap();
+        crate::rooms::join(&db, "auth", "nova").unwrap();
+
+        let ctx = crate::shared::identity::CommandContext {
+            explicit_name: None,
+            identity: Some(SenderIdentity {
+                kind: SenderKind::Instance,
+                name: "luna".into(),
+                instance_data: Some(serde_json::json!({"name": "luna"})),
+                session_id: None,
+            }),
+            go: false,
+            identity_warning: None,
+        };
+        let last_delivery = |db: &CommsDb| -> (Vec<String>, Option<String>) {
+            db.conn()
+                .query_row(
+                    "SELECT json_extract(data, '$.delivered_to'), json_extract(data, '$.thread') \
+                     FROM events WHERE type = 'message' ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| {
+                        let to: String = r.get(0)?;
+                        Ok((serde_json::from_str(&to).unwrap(), r.get(1)?))
+                    },
+                )
+                .unwrap()
+        };
+
+        // Inside an AI tool, a 4-recipient broadcast would stop at the --go
+        // preview; a room member's plain message must not, since it only goes
+        // to the room.
+        let saved = std::env::var("CLAUDECODE").ok();
+        unsafe { std::env::set_var("CLAUDECODE", "1") };
+
+        let mut args = SendArgs::try_parse_from(["send", "--", "room update"]).unwrap();
+        args.had_separator = true;
+        assert_eq!(cmd_send(&db, &args, Some(&ctx)), 0);
+        assert_eq!(
+            last_delivery(&db),
+            (vec!["nova".to_string()], Some("auth".into()))
+        );
+
+        // --all broadcasts (with --go, as any large agent broadcast needs).
+        let ctx_go = crate::shared::identity::CommandContext {
+            go: true,
+            ..ctx.clone()
+        };
+        let mut args = SendArgs::try_parse_from(["send", "--all", "--", "everyone"]).unwrap();
+        args.had_separator = true;
+        assert_eq!(cmd_send(&db, &args, Some(&ctx_go)), 0);
+        let (mut to, thread) = last_delivery(&db);
+        to.sort();
+        assert_eq!(to, vec!["kira", "nova", "remi", "toby"]);
+        assert_eq!(thread, None);
+
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("CLAUDECODE", v),
+                None => std::env::remove_var("CLAUDECODE"),
+            }
+        }
         cleanup_test_db(path);
     }
 

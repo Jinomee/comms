@@ -21,7 +21,9 @@ pub(crate) const INLINE_SINGLE_LAUNCH_WAIT_SECS: u64 = 10;
 
 /// Run the launch command. `argv` is the full argv[1..] including count/tool.
 pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
-    let (count, tool, comms_flags, tool_args) = parse_launch_argv(argv)?;
+    let (room, argv) = crate::rooms::take_launch_flag(argv)?;
+    let argv = argv.as_slice();
+    let (count, tool, mut comms_flags, tool_args) = parse_launch_argv(argv)?;
     let launch_tool = LaunchTool::from_str(&tool)?;
 
     // Count validation
@@ -70,6 +72,12 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
     }
 
     if let Some(ref device) = remote_device {
+        if room.is_some() {
+            bail!(
+                "Remote launch does not support {}",
+                crate::rooms::LAUNCH_FLAG
+            );
+        }
         if comms_flags.run_here == Some(true) {
             bail!("Remote launch does not support --run-here");
         }
@@ -132,6 +140,16 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
             }
             Err(e) => bail!("Remote launch failed for device {device}: {e}"),
         }
+    }
+
+    // Agents launched into a room are told so up front.
+    if let Some(ref room) = room {
+        let db = CommsDb::open()?;
+        let note = crate::rooms::launch_note(&db, room);
+        comms_flags.system_prompt = Some(match comms_flags.system_prompt.take() {
+            Some(existing) => format!("{existing}\n\n{note}"),
+            None => note,
+        });
     }
 
     // System/initial prompt handling
@@ -207,6 +225,20 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
             append_reply_handoff: true,
         },
     )?;
+
+    if let Some(ref room) = room {
+        for name in result
+            .handles
+            .iter()
+            .filter_map(|h| h.get("instance_name").and_then(|v| v.as_str()))
+        {
+            crate::rooms::join(&db, room, name)?;
+        }
+        println!(
+            "Room '{room}': {}",
+            crate::rooms::members(&db, room).join(", ")
+        );
+    }
 
     print_launch_feedback(&db, &result, &output)?;
     let readiness_state = output

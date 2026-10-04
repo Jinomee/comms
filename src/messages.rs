@@ -76,6 +76,8 @@ pub struct MessageEnvelope {
     pub reply_to: Option<String>,
     pub thread: Option<String>,
     pub bundle_id: Option<String>,
+    /// Broadcast even if the sender is in a room (`send --all`).
+    pub skip_room: bool,
 }
 
 /// Relay metadata for cross-device messages.
