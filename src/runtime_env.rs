@@ -49,6 +49,21 @@ pub(crate) fn hook_comms_command() -> String {
         .unwrap_or_else(build_comms_command)
 }
 
+/// Where `comms` resolves on PATH, if it does. Agents run `comms send` from
+/// their own shell, so messaging needs this even though hooks use
+/// [`hook_comms_command`]'s absolute path.
+pub(crate) fn comms_on_path() -> Option<String> {
+    crate::terminal::which_bin("comms")
+}
+
+/// Directory of the running binary: what to add to PATH when it's missing.
+pub(crate) fn comms_install_dir() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.display().to_string()))
+        .unwrap_or_else(|| "the directory containing comms".to_string())
+}
+
 /// Detect comms invocation prefix based on execution context.
 pub(crate) fn get_comms_prefix() -> Vec<String> {
     COMMS_PREFIX.clone()

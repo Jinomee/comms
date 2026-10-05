@@ -262,6 +262,7 @@ pub fn cmd_status(db: &CommsDb, args: &StatusArgs, _ctx: Option<&CommandContext>
 
     // Paths
     let comms_dir_override = std::env::var("COMMS_DIR").is_ok();
+    let comms_on_path = crate::runtime_env::comms_on_path();
 
     if json_mode {
         let log_summary = crate::log::get_log_summary(1.0);
@@ -276,6 +277,8 @@ pub fn cmd_status(db: &CommsDb, args: &StatusArgs, _ctx: Option<&CommandContext>
             },
             "comms_dir": comms_dir.to_string_lossy(),
             "comms_dir_override": comms_dir_override,
+            "comms_on_path": comms_on_path.is_some(),
+            "comms_path": comms_on_path,
             "comms_exists": dir_exists,
             "comms_writable": dir_writable,
             "config_valid": config_valid,
@@ -353,6 +356,18 @@ pub fn cmd_status(db: &CommsDb, args: &StatusArgs, _ctx: Option<&CommandContext>
             "           COMMS_DIR={}",
             std::env::var("COMMS_DIR").unwrap_or_default()
         );
+    }
+
+    // PATH: agents run `comms send` from their own shell.
+    match &comms_on_path {
+        Some(path) => println!("path:      ✓ {path}"),
+        None => {
+            println!("path:      ✗ comms is not on PATH; agents can't run `comms send`");
+            println!(
+                "           Add {} to PATH in your shell profile",
+                crate::runtime_env::comms_install_dir()
+            );
+        }
     }
 
     // Config

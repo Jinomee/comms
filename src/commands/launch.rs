@@ -265,13 +265,10 @@ pub fn run(argv: &[String], flags: &GlobalFlags) -> Result<i32> {
 /// own shell, which needs `comms` on PATH. Without it messaging silently
 /// breaks, so say so at launch.
 fn warn_if_comms_not_on_path() {
-    if crate::terminal::which_bin("comms").is_some() {
+    if crate::runtime_env::comms_on_path().is_some() {
         return;
     }
-    let dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|d| d.display().to_string()))
-        .unwrap_or_else(|| "the directory containing comms".to_string());
+    let dir = crate::runtime_env::comms_install_dir();
     eprintln!(
         "Warning: `comms` is not on PATH. Agents send messages by running `comms send` and won't \
          find it. Add {dir} to PATH (in your shell profile, so the agent's shell sees it too)."

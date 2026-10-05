@@ -23,7 +23,8 @@ use serial_test::serial;
 use std::fs;
 use std::time::Duration;
 use support::codex_mock::{
-    CodexCase, MockResponses, Reply, completed, created, escalated_shell_call, message, sse,
+    CodexCase, MockResponses, Reply, completed, created, custom_tool_call, escalated_shell_call,
+    is_title_request, message, sse, title_reply,
 };
 use support::real_tool::{inject_prompt_until, require_pinned};
 use support::{Comms, parse_launch_names, unique_suffix};
@@ -33,6 +34,146 @@ use support::{Comms, parse_launch_names, unique_suffix};
 #[serial]
 fn real_codex_full_lifecycle_send_fork_kill_resume_and_cleanup() {
     support::real_tool::run_full_lifecycle(CodexCase);
+}
+
+/// A claim must stop a real Codex `apply_patch` on the claimed file.
+///
+/// Regression test for claims failing open on Windows: Codex runs hooks via
+/// `powershell -Command` there, which turned the hook's exit-2 deny into exit
+/// 1 (a hook error), so the patch applied anyway. The hook now denies with a
+/// JSON `permissionDecision`, which this checks end to end on every CI OS:
+/// the file is untouched, the model is told who holds the claim, and the
+/// holder is notified.
+#[test]
+#[ignore = "requires the pinned real @openai/codex binary"]
+#[serial]
+fn real_codex_apply_patch_on_claimed_file_is_denied() {
+    let h = Comms::new();
+    require_pinned(&h, &CodexCase);
+
+    let suffix = unique_suffix();
+    let token = format!("COMMS_CODEX_CLAIM_{suffix}");
+    let claimed = h.workspace.join("claimed.txt");
+    fs::write(&claimed, "ORIGINAL\n").expect("write claimed file");
+
+    // The human claims the file before Codex starts.
+    let claimed_text = claimed.to_str().expect("UTF-8 claimed path");
+    let (claim_code, claim_stdout, claim_stderr) =
+        h.run(["claim", claimed_text, "-n", "claim regression test"]);
+    assert_eq!(
+        claim_code, 0,
+        "claim failed: stdout={claim_stdout} stderr={claim_stderr}"
+    );
+
+    let patch = "*** Begin Patch\n*** Update File: claimed.txt\n@@\n-ORIGINAL\n+CHANGED BY CODEX\n*** End Patch\n";
+    let scenario_token = token.clone();
+    let mock = MockResponses::start(move |body: &str| {
+        if is_title_request(body) {
+            title_reply()
+        } else if body.contains("custom_tool_call_output") && body.contains("PATCHC") {
+            Reply::Sse(sse(&[
+                created("RESP_C2"),
+                message("ITEM_C2", &format!("CLAIM_PROOF {scenario_token}")),
+                completed("RESP_C2"),
+            ]))
+        } else if body.contains(&scenario_token) {
+            Reply::Sse(sse(&[
+                created("RESP_C1"),
+                custom_tool_call("PATCHC", "apply_patch", patch),
+                completed("RESP_C1"),
+            ]))
+        } else {
+            Reply::Status(500)
+        }
+    })
+    .expect("start mock Responses server");
+    h.prepare_codex_config(&mock.base_url());
+
+    // --yolo: no sandbox or approval prompt stands between the patch and the
+    // file, so only the claim hook can stop it.
+    let (launch_code, launch_stdout, launch_stderr) = h.run([
+        "codex",
+        "--headless",
+        "--dir",
+        h.workspace.to_str().expect("UTF-8 workspace path"),
+        "--yolo",
+    ]);
+    assert_eq!(
+        launch_code,
+        0,
+        "real Codex launch failed:\n-- stdout --\n{launch_stdout}\n-- stderr --\n{launch_stderr}\n{}",
+        h.diagnostics()
+    );
+    let launched_names = parse_launch_names(&launch_stdout);
+    assert_eq!(launched_names.len(), 1, "stdout={launch_stdout}");
+    let name = launched_names[0].clone();
+
+    h.eventually("Codex PTY inject endpoint", Duration::from_secs(90), || {
+        let (code, stdout, _stderr) = h.run(["term", &name, "--json"]);
+        if code == 0 && stdout.contains("\"ready\":true") {
+            Ok(Some(()))
+        } else {
+            Ok(None)
+        }
+    });
+
+    let saw_patch_turn = || {
+        mock.requests()
+            .iter()
+            .any(|body| body.contains(&token) && !is_title_request(body))
+    };
+    inject_prompt_until(
+        &h,
+        &name,
+        &format!("Edit claimed.txt {token}"),
+        "claimed-file patch prompt",
+        saw_patch_turn,
+        saw_patch_turn,
+    );
+
+    // Codex reports the tool result back to the model: it must be the deny.
+    let tool_output = h.eventually(
+        "apply_patch result reached the model",
+        Duration::from_secs(60),
+        || {
+            Ok(mock
+                .requests()
+                .into_iter()
+                .find(|body| body.contains("custom_tool_call_output") && body.contains("PATCHC")))
+        },
+    );
+    assert!(
+        tool_output.contains("claimed by bigboss"),
+        "Codex wasn't told the file is claimed; tool output request:\n{tool_output}\n{}",
+        h.diagnostics()
+    );
+    assert_eq!(
+        fs::read_to_string(&claimed).expect("read claimed file"),
+        "ORIGINAL\n",
+        "claimed file was modified despite the claim\n{}",
+        h.diagnostics()
+    );
+
+    // The holder hears that someone was blocked.
+    h.eventually(
+        "claim holder notified of the blocked edit",
+        Duration::from_secs(30),
+        || {
+            let (code, stdout, stderr) = h.run(["events", "--type", "message", "--last", "50"]);
+            if code != 0 {
+                return Err(format!("events failed: {stderr}"));
+            }
+            let notified = stdout.contains(&format!("{name} was blocked from editing"));
+            Ok(notified.then_some(()))
+        },
+    );
+
+    let transport_errors = mock.transport_errors();
+    assert!(
+        transport_errors.is_empty(),
+        "mock hit transport errors:\n  {}",
+        transport_errors.join("\n  ")
+    );
 }
 
 /// Codex's approval gate is comms's only PTY-driven block path, and
