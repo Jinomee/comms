@@ -199,11 +199,23 @@ fn related(db: &CommsDb, a: &str, b: &str) -> bool {
     parent_of(a).as_deref() == Some(b) || parent_of(b).as_deref() == Some(a)
 }
 
+/// Whether the holder still exists. Same rule as message delivery
+/// (`send::deliverable_instances`): an agent is gone when stopped, when its
+/// launch failed, or when it exited. Plain `inactive` is NOT gone: agents
+/// that joined with `comms start` sit at `inactive` (e.g. `tool:send`)
+/// between commands, and their claims must survive that.
 fn holder_alive(db: &CommsDb, holder: &str) -> bool {
     if holder == crate::shared::constants::SENDER {
         return true; // the human
     }
-    matches!(db.get_instance_full(holder), Ok(Some(row)) if row.status != ST_INACTIVE)
+    match db.get_instance_full(holder) {
+        Ok(Some(row)) => {
+            row.status != "stopped"
+                && row.status_context != "launch_failed"
+                && !(row.status == ST_INACTIVE && row.status_context.starts_with("exit:"))
+        }
+        _ => false,
+    }
 }
 
 fn store(db: &CommsDb, claim: &Claim) -> Result<()> {
@@ -595,13 +607,40 @@ mod tests {
 
         db.conn()
             .execute(
-                "UPDATE instances SET status = ? WHERE name = 'gone'",
+                "UPDATE instances SET status = ?, status_context = 'exit:closed' WHERE name = 'gone'",
                 [ST_INACTIVE],
             )
             .unwrap();
         let live = active(&db, 1061).unwrap();
         assert!(live.is_empty(), "expired + inactive holder: {live:?}");
         assert!(db.kv_prefix(KV_PREFIX).unwrap().is_empty());
+    }
+
+    #[test]
+    fn claims_survive_idle_but_not_departed_holders() {
+        let db = test_db();
+        for (name, status, context) in [
+            ("idle", "inactive", "tool:send"),
+            ("waiting", "inactive", "message received"),
+            ("exited", "inactive", "exit:closed"),
+            ("stopped", "stopped", ""),
+            ("failed", "inactive", "launch_failed"),
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT INTO instances (name, tool, status, status_context, created_at) VALUES (?, 'codex', ?, ?, 0)",
+                    rusqlite::params![name, status, context],
+                )
+                .unwrap();
+            claim(&db, name, &pats(&[&format!("/r/{name}.rs")]), "", 600, 1000).unwrap();
+        }
+        let mut holders: Vec<String> = active(&db, 1001)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.holder)
+            .collect();
+        holders.sort();
+        assert_eq!(holders, vec!["idle", "waiting"]);
     }
 
     #[test]

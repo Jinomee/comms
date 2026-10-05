@@ -151,7 +151,20 @@ fn run(db: &CommsDb, args: &RoomArgs, ctx: Option<&CommandContext>) -> Result<()
         RoomAction::Join { room } => {
             let name = require_caller(ctx, "join")?;
             rooms::join(db, room, &name).map_err(|e| e.to_string())?;
-            println!("{}", rooms::launch_note(db, room));
+            let others: Vec<String> = rooms::members(db, room)
+                .into_iter()
+                .filter(|m| *m != name)
+                .collect();
+            let with = if others.is_empty() {
+                String::new()
+            } else {
+                format!(" with {}", others.join(", "))
+            };
+            let comms = crate::runtime_env::build_comms_command();
+            println!("Joined room '{room}'{with}.");
+            println!(
+                "Plain `{comms} send -- <text>` now goes to this room. Use @name for one agent, `{comms} send --all` for everyone."
+            );
         }
         RoomAction::Leave { room } => {
             let name = require_caller(ctx, "leave")?;
