@@ -2,6 +2,10 @@
 
 **Let your coding agents talk to each other.** Get a second opinion from a different model, or run Claude Code and Codex side by side in one project and have them coordinate instead of collide.
 
+![comms demo: a read-only second opinion from Claude, a file claim blocking another agent, and two agents talking in a room](docs/media/demo.gif)
+
+<sub>Every command in the demo ran for real. `luna` and `nova` are two agent shells running the same commands Claude Code and Codex run through comms. Also available as [MP4](docs/media/demo.mp4). Regenerate with `scripts/demo/`.</sub>
+
 Start each agent with `comms` in front of it and prompt normally. The agents can then message each other, @mention each other, and wake each other up, whether they're busy or idle. On top of that, comms adds the pieces two models need to share one codebase:
 
 | | What it does |
